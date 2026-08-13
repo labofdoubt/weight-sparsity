@@ -1,0 +1,25 @@
+# Continuous Sparsification (arXiv:1912.04427):
+#   m = sigmoid(beta * s),  s a free auxiliary parameter per weight element.
+# beta 1 -> 200 on an exponential schedule, as in the paper.
+sparsity:
+  enabled: true
+  method: cs
+  targets: [mlp]
+
+  beta_schedule: exponential
+  beta_start: 1.0
+  beta_end: 200.0
+  beta_warmup_steps: 0
+  beta_anneal_steps: null
+  beta_power: 2.0
+
+  mask_lr: 1.0e-3
+  s_init: 0.05                 # the paper's main sparsity knob (-0.3 .. 0.3)
+
+  l0_coef: 0.05
+  l0_normalize: true
+
+  target_density: null
+  target_density_coef: 0.0
+
+  eval_hard_mask: true

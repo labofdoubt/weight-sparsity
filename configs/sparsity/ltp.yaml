@@ -1,0 +1,32 @@
+# Learned Threshold Pruning (arXiv:2003.00075):
+#   m = sigmoid(beta * (w**2 - tau)),  tau learnable, one scalar per layer.
+#
+# Scale note: with init_std = 0.02 a typical w**2 is ~4e-4, so beta must be
+# well above 1/4e-4 = 2.5e3 before the mask is anywhere near binary.  beta_start
+# = 1e4 puts sigmoid(beta * w**2) at ~0.98 for a typical weight, i.e. the model
+# starts essentially dense and sparsifies as tau rises and beta sharpens.  tau
+# lives on that same ~1e-4 scale, which is why mask_lr is tiny (AdamW steps are
+# ~mask_lr regardless of the gradient magnitude).
+sparsity:
+  enabled: true
+  method: ltp
+  targets: [mlp]
+
+  beta_schedule: exponential   # constant | linear | exponential | cosine | polynomial
+  beta_start: 1.0e4
+  beta_end: 1.0e6
+  beta_warmup_steps: 1000      # train dense-ish first
+  beta_anneal_steps: null      # null -> anneal over the rest of training
+  beta_power: 2.0
+
+  mask_lr: 1.0e-6
+  threshold_init: 0.0
+  grad_through_mask: false     # eq. (14) of the paper; set true to backprop through the mask
+
+  l0_coef: 0.05
+  l0_normalize: true
+
+  target_density: null
+  target_density_coef: 0.0
+
+  eval_hard_mask: true

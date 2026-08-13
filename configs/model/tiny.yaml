@@ -1,0 +1,7 @@
+# ~3M non-embedding parameters -- for smoke tests
+model:
+  n_layers: 4
+  d_model: 256
+  n_heads: 4
+  mlp_ratio: 4.0
+  max_seq_len: 256

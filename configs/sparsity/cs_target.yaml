@@ -1,0 +1,8 @@
+# Continuous Sparsification driven by the target-density objective.
+_base_: cs.yaml
+
+sparsity:
+  l0_coef: 0.0
+  target_density: 0.1
+  target_density_coef: 1.0
+  target_density_overrides: {}

@@ -1,0 +1,7 @@
+torch>=2.4
+numpy>=1.24
+pyyaml>=6.0
+tqdm>=4.66
+datasets>=2.14
+transformers>=4.40
+tokenizers>=0.15

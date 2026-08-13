@@ -1,0 +1,14 @@
+# ~152M parameters, Continuous Sparsification on the MLP weights.
+# Note: CS stores one extra float per masked weight, so the optimiser state
+# grows accordingly (~75M extra parameters at this size).
+_base_:
+  - model/large.yaml
+  - train/default.yaml
+  - sparsity/cs.yaml
+
+train:
+  run_name: cs_150m
+  batch_size: 128
+  micro_batch_size: 16
+  max_steps: 40000
+  lr: 4.0e-4

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wsparse"
+version = "0.1.0"
+description = "Training TinyStories language models with differentiable weight sparsity (LTP / Continuous Sparsification)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.4",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+data = ["datasets>=2.14", "transformers>=4.40", "tokenizers>=0.15"]
+logging = ["wandb>=0.16"]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+wsparse-train = "wsparse.train:main"
+wsparse-prepare-data = "wsparse.data:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

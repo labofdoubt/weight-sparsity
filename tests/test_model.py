@@ -1,0 +1,129 @@
+import math
+
+import torch
+import torch.nn as nn
+
+from wsparse.config import ModelConfig
+from wsparse.model import MLP, RMSNorm, build_model
+
+
+def tiny_cfg(**kw):
+    base = dict(vocab_size=97, max_seq_len=32, n_layers=2, d_model=32, n_heads=4, mlp_ratio=4.0)
+    base.update(kw)
+    return ModelConfig(**base)
+
+
+def test_forward_and_loss():
+    model = build_model(tiny_cfg())
+    x = torch.randint(0, 97, (3, 16))
+    logits, loss = model(x, x)
+    assert logits.shape == (3, 16, 97)
+    assert loss.ndim == 0 and torch.isfinite(loss)
+    # untrained loss should be close to ln(vocab)
+    assert abs(loss.item() - math.log(97)) < 1.0
+
+
+def test_no_biases_by_default():
+    model = build_model(tiny_cfg())
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Linear):
+            assert module.bias is None, name
+    assert all("bias" not in n for n, _ in model.named_parameters())
+
+
+def test_biases_can_be_enabled():
+    model = build_model(tiny_cfg(bias=True))
+    assert model.blocks[0].mlp.fc1.bias is not None
+    assert model.lm_head.bias is None  # the head stays bias-free
+
+
+def test_rmsnorm_matches_reference():
+    norm = RMSNorm(8, eps=1e-6)
+    with torch.no_grad():
+        norm.weight.copy_(torch.linspace(0.5, 1.5, 8))
+    x = torch.randn(4, 8)
+    ref = x / torch.sqrt(x.pow(2).mean(-1, keepdim=True) + 1e-6) * norm.weight
+    assert torch.allclose(norm(x), ref, atol=1e-5)
+    assert isinstance(build_model(tiny_cfg()).norm_f, RMSNorm)
+
+
+def test_learnable_positional_embeddings():
+    model = build_model(tiny_cfg())
+    assert isinstance(model.pos_emb, nn.Embedding)
+    assert model.pos_emb.weight.requires_grad
+    assert model.pos_emb.weight.shape == (32, 32)
+
+
+def test_weight_tying():
+    tied = build_model(tiny_cfg(tie_embeddings=True))
+    assert tied.lm_head.weight.data_ptr() == tied.tok_emb.weight.data_ptr()
+    untied = build_model(tiny_cfg(tie_embeddings=False))
+    assert untied.lm_head.weight.data_ptr() != untied.tok_emb.weight.data_ptr()
+    assert untied.num_parameters() > tied.num_parameters()
+
+
+def test_mlp_ratio_changes_hidden_width():
+    m2 = build_model(tiny_cfg(mlp_ratio=2.0))
+    m8 = build_model(tiny_cfg(mlp_ratio=8.0))
+    assert m2.blocks[0].mlp.fc1.out_features == 64
+    assert m8.blocks[0].mlp.fc1.out_features == 256
+
+
+def test_swiglu_keeps_parameter_budget():
+    cfg = tiny_cfg(mlp_activation="swiglu")
+    mlp = MLP(cfg)
+    x = torch.randn(2, 5, cfg.d_model)
+    assert mlp(x).shape == (2, 5, cfg.d_model)
+    assert mlp.fc1.out_features == 2 * cfg.d_mlp
+
+
+def test_init_std_is_respected():
+    model = build_model(tiny_cfg(init_std=0.05, init_scale_residual=False, n_layers=4, d_model=128))
+    std = model.blocks[0].mlp.fc1.weight.std().item()
+    assert 0.04 < std < 0.06
+
+
+def test_fan_in_init():
+    model = build_model(
+        tiny_cfg(init_scheme="fan_in", init_gain=1.0, d_model=128, init_scale_residual=False)
+    )
+    w = model.blocks[0].mlp.fc1.weight
+    expected = 1.0 / math.sqrt(w.shape[1])
+    assert abs(w.std().item() - expected) < 0.2 * expected
+
+
+def test_residual_scaling():
+    cfg = tiny_cfg(n_layers=8, d_model=128, init_std=0.02)
+    scaled = build_model(cfg)
+    plain = build_model(tiny_cfg(n_layers=8, d_model=128, init_std=0.02, init_scale_residual=False))
+    factor = 1 / math.sqrt(2 * 8)
+    assert scaled.blocks[0].mlp.fc2.weight.std().item() < plain.blocks[0].mlp.fc2.weight.std().item()
+    assert abs(scaled.blocks[0].attn.proj.weight.std().item() - 0.02 * factor) < 0.004
+
+
+def test_causality():
+    torch.manual_seed(0)
+    model = build_model(tiny_cfg()).eval()
+    x = torch.randint(0, 97, (1, 12))
+    base, _ = model(x)
+    x2 = x.clone()
+    x2[0, -1] = (x2[0, -1] + 1) % 97
+    other, _ = model(x2)
+    assert torch.allclose(base[:, :-1], other[:, :-1], atol=1e-5)
+
+
+def test_generate_extends_sequence():
+    model = build_model(tiny_cfg())
+    out = model.generate(torch.randint(0, 97, (2, 4)), max_new_tokens=6, top_k=5)
+    assert out.shape == (2, 10)
+    assert out.max().item() < 97
+
+
+def test_parameter_count_matches_hand_computation():
+    cfg = ModelConfig(
+        vocab_size=1000, max_seq_len=64, n_layers=3, d_model=64, n_heads=4, mlp_ratio=4.0
+    )
+    model = build_model(cfg)
+    per_block = 4 * 64 * 64 + 2 * 64 * 256 + 2 * 64  # attn + mlp + two RMSNorm gains
+    expected = 1000 * 64 + 64 * 64 + 3 * per_block + 64  # emb + pos + blocks + final norm
+    assert model.num_parameters() == expected

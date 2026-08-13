@@ -1,0 +1,12 @@
+# LTP driven by the target-density objective instead of the plain L0 penalty:
+#   coef * mean_l (L0_l / (target_density_l * numel_l) - 1)**2
+_base_: ltp.yaml
+
+sparsity:
+  l0_coef: 0.0
+  target_density: 0.1          # keep 10% of the weights in every masked layer
+  target_density_coef: 1.0
+  # per-layer overrides, matched against the module name with fnmatch:
+  target_density_overrides: {}
+  #   "blocks.0.mlp.*": 0.3
+  #   "*.mlp.fc2": 0.15

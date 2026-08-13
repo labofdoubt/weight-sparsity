@@ -1,0 +1,24 @@
+# Tiny end-to-end run: a few hundred steps on CPU/GPU to check the plumbing.
+_base_:
+  - model/tiny.yaml
+  - train/default.yaml
+  - sparsity/ltp.yaml
+
+data:
+  seq_len: 128
+
+train:
+  run_name: smoke
+  batch_size: 8
+  micro_batch_size: 4
+  max_steps: 100
+  warmup_steps: 10
+  log_every_steps: 10
+  validate_every_steps: 50
+  val_batches: 5
+  checkpoint_every_steps: 50
+  dtype: float32
+
+sparsity:
+  beta_warmup_steps: 10
+  l0_coef: 0.1

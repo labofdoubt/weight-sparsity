@@ -1,0 +1,8 @@
+# ~113M non-embedding parameters (~152M total with the GPT-Neo vocabulary)
+# This is the ~150M scale the repo is meant to top out at.
+model:
+  n_layers: 16
+  d_model: 768
+  n_heads: 12
+  mlp_ratio: 4.0
+  max_seq_len: 512

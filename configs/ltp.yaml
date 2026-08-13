@@ -1,0 +1,7 @@
+_base_:
+  - model/small.yaml
+  - train/default.yaml
+  - sparsity/ltp.yaml
+
+train:
+  run_name: ltp_small

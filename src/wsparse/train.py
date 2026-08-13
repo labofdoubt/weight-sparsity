@@ -1,0 +1,345 @@
+"""Training loop.
+
+    python -m wsparse.train --config configs/ltp_base.yaml [--train.lr=6e-4 ...]
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import math
+import os
+import time
+from typing import Dict, Optional, Tuple
+
+import torch
+
+from .config import Config, config_from_dict, load_config
+from .data import build_streams, load_meta
+from .model import build_model
+from .optim import build_optimizer, count_parameter_groups, lr_at, set_lr
+from .sparsity import SparsityController, apply_sparsity
+from .utils import Logger, autocast_context, human, resolve_device, resolve_dtype, set_seed
+
+
+# --------------------------------------------------------------------------- #
+# evaluation
+# --------------------------------------------------------------------------- #
+
+
+@torch.no_grad()
+def evaluate(
+    model,
+    stream,
+    batch_size: int,
+    batches: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Dict[str, float]:
+    was_training = model.training
+    model.eval()
+    losses = []
+    stride = batch_size * (stream.seq_len + 1)  # disjoint windows across batches
+    for i in range(batches):
+        x, y = stream.batch(batch_size, device, deterministic_offset=i * stride)
+        with autocast_context(device, dtype):
+            _, loss = model(x, y)
+        losses.append(loss.float().item())
+    model.train(was_training)
+    ce = sum(losses) / max(1, len(losses))
+    return {"ce": ce, "ppl": math.exp(min(20.0, ce))}
+
+
+# --------------------------------------------------------------------------- #
+# checkpointing
+# --------------------------------------------------------------------------- #
+
+
+def save_checkpoint(
+    path: str, cfg: Config, model, optimizer, step: int, extra: Optional[Dict] = None
+) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    payload = {
+        "config": cfg.to_dict(),
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "step": step,
+    }
+    if extra:
+        payload.update(extra)
+    tmp = path + ".tmp"
+    torch.save(payload, tmp)
+    os.replace(tmp, path)
+
+
+def prune_old_checkpoints(run_dir: str, keep: int) -> None:
+    if keep <= 0:
+        return
+    ckpts = sorted(
+        glob.glob(os.path.join(run_dir, "ckpt_step*.pt")),
+        key=lambda p: int(os.path.basename(p).split("step")[1].split(".")[0]),
+    )
+    for old in ckpts[:-keep]:
+        os.remove(old)
+
+
+def load_for_inference(path: str, device: str = "cpu") -> Tuple[torch.nn.Module, Config, SparsityController]:
+    """Rebuild a model (+ sparsity wrappers) from a checkpoint."""
+    payload = torch.load(path, map_location=device, weights_only=False)
+    cfg = config_from_dict(payload["config"])
+    model = build_model(cfg.model)
+    controller = apply_sparsity(model, cfg.sparsity, max_steps=cfg.train.max_steps)
+    model.load_state_dict(payload["model"])
+    model.to(device)
+    controller.set_step(payload.get("step", cfg.train.max_steps))
+    return model, cfg, controller
+
+
+# --------------------------------------------------------------------------- #
+# training
+# --------------------------------------------------------------------------- #
+
+
+def train(cfg: Config) -> Dict[str, float]:
+    set_seed(cfg.train.seed)
+    device = resolve_device(cfg.train.device)
+    dtype = resolve_dtype(cfg.train.dtype, device)
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
+    meta = load_meta(cfg.data.data_dir)
+    cfg.model.vocab_size = int(meta["vocab_size"])
+    train_stream, val_stream = build_streams(cfg.data, seed=cfg.train.seed)
+
+    model = build_model(cfg.model).to(device)
+    controller = apply_sparsity(model, cfg.sparsity, max_steps=cfg.train.max_steps)
+    model.to(device)  # sparsity parameters created on cpu -> move again
+
+    optimizer = build_optimizer(
+        model, cfg.train, cfg.sparsity, mask_param_ids=controller.mask_parameter_ids()
+    )
+    # Sparsity parameters are clipped separately: dL/dtau sums over every weight
+    # in the layer, so a shared global norm would let it squash the weight
+    # gradients (LTP section 4.1 makes the same point about its magnitude).
+    mask_params = controller.mask_parameters()
+    mask_ids = controller.mask_parameter_ids()
+    weight_params = [p for p in model.parameters() if id(p) not in mask_ids]
+
+    run_dir = os.path.join(cfg.train.out_dir, cfg.train.run_name)
+    logger = Logger(
+        cfg.train.out_dir,
+        cfg.train.run_name,
+        config=cfg.to_dict(),
+        wandb_project=cfg.train.wandb_project,
+        wandb_entity=cfg.train.wandb_entity,
+    )
+    cfg.dump(os.path.join(run_dir, "config.yaml"))
+
+    start_step = 0
+    resume_path = cfg.train.resume
+    if resume_path == "auto":
+        resume_path = os.path.join(run_dir, "latest.pt")
+        resume_path = resume_path if os.path.exists(resume_path) else ""
+    if resume_path:
+        payload = torch.load(resume_path, map_location=device, weights_only=False)
+        model.load_state_dict(payload["model"])
+        optimizer.load_state_dict(payload["optimizer"])
+        start_step = int(payload["step"])
+        print(f"[train] resumed from {resume_path} at step {start_step}")
+
+    if cfg.train.compile:
+        model = torch.compile(model)  # type: ignore[assignment]
+
+    scaler = torch.amp.GradScaler("cuda", enabled=(dtype is torch.float16 and device.type == "cuda"))
+    accum = cfg.train.grad_accum_steps
+    micro_bs = int(cfg.train.micro_batch_size)
+    tokens_per_step = cfg.train.batch_size * cfg.data.seq_len
+
+    print(
+        f"[train] device={device} dtype={dtype} params={human(model_params(model))} "
+        f"(non-emb {human(model_params(model, non_embedding=True))}) "
+        f"batch={cfg.train.batch_size}x{cfg.data.seq_len} tok "
+        f"(micro {micro_bs} x accum {accum})"
+    )
+    print(f"[train] param groups: {count_parameter_groups(optimizer)}")
+    if controller.enabled:
+        print(
+            f"[train] sparsity: method={cfg.sparsity.method} targets={cfg.sparsity.targets} "
+            f"layers={len(controller.layers)} maskable={human(controller.total_maskable)} "
+            f"beta {cfg.sparsity.beta_start:g} -> {cfg.sparsity.beta_end:g} "
+            f"({cfg.sparsity.beta_schedule})"
+        )
+
+    model.train()
+    t0 = time.time()
+    running_ce, running_n = 0.0, 0
+    best_val = float("inf")
+    last_metrics: Dict[str, float] = {}
+
+    for step in range(start_step, cfg.train.max_steps):
+        lr = lr_at(step, cfg.train)
+        set_lr(optimizer, lr)
+        controller.set_step(step)
+
+        optimizer.zero_grad(set_to_none=True)
+        ce_sum = 0.0
+        for _ in range(accum):
+            x, y = train_stream.batch(micro_bs, device)
+            with autocast_context(device, dtype):
+                _, ce = model(x, y)
+            ce_sum += ce.detach().float().item()
+            scaler.scale(ce / accum).backward()
+
+        # sparsity penalty: added once per optimiser step (it does not depend on
+        # the batch), so its gradient is not divided by the accumulation count.
+        penalty, penalty_logs = controller.penalty()
+        if penalty.requires_grad:
+            scaler.scale(penalty).backward()
+
+        mask_grad_norm = 0.0
+        if cfg.train.grad_clip > 0:
+            scaler.unscale_(optimizer)
+            grad_norm = torch.nn.utils.clip_grad_norm_(weight_params, cfg.train.grad_clip)
+            if mask_params:
+                mask_grad_norm = float(
+                    torch.nn.utils.clip_grad_norm_(mask_params, cfg.train.grad_clip)
+                )
+        else:
+            grad_norm = torch.tensor(0.0)
+        scaler.step(optimizer)
+        scaler.update()
+
+        ce_mean = ce_sum / accum
+        running_ce += ce_mean
+        running_n += 1
+        step1 = step + 1
+
+        if step1 % cfg.train.log_every_steps == 0 or step1 == 1:
+            dt = time.time() - t0
+            t0 = time.time()
+            tok_per_s = tokens_per_step * running_n / max(dt, 1e-6)
+            metrics = {
+                "train/ce": running_ce / running_n,
+                "train/ppl": math.exp(min(20.0, running_ce / running_n)),
+                "train/lr": lr,
+                "train/grad_norm": float(grad_norm),
+                "perf/tokens_per_s": tok_per_s,
+                "perf/ms_per_step": 1000 * dt / running_n,
+                "perf/tokens_seen": step1 * tokens_per_step,
+            }
+            metrics.update(penalty_logs)
+            sp = controller.stats()
+            metrics.update(sp)
+            if mask_params:
+                metrics["sparsity/mask_grad_norm"] = mask_grad_norm
+            metrics["train/loss"] = metrics["train/ce"] + sum(
+                v for k, v in penalty_logs.items() if k.endswith("penalty")
+            )
+
+            line = (
+                f"step {step1:>6}/{cfg.train.max_steps} | loss {metrics['train/loss']:.4f} "
+                f"| ce {metrics['train/ce']:.4f} | ppl {metrics['train/ppl']:7.2f} "
+                f"| lr {lr:.2e}"
+            )
+            if controller.enabled:
+                line += (
+                    f" | beta {sp['sparsity/beta']:.3g}"
+                    f" | dens_soft {sp['sparsity/density_soft']:.4f}"
+                    f" | dens_hard {sp['sparsity/density_hard']:.4f}"
+                    f" | trans {sp['sparsity/transition_frac']:.4f}"
+                )
+                key = "sparsity/threshold_mean" if cfg.sparsity.method == "ltp" else "sparsity/s_mean"
+                if key in sp:
+                    line += f" | {key.split('/')[1]} {sp[key]:.3g}"
+            line += (
+                f" | gnorm {float(grad_norm):.2f}"
+                f" | {human(tok_per_s)} tok/s | {metrics['perf/ms_per_step']:.0f} ms/step"
+            )
+            logger.log(step1, metrics, console=line)
+            last_metrics = metrics
+            running_ce, running_n = 0.0, 0
+
+        if cfg.train.validate_every_steps and (
+            step1 % cfg.train.validate_every_steps == 0 or step1 == cfg.train.max_steps
+        ):
+            val = evaluate(model, val_stream, micro_bs, cfg.train.val_batches, device, dtype)
+            metrics = {"val/ce": val["ce"], "val/ppl": val["ppl"]}
+            line = f"step {step1:>6} | val ce {val['ce']:.4f} | val ppl {val['ppl']:.2f}"
+            if controller.enabled and cfg.sparsity.eval_hard_mask:
+                with controller.hard_mask():
+                    hard = evaluate(
+                        model, val_stream, micro_bs, cfg.train.val_batches, device, dtype
+                    )
+                metrics["val_hard/ce"] = hard["ce"]
+                metrics["val_hard/ppl"] = hard["ppl"]
+                metrics["val_hard/density"] = controller.stats()["sparsity/density_hard"]
+                line += (
+                    f" | hard ce {hard['ce']:.4f} | hard ppl {hard['ppl']:.2f}"
+                    f" | density {metrics['val_hard/density']:.4f}"
+                )
+            metrics.update({f"layer_{k}": v for k, v in controller.layer_densities().items()})
+            logger.log(step1, metrics, console=line)
+            best_val = min(best_val, val["ce"])
+            last_metrics.update(metrics)
+
+        if cfg.train.sample_every_steps and step1 % cfg.train.sample_every_steps == 0:
+            text = sample(model, cfg, device, dtype)
+            if text is not None:
+                print(f"[sample] {text}")
+
+        if cfg.train.checkpoint_every_steps and (
+            step1 % cfg.train.checkpoint_every_steps == 0 or step1 == cfg.train.max_steps
+        ):
+            base = model._orig_mod if hasattr(model, "_orig_mod") else model
+            path = os.path.join(run_dir, f"ckpt_step{step1}.pt")
+            save_checkpoint(path, cfg, base, optimizer, step1, extra={"metrics": last_metrics})
+            save_checkpoint(
+                os.path.join(run_dir, "latest.pt"),
+                cfg,
+                base,
+                optimizer,
+                step1,
+                extra={"metrics": last_metrics},
+            )
+            prune_old_checkpoints(run_dir, cfg.train.keep_last_checkpoints)
+            print(f"[ckpt] saved {path}")
+
+    logger.close()
+    summary = {"best_val_ce": best_val, **last_metrics}
+    with open(os.path.join(run_dir, "summary.json"), "w") as f:
+        json.dump(summary, f, indent=2)
+    return summary
+
+
+def model_params(model, non_embedding: bool = False) -> int:
+    base = model._orig_mod if hasattr(model, "_orig_mod") else model
+    return base.num_parameters(non_embedding=non_embedding)
+
+
+def sample(model, cfg: Config, device, dtype) -> Optional[str]:
+    try:
+        from .tokenizer import build_tokenizer
+
+        tok = build_tokenizer(cfg.data)
+    except Exception as exc:  # pragma: no cover
+        print(f"[sample] skipped ({exc})")
+        return None
+    base = model._orig_mod if hasattr(model, "_orig_mod") else model
+    ids = torch.tensor([tok.encode(cfg.train.sample_prompt)], dtype=torch.long, device=device)
+    with autocast_context(device, dtype):
+        out = base.generate(ids, cfg.train.sample_tokens, temperature=0.8, top_k=50)
+    base.train()
+    return tok.decode(out[0].tolist()).replace("\n", " ")
+
+
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser(description="Train a TinyStories LM with weight sparsity")
+    parser.add_argument("--config", type=str, default=None, help="path to a YAML config")
+    args, overrides = parser.parse_known_args(argv)
+    cfg = load_config(args.config, overrides)
+    train(cfg)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()

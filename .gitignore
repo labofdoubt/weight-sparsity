@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.pytest_cache/
+.ipynb_checkpoints/
+.DS_Store
+.venv/
+venv/
+
+# local artifacts
+data/
+runs/
+checkpoints/
+wandb/
+*.bin
+*.pt
+*.ckpt
+
+# reference papers (see README for arXiv links)
+*.pdf

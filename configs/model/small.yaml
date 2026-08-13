@@ -1,0 +1,7 @@
+# ~25M non-embedding parameters (~51M total with the GPT-Neo vocabulary)
+model:
+  n_layers: 8
+  d_model: 512
+  n_heads: 8
+  mlp_ratio: 4.0
+  max_seq_len: 512
