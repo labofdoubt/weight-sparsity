@@ -359,3 +359,98 @@ def test_supported_dtypes_are_silent(capsys):
     assert resolve_dtype("float32", torch.device("cpu")) is torch.float32
     assert resolve_dtype("bfloat16", torch.device("cpu")) is torch.bfloat16
     assert capsys.readouterr().out == ""
+
+
+def test_sampling_produces_several_distinct_generations(tmp_path, monkeypatch):
+    """sample_count continuations from one prompt, drawn as a single batch."""
+    import wsparse.train as train_mod
+
+    model = build_model(
+        ModelConfig(vocab_size=VOCAB, max_seq_len=32, n_layers=1, d_model=32, n_heads=4)
+    )
+
+    class FakeTok:
+        def encode(self, text):
+            return [1, 2, 3]
+
+        def decode(self, ids):
+            return " ".join(map(str, ids))
+
+    monkeypatch.setattr("wsparse.tokenizer.build_tokenizer", lambda cfg: FakeTok())
+    cfg = Config()
+    cfg.model = model.cfg
+    cfg.train.sample_count = 4
+    cfg.train.sample_tokens = 8
+    texts = train_mod.sample(model, cfg, torch.device("cpu"), torch.float32, step=100)
+    assert len(texts) == 4
+    assert len(set(texts)) > 1, "all four generations were identical"
+    assert model.training  # training mode restored
+
+
+def test_sampling_is_reproducible_for_a_given_step(tmp_path, monkeypatch):
+    """The explicit generator makes samples comparable across runs, rather than
+    depending on how much global RNG the training loop consumed first."""
+    import wsparse.train as train_mod
+
+    class FakeTok:
+        def encode(self, text):
+            return [1, 2, 3]
+
+        def decode(self, ids):
+            return " ".join(map(str, ids))
+
+    monkeypatch.setattr("wsparse.tokenizer.build_tokenizer", lambda cfg: FakeTok())
+    torch.manual_seed(0)
+    model = build_model(
+        ModelConfig(vocab_size=VOCAB, max_seq_len=32, n_layers=1, d_model=32, n_heads=4)
+    )
+    cfg = Config()
+    cfg.model = model.cfg
+    cfg.train.sample_count = 3
+    cfg.train.sample_tokens = 8
+
+    a = train_mod.sample(model, cfg, torch.device("cpu"), torch.float32, step=500)
+    torch.randn(1000)  # disturb the global RNG, as a differing run would
+    b = train_mod.sample(model, cfg, torch.device("cpu"), torch.float32, step=500)
+    assert a == b
+    c = train_mod.sample(model, cfg, torch.device("cpu"), torch.float32, step=1000)
+    assert a != c  # a different step is a different draw
+
+
+def test_samples_reach_the_log_file_and_tensorboard(tmp_path, monkeypatch):
+    pytest.importorskip("tensorboard")
+
+    class FakeTok:
+        def encode(self, text):
+            return [1, 2, 3]
+
+        def decode(self, ids):
+            return " ".join(map(str, ids))
+
+    # patched so the test runs offline and actually exercises the logging path
+    monkeypatch.setattr("wsparse.tokenizer.build_tokenizer", lambda cfg: FakeTok())
+    data_dir = make_fake_dataset(tmp_path)
+    cfg = smoke_config(data_dir, str(tmp_path / "runs_sample"))
+    cfg.train.run_name = "sample_run"
+    cfg.train.tensorboard = True
+    cfg.train.sample_every_steps = 3
+    cfg.train.sample_count = 2
+    cfg.train.sample_tokens = 8
+    train(cfg)
+
+    run_dir = tmp_path / "runs_sample" / "sample_run"
+    body = (run_dir / "samples.txt").read_text()
+    assert "=== step 3" in body and "=== step 6" in body
+    assert body.count("**1.**") == 2 and body.count("**2.**") == 2  # 2 samples, 2 events
+
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    acc = EventAccumulator(str(run_dir / "tb"))
+    acc.Reload()
+    # add_text tags get a /text_summary suffix from TensorBoard
+    assert "samples/text_summary" in acc.Tags()["tensors"]
+    assert "config/text_summary" in acc.Tags()["tensors"]
+    assert [e.step for e in acc.Tensors("samples/text_summary")] == [3, 6]
+    # metrics.jsonl stays numeric-only
+    records = [json.loads(l) for l in open(run_dir / "metrics.jsonl")]
+    assert not any("samples" in r for r in records)

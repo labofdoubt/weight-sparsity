@@ -135,6 +135,7 @@ class TrainConfig:
     sample_every_steps: int = 0  # 0 disables periodic sampling
     sample_prompt: str = "Once upon a time"
     sample_tokens: int = 96
+    sample_count: int = 4  # generations per sampling event, drawn as one batch
 
     # ---- runtime --------------------------------------------------------- #
     seed: int = 1337

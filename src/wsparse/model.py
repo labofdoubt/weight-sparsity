@@ -205,7 +205,10 @@ class TransformerLM(nn.Module):
         max_new_tokens: int,
         temperature: float = 1.0,
         top_k: Optional[int] = 50,
+        generator: Optional[torch.Generator] = None,
     ) -> torch.Tensor:
+        """``generator`` makes sampling reproducible independently of how much
+        global RNG the training loop happens to have consumed."""
         self.eval()
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.cfg.max_seq_len :]
@@ -220,7 +223,7 @@ class TransformerLM(nn.Module):
                     kth = torch.topk(logits, k, dim=-1).values[:, -1:]
                     logits = logits.masked_fill(logits < kth, float("-inf"))
                 probs = F.softmax(logits, dim=-1)
-                next_id = torch.multinomial(probs, num_samples=1)
+                next_id = torch.multinomial(probs, num_samples=1, generator=generator)
             idx = torch.cat([idx, next_id], dim=1)
         return idx
 

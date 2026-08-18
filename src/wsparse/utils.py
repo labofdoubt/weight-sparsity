@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import math
 import os
@@ -103,6 +104,7 @@ class Logger:
         self.dir = os.path.join(out_dir, run_name)
         os.makedirs(self.dir, exist_ok=True)
         self.jsonl_path = os.path.join(self.dir, "metrics.jsonl")
+        self.samples_path = os.path.join(self.dir, "samples.txt")
         self.start = time.time()
         self.tb = None
         if tensorboard:
@@ -148,6 +150,24 @@ class Logger:
             self.wandb.log(metrics, step=step)
         if console:
             print(console, flush=True)
+
+    def log_text(self, step: int, tag: str, text: str) -> None:
+        """Free text (generated samples) to samples.txt, TensorBoard and wandb.
+
+        Kept out of ``log`` because ``metrics.jsonl`` and the TensorBoard scalar
+        path are numeric-only.
+        """
+        with open(self.samples_path, "a") as f:
+            f.write(f"=== step {step} [{tag}]\n{text}\n\n")
+        if self.tb is not None:
+            self.tb.add_text(tag, text, step)
+        if self.wandb is not None:  # pragma: no cover - optional dependency
+            try:
+                self.wandb.log(
+                    {tag: self.wandb.Html(f"<pre>{html.escape(text)}</pre>")}, step=step
+                )
+            except Exception:
+                pass
 
     def close(self) -> None:
         if self.tb is not None:

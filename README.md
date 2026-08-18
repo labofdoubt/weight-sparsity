@@ -106,6 +106,13 @@ pip install tensorboard          # or: pip install -e .[logging]
 tensorboard --logdir runs
 ```
 
+Generated samples are text, not scalars, so they go to `runs/<run_name>/samples.txt`
+and to TensorBoard's TEXT tab (and wandb) rather than into `metrics.jsonl`.
+`sample_count` continuations are drawn per event as one batch, from a generator
+seeded on `train.seed + step` — without that, sampling would draw from the
+global RNG, whose state depends on everything the run consumed beforehand, so
+samples would not be comparable across runs once any dropout is enabled.
+
 
 | metric | meaning |
 | --- | --- |

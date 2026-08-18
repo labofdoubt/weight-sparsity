@@ -11,7 +11,7 @@ import json
 import math
 import os
 import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 
@@ -330,9 +330,15 @@ def train(cfg: Config) -> Dict[str, float]:
             last_metrics.update(metrics)
 
         if cfg.train.sample_every_steps and step1 % cfg.train.sample_every_steps == 0:
-            text = sample(model, cfg, device, dtype)
-            if text is not None:
-                print(f"[sample] {text}")
+            texts = sample(model, cfg, device, dtype, step=step1)
+            if texts:
+                for i, text in enumerate(texts, 1):
+                    print(f"[sample {i}/{len(texts)}] {text}")
+                logger.log_text(
+                    step1,
+                    "samples",
+                    "\n\n".join(f"**{i}.** {t}" for i, t in enumerate(texts, 1)),
+                )
 
         if cfg.train.checkpoint_every_steps and (
             step1 % cfg.train.checkpoint_every_steps == 0 or step1 == cfg.train.max_steps
@@ -363,7 +369,24 @@ def model_params(model, non_embedding: bool = False) -> int:
     return base.num_parameters(non_embedding=non_embedding)
 
 
-def sample(model, cfg: Config, device, dtype) -> Optional[str]:
+def sampling_generator(device: torch.device, seed: int) -> Optional[torch.Generator]:
+    """A dedicated RNG for sampling, so the samples are comparable across runs.
+
+    Without it, generation draws from the global RNG, whose state at step N
+    depends on everything the run happened to consume beforehand -- with
+    ``dropout: 0.0`` nothing in the training loop touches it, so samples do line
+    up across runs, but that is an accident that any non-zero dropout breaks.
+    """
+    try:
+        gen = torch.Generator(device=device)
+        gen.manual_seed(int(seed))
+        return gen
+    except Exception:  # pragma: no cover - some backends have no device RNG
+        return None
+
+
+def sample(model, cfg: Config, device, dtype, step: int = 0) -> Optional[List[str]]:
+    """``sample_count`` continuations of ``sample_prompt``, drawn as one batch."""
     try:
         from .tokenizer import build_tokenizer
 
@@ -372,11 +395,19 @@ def sample(model, cfg: Config, device, dtype) -> Optional[str]:
         print(f"[sample] skipped ({exc})")
         return None
     base = model._orig_mod if hasattr(model, "_orig_mod") else model
-    ids = torch.tensor([tok.encode(cfg.train.sample_prompt)], dtype=torch.long, device=device)
+    count = max(1, int(cfg.train.sample_count))
+    prompt = torch.tensor(tok.encode(cfg.train.sample_prompt), dtype=torch.long, device=device)
+    ids = prompt.unsqueeze(0).expand(count, -1).contiguous()
     with autocast_context(device, dtype):
-        out = base.generate(ids, cfg.train.sample_tokens, temperature=0.8, top_k=50)
+        out = base.generate(
+            ids,
+            cfg.train.sample_tokens,
+            temperature=0.8,
+            top_k=50,
+            generator=sampling_generator(device, cfg.train.seed + step),
+        )
     base.train()
-    return tok.decode(out[0].tolist()).replace("\n", " ")
+    return [tok.decode(row.tolist()).replace("\n", " ") for row in out]
 
 
 def main(argv=None) -> None:
