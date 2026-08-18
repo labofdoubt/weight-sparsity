@@ -1,0 +1,7 @@
+# ~82M parameters with the 50257-token GPT-Neo vocabulary
+# (49.2M in the transformer body, 32.5M in the embeddings).
+model:
+  n_layers: 10
+  d_model: 640
+  n_heads: 10
+  mlp_ratio: 4.0

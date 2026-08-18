@@ -14,6 +14,7 @@ from ..config import SparsityConfig
 from ..model import MLP, CausalSelfAttention
 from .masks import CSLinear, LTPLinear, SparseLinear, hard_mask_mode, make_sparse_linear
 from .schedules import BetaSchedule, build_beta_schedule
+from .topk import TopKSoftGateLinear
 
 _TARGET_PARENTS = {"mlp": MLP, "attn": CausalSelfAttention}
 
@@ -66,13 +67,7 @@ class SparsityController:
                 f"sparsity is enabled but no layers matched targets={cfg.targets}"
             )
         for parent, attr, full_name, linear in replacements:
-            sparse = make_sparse_linear(
-                linear,
-                method=cfg.method,
-                threshold_init=cfg.threshold_init,
-                s_init=cfg.s_init,
-                grad_through_mask=cfg.grad_through_mask,
-            )
+            sparse = make_sparse_linear(linear, cfg)
             setattr(parent, attr, sparse)
             self.layers.append((full_name, sparse))
 
@@ -132,7 +127,10 @@ class SparsityController:
         cfg = self.cfg
         need_l0 = cfg.l0_coef != 0.0
         need_target = cfg.target_density_coef != 0.0
-        if not (need_l0 or need_target):
+        # method-specific penalties (the topk soft-L0 over Top-(k+j))
+        extra = (layer.extra_penalty() for _, layer in self.layers)
+        extra_terms = [t for t in extra if t is not None]
+        if not (need_l0 or need_target or extra_terms):
             return zero, {}
 
         l0_total = zero
@@ -154,6 +152,10 @@ class SparsityController:
             term = torch.stack(target_terms).mean()
             loss = loss + cfg.target_density_coef * term
             logs["sparsity/target_penalty"] = float(cfg.target_density_coef * term.detach())
+        if extra_terms:
+            term = torch.stack(extra_terms).sum()
+            loss = loss + term
+            logs["sparsity/soft_l0_penalty"] = float(term.detach())
         logs["sparsity/density_soft"] = float(l0_total.detach()) / self.total_maskable
         return loss, logs
 
@@ -166,6 +168,8 @@ class SparsityController:
         hard = 0.0
         transition = []
         mask_values = []
+        topk_stats: Dict[str, List[float]] = {}
+        topk_budget = 0
         out: Dict[str, float] = {}
         for name, layer in self.layers:
             l0 = float(layer.soft_l0())
@@ -175,6 +179,10 @@ class SparsityController:
             transition.append(float(layer.transition_fraction()))
             if isinstance(layer, LTPLinear):
                 mask_values.append(float(layer.threshold))
+            elif isinstance(layer, TopKSoftGateLinear):
+                topk_budget += layer.topk_numel
+                for key, value in layer.stats().items():
+                    topk_stats.setdefault(key, []).append(float(value))
             elif isinstance(layer, CSLinear):
                 mask_values.append(float(layer.s.mean()))
             if per_layer:
@@ -188,6 +196,11 @@ class SparsityController:
         if mask_values:
             key = "sparsity/threshold_mean" if self.cfg.method == "ltp" else "sparsity/s_mean"
             out[key] = sum(mask_values) / len(mask_values)
+        for key, values in topk_stats.items():
+            out[f"sparsity/{key}"] = sum(values) / len(values)
+        if topk_budget:
+            # the hard FLOP budget: |A| / N, which soft gating can only undershoot
+            out["sparsity/density_topk"] = topk_budget / total
         out["sparsity/maskable_params"] = float(total)
         out["sparsity/pruned_params"] = float(total - hard)
         return out

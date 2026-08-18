@@ -1,0 +1,50 @@
+# Activation bottleneck: hard TopK/AbsTopK in front of the MLP, with a LapSum
+# Top(K+J) surrogate gradient.  Separate experiment from weight sparsity --
+# enabling both at once is a config error.
+#
+#   x_mlp -> W_in -> TopK(K of N) -> W_out -> MLP
+#
+# K     features are active in the forward pass (a hard FLOP budget)
+# K+J   features are eligible for the backward boundary-exchange surrogate
+# n_eff how concentrated that surrogate is *within* the candidate pool
+#
+# These are three independent knobs: J is not n_eff.  Below, 12.5% of features
+# are active, 50% are eligible for gradient, and the boundary exchange behaves
+# as though ~32 of them participate substantially.
+sparsity:
+  enabled: false          # mutually exclusive with the bottleneck
+
+activation_bottleneck:
+  enabled: true
+
+  layers: all             # all | even | odd | first:n | last:n | [0, 2, 4]
+  placement: pre_mlp
+
+  n_features: 2048        # N
+  k: 256                  # K
+  j: 768                  # J
+  n_eff: 32.0             # target effective boundary participants
+
+  selection_mode: abs_topk        # topk | abs_topk
+  effective_count_metric: ess     # ess | entropy
+  boundary_mode: outside_only     # outside_only | both_sides
+  # outside_only only.  score_softmax is the cheap decoupled approximation
+  # (q = softmax(r/t) over the inactive tail; the barrier cancels, so t solves
+  # without any barrier solve).  It equals the normalised LapSum gradient
+  # weights only while r_{K+1} < b -- watch bottleneck/frac_above_barrier and
+  # bottleneck/n_eff_gap to see whether that bites.  true_gradient calibrates on
+  # the actual kappa weights instead and solves (b, log t) jointly.
+  one_sided_weight_mode: score_softmax   # score_softmax | true_gradient
+
+  surrogate_mode: lapsum_adaptive # lapsum_adaptive | lapsum_fixed | hard
+  surrogate_grad_scale: 1.0
+  fixed_temperature: 1.0          # only for surrogate_mode: lapsum_fixed
+
+  temperature_solver_tol: 1.0e-5
+  temperature_solver_max_iters: 12
+  barrier_solver_tol: 1.0e-6
+
+  solver_dtype: float32
+  log_diagnostics: true
+  bias: true
+  hard_inference: true            # skip the LapSum machinery outside training

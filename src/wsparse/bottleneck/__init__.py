@@ -1,0 +1,60 @@
+from .controller import (
+    ActivationBottleneckController,
+    apply_activation_bottleneck,
+    resolve_layers,
+)
+from .gate import AdaptiveLapSumTopKGate, validate_gate_shapes
+from .lapsum import (
+    lapsum_barrier_bisect,
+    lapsum_barrier_sorted,
+    lapsum_budget,
+    lapsum_probs,
+    lapsum_probs_at,
+    laplace_cdf,
+    laplace_pdf,
+)
+from .module import SparseTopKBottleneck
+from .temperature import (
+    STATUS_ABOVE_RANGE,
+    STATUS_BELOW_RANGE,
+    STATUS_DEGENERATE,
+    STATUS_NAMES,
+    STATUS_OK,
+    effective_count,
+    gradient_count,
+    gradient_weights,
+    score_softmax_count,
+    solve_joint_temperature,
+    solve_reference_temperature,
+    solve_score_softmax_temperature,
+    status_fractions,
+)
+
+__all__ = [
+    "ActivationBottleneckController",
+    "apply_activation_bottleneck",
+    "resolve_layers",
+    "SparseTopKBottleneck",
+    "AdaptiveLapSumTopKGate",
+    "validate_gate_shapes",
+    "laplace_cdf",
+    "laplace_pdf",
+    "lapsum_probs",
+    "lapsum_probs_at",
+    "lapsum_budget",
+    "lapsum_barrier_sorted",
+    "lapsum_barrier_bisect",
+    "effective_count",
+    "score_softmax_count",
+    "gradient_count",
+    "gradient_weights",
+    "solve_score_softmax_temperature",
+    "solve_joint_temperature",
+    "solve_reference_temperature",
+    "status_fractions",
+    "STATUS_OK",
+    "STATUS_BELOW_RANGE",
+    "STATUS_ABOVE_RANGE",
+    "STATUS_DEGENERATE",
+    "STATUS_NAMES",
+]

@@ -1,0 +1,7 @@
+_base_:
+  - model/small.yaml
+  - train/default.yaml
+  - bottleneck/base.yaml
+
+train:
+  run_name: bottleneck_small

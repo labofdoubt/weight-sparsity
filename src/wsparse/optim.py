@@ -4,9 +4,11 @@ Three parameter groups:
 
 1. ``decay``  -- every >= 2D model weight (matmuls, embeddings): weight decay on.
 2. ``nodecay`` -- 1D/0D parameters (RMSNorm gains, any biases): weight decay off.
-3. ``mask``   -- the sparsity parameters (``tau`` for LTP, ``s`` for CS): their
-   own learning rate ``sparsity.mask_lr``, no weight decay, and no LR schedule
-   (the inverse-temperature schedule already governs their effective scale).
+3. ``mask``   -- the sparsity parameters (``tau`` for LTP, ``s`` for CS/TopK):
+   their own learning rate ``sparsity.mask_lr``, no weight decay, and no LR
+   schedule (the inverse-temperature schedule already governs their effective
+   scale).  Setting ``sparsity.mask_lr_mult`` instead pins that lr to a
+   multiple of the weight lr, in which case it *does* follow the LR schedule.
 """
 
 from __future__ import annotations
@@ -46,11 +48,13 @@ def build_optimizer(
     ]
     if mask:
         mask_lr = sparsity_cfg.mask_lr if sparsity_cfg is not None else train_cfg.lr
+        lr_mult = sparsity_cfg.mask_lr_mult if sparsity_cfg is not None else None
         groups.append(
             {
                 "params": mask,
                 "weight_decay": 0.0,
-                "lr": mask_lr,
+                "lr": mask_lr if lr_mult is None else lr_mult * train_cfg.lr,
+                "lr_mult": lr_mult,
                 "name": "mask",
                 "is_mask": True,
             }
@@ -83,9 +87,15 @@ def lr_at(step: int, cfg: TrainConfig) -> float:
 
 
 def set_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
-    """Apply ``lr`` to every non-mask group (mask groups keep their own lr)."""
+    """Apply ``lr`` to every non-mask group.
+
+    A mask group keeps its own fixed lr, unless it was built with an
+    ``lr_mult``, in which case it tracks ``lr_mult * lr``.
+    """
     for group in optimizer.param_groups:
-        if not group.get("is_mask", False):
+        if group.get("lr_mult") is not None:
+            group["lr"] = lr * group["lr_mult"]
+        elif not group.get("is_mask", False):
             group["lr"] = lr
 
 

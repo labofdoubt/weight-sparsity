@@ -1,0 +1,16 @@
+# Setup 2 of 3: hard TopK activation bottleneck, ordinary hard-mask backward.
+#
+# Identical architecture, parameters and forward pass to bn_lapsum.yaml -- the
+# ONLY difference is that the J inactive candidates receive no gradient at all.
+# That makes 2-vs-3 a controlled test of the surrogate, while 1-vs-2 measures
+# what the bottleneck itself costs.
+_base_:
+  - model/mid80.yaml
+  - train/default.yaml
+  - bottleneck/base.yaml
+
+train:
+  run_name: bn_hard
+
+activation_bottleneck:
+  surrogate_mode: hard

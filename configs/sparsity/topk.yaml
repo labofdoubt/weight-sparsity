@@ -1,0 +1,56 @@
+# TopK + soft gate.
+#
+#   forward :  w~ = 1[(i,j) in TopK_k(s)] * w * sigmoid(beta * s)
+#   backward:  dL/dw = M_{k+j} * p * G
+#              dL/ds = M_{k+j} * (G * w + Lambda) * beta * p * (1 - p)
+#
+# The forward support is exactly the top k scores per group (a hard FLOP
+# budget), while the backward support is the top k+j: the extra j candidates
+# per group contribute nothing to the forward pass but do accumulate w- and
+# s-gradients, so they can climb into TopK on a later step -- all from a single
+# forward/backward pass.
+#
+# k = 0.1 keeps 10% of every masked tensor; j = 0.05 lets another 5% explore.
+# (Both accept a fraction of the group, as here, or an absolute count >= 1.)
+#
+# Scale note: z = s here, like CS, but s is initialised from |w| through
+# s_init_mode=magnitude, scaled so that its per-group std is ~s_init.  With
+# beta = 4 the gates start spread over most of (0, 1) and anneal towards
+# binary; raising beta_end past ~1e3 concentrates beta*p*(1-p) so tightly
+# around s = 0 that the scores stop moving at all.
+sparsity:
+  enabled: true
+  method: topk
+  targets: [mlp]
+
+  k: 0.1                       # active weights per group (fraction, or a count)
+  j: 0.05                      # extra exploratory positions per group
+  topk_groups: tensor          # tensor | row | block
+  topk_block_size: 4           # groups=block, k=2 -> 2:4 structured sparsity
+  w_grad_support: topk_j       # topk_j | topk (restrict w gradients to TopK)
+  topk_track_turnover: true
+
+  # inverse temperature: a constant beta_0, or an annealed beta(t)
+  inverse_temperature: 4.0
+  inverse_temperature_schedule: exponential   # null -> constant beta
+  beta_end: 200.0
+  beta_warmup_steps: 0
+  beta_anneal_steps: null
+  beta_power: 2.0
+
+  s_init: 1.0
+  s_init_mode: magnitude       # constant | uniform | normal | magnitude
+  mask_lr: 1.0e-2
+  mask_lr_mult: null           # e.g. 10.0 -> mask lr = 10 * train.lr, scheduled
+  mask_grad_clip: 1.0          # dL/ds carries a factor beta, so clip it apart
+
+  # soft L0 over the Top-(k+j) support only.  Not normalised: these are
+  # per-weight coefficients, so they sit on the l0_coef / maskable-count scale.
+  soft_l0_enabled: false
+  soft_l0_lambda_topk: 1.0e-7
+  soft_l0_lambda_explore: 0.0
+
+  l0_coef: 0.0                 # the shared penalty; for topk it acts on TopK only
+  l0_normalize: true
+
+  eval_hard_mask: true

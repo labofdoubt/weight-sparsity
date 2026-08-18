@@ -1,0 +1,19 @@
+# TopK + soft gate with the soft-L0 penalty switched on.
+#
+# The TopK budget is unchanged (k stays the hard FLOP cost), but the penalty
+# lets the gates inside TopK collapse towards 0 where they are not worth their
+# slot -- the soft/hard density gap in the logs is what that looks like.
+# lambda_explore > 0 additionally taxes the j candidates so exploration has to
+# earn its place; leave it at 0 to let them roam freely.
+_base_:
+  - model/small.yaml
+  - train/default.yaml
+  - sparsity/topk.yaml
+
+train:
+  run_name: topk_soft_l0_small
+
+sparsity:
+  soft_l0_enabled: true
+  soft_l0_lambda_topk: 1.0e-7
+  soft_l0_lambda_explore: 1.0e-8

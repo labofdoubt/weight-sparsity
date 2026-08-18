@@ -1,0 +1,13 @@
+# ~152M parameters, TopK + soft gate on the MLP weights.
+# Like CS, this stores one extra float per masked weight (plus its AdamW state).
+_base_:
+  - model/large.yaml
+  - train/default.yaml
+  - sparsity/topk.yaml
+
+train:
+  run_name: topk_150m
+  batch_size: 128
+  micro_batch_size: 16
+  max_steps: 40000
+  lr: 4.0e-4

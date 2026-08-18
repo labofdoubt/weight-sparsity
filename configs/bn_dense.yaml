@@ -1,0 +1,14 @@
+# Setup 1 of 3: the standard transformer, no bottleneck.
+# Reference point for the two bottlenecked runs.
+_base_:
+  - model/mid80.yaml
+  - train/default.yaml
+
+train:
+  run_name: bn_dense
+
+sparsity:
+  enabled: false
+
+activation_bottleneck:
+  enabled: false

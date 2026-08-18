@@ -1,0 +1,7 @@
+# Baseline: hard TopK with an ordinary hard-mask backward (no surrogate at all).
+# The J candidates receive nothing; only the K selected values get gradient.
+_base_: base.yaml
+
+activation_bottleneck:
+  selection_mode: topk
+  surrogate_mode: hard

@@ -1,6 +1,6 @@
 """Soft-masked linear layers.
 
-Two masking parameterisations, both of the form ``v = w * m`` with
+Two masking parameterisations of the form ``v = w * m`` with
 ``m = sigmoid(beta * z)``:
 
 ``LTPLinear``  (Learned Threshold Pruning, arXiv:2003.00075)
@@ -15,6 +15,10 @@ Two masking parameterisations, both of the form ``v = w * m`` with
 The smooth L0 of a layer is ``sum(m)`` in both cases -- for LTP this is eq. (6)
 of that paper, for CS it is ``||sigmoid(beta * s)||_1`` from eq. (4).
 
+A third method, ``TopKSoftGateLinear`` (``topk.py``), keeps the same interface
+but its forward support is a hard TopK over ``s`` rather than a threshold on
+``z``, and its backward support is deliberately wider than its forward support.
+
 Masks are always computed in float32 (``beta`` is often >= 1e4 and ``w**2`` is
 ~1e-4, so bf16 would be hopeless), and cast back to the weight dtype.
 """
@@ -26,6 +30,8 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from ..config import SparsityConfig
 
 
 class SparseLinear(nn.Module):
@@ -51,12 +57,23 @@ class SparseLinear(nn.Module):
         """The parameters that define the mask (trained with ``mask_lr``)."""
         raise NotImplementedError
 
+    def extra_penalty(self) -> Optional[torch.Tensor]:
+        """A method-specific sparsity penalty, or ``None`` if there is none.
+
+        Added to the loss by the controller on top of the shared ``l0_coef`` /
+        ``target_density_coef`` terms.
+        """
+        return None
+
     # ---- shared ----------------------------------------------------------- #
+    def hard_mask_tensor(self) -> torch.Tensor:
+        """The binary mask the soft one anneals to as ``beta -> inf``."""
+        return (self.logits() > 0).to(torch.float32)
+
     def mask(self) -> torch.Tensor:
-        z = self.logits()
         if self.hard_mask:
-            return (z > 0).to(torch.float32)
-        return torch.sigmoid(self.beta * z)
+            return self.hard_mask_tensor()
+        return torch.sigmoid(self.beta * self.logits())
 
     def effective_weight(self) -> torch.Tensor:
         return self.weight * self.mask().to(self.weight.dtype)
@@ -92,13 +109,13 @@ class SparseLinear(nn.Module):
     @torch.no_grad()
     def apply_hard_mask_(self) -> None:
         """Permanently zero out the pruned weights (for export/eval)."""
-        self.weight.mul_((self.logits() > 0).to(self.weight.dtype))
+        self.weight.mul_(self.hard_mask_tensor().to(self.weight.dtype))
 
     def to_linear(self) -> nn.Linear:
         """Materialise a dense ``nn.Linear`` holding the hard-pruned weights."""
         linear = nn.Linear(self.in_features, self.out_features, bias=self.bias is not None)
         with torch.no_grad():
-            linear.weight.copy_(self.weight * (self.logits() > 0).to(self.weight.dtype))
+            linear.weight.copy_(self.weight * self.hard_mask_tensor().to(self.weight.dtype))
             if self.bias is not None:
                 linear.bias.copy_(self.bias)
         return linear
@@ -162,18 +179,35 @@ class CSLinear(SparseLinear):
         )
 
 
-def make_sparse_linear(
-    linear: nn.Linear,
-    method: str,
-    threshold_init: float = 0.0,
-    s_init: float = 0.05,
-    grad_through_mask: bool = True,
-) -> SparseLinear:
-    if method == "ltp":
-        return LTPLinear(linear, threshold_init=threshold_init, grad_through_mask=grad_through_mask)
-    if method == "cs":
-        return CSLinear(linear, s_init=s_init)
-    raise ValueError(f"unknown sparsity method: {method}")
+def make_sparse_linear(linear: nn.Linear, cfg: SparsityConfig) -> SparseLinear:
+    """Wrap ``linear`` in the masked layer selected by ``cfg.method``."""
+    if cfg.method == "ltp":
+        return LTPLinear(
+            linear,
+            threshold_init=cfg.threshold_init,
+            grad_through_mask=cfg.grad_through_mask,
+        )
+    if cfg.method == "cs":
+        return CSLinear(linear, s_init=cfg.s_init)
+    if cfg.method == "topk":
+        # imported here: topk.py needs SparseLinear from this module
+        from .topk import TopKSoftGateLinear
+
+        return TopKSoftGateLinear(
+            linear,
+            k=cfg.k,
+            j=cfg.j,
+            s_init=cfg.s_init,
+            s_init_mode=cfg.s_init_mode,
+            groups=cfg.topk_groups,
+            block_size=cfg.topk_block_size,
+            w_grad_support=cfg.w_grad_support,
+            soft_l0_enabled=cfg.soft_l0_enabled,
+            soft_l0_lambda_topk=cfg.soft_l0_lambda_topk,
+            soft_l0_lambda_explore=cfg.soft_l0_lambda_explore,
+            track_turnover=cfg.topk_track_turnover,
+        )
+    raise ValueError(f"unknown sparsity method: {cfg.method}")
 
 
 class hard_mask_mode:

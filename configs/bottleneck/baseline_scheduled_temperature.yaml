@@ -1,0 +1,10 @@
+# Baseline: LapSum with a scheduled temperature, no n_eff calibration.
+# Isolates what the adaptive root-find buys over simply annealing t.
+_base_: base.yaml
+
+activation_bottleneck:
+  surrogate_mode: lapsum_scheduled
+  temperature_schedule: exponential
+  temperature_start: 0.5
+  temperature_end: 0.02
+  temperature_scale_mode: relative

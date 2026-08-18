@@ -1,0 +1,29 @@
+# Setup 4: the same hard TopK bottleneck with a *prescribed* LapSum temperature
+# instead of one calibrated from n_eff each step.
+#
+# The ablation for the adaptive machinery: same forward, same parameters, and a
+# temperature that follows a schedule rather than a root-find.  Set
+# temperature_schedule: constant to hold it fixed.
+#
+# temperature_scale_mode: relative multiplies the schedule by the per-row std of
+# the Top-(K+J) scores, so the value below IS the bottleneck/temperature_rel
+# that gets logged.  With absolute, the same number means something different
+# at every point in training as the activation scale drifts -- measured: a 100x
+# rescale of the activations swings the realised N_eff from 189 to 5.9.
+_base_:
+  - model/mid80.yaml
+  - train/default.yaml
+  - bottleneck/base.yaml
+
+train:
+  run_name: bn_sched
+
+activation_bottleneck:
+  surrogate_mode: lapsum_scheduled
+  temperature_schedule: exponential   # constant | linear | exponential | cosine | polynomial
+  temperature_start: 0.5              # broad boundary gradient early
+  temperature_end: 0.02               # sharp late
+  temperature_warmup_steps: 0
+  temperature_anneal_steps: null      # null -> anneal over the rest of training
+  temperature_power: 2.0
+  temperature_scale_mode: relative    # relative | absolute

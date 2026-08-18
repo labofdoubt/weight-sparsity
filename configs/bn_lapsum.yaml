@@ -1,0 +1,19 @@
+# Setup 3 of 3: the same hard TopK bottleneck, with the adaptive LapSum
+# Top-(K+J) surrogate gradient.
+#
+# Forward is bit-identical to bn_hard.yaml.  The difference is entirely in the
+# backward: the J candidates just outside TopK receive a boundary-exchange
+# gradient whose bandwidth is re-solved each step from n_eff.
+_base_:
+  - model/mid80.yaml
+  - train/default.yaml
+  - bottleneck/base.yaml
+
+train:
+  run_name: bn_lapsum
+
+activation_bottleneck:
+  surrogate_mode: lapsum_adaptive
+  boundary_mode: outside_only
+  one_sided_weight_mode: score_softmax
+  effective_count_metric: ess

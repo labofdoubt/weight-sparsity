@@ -1,0 +1,12 @@
+# Baseline: LapSum surrogate at a *fixed* temperature -- no adaptive bandwidth,
+# no temperature solve.  Isolates what the n_eff calibration is actually buying.
+# fixed_temperature is in raw score units and is never rescaled, so it must be
+# re-tuned whenever the activation scale changes; that is the whole point of the
+# adaptive path.  For a fixed temperature that tracks the score scale, use
+# surrogate_mode: lapsum_scheduled with temperature_schedule: constant and
+# temperature_scale_mode: relative.
+_base_: base.yaml
+
+activation_bottleneck:
+  surrogate_mode: lapsum_fixed
+  fixed_temperature: 0.05

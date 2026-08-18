@@ -1,0 +1,6 @@
+# Baseline: hard AbsTopK with an ordinary hard-mask backward.
+_base_: base.yaml
+
+activation_bottleneck:
+  selection_mode: abs_topk
+  surrogate_mode: hard

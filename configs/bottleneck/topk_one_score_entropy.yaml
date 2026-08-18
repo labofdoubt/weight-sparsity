@@ -1,0 +1,8 @@
+# topk + one-sided entropy calibration, cheap score-softmax approximation
+_base_: base.yaml
+
+activation_bottleneck:
+  selection_mode: topk
+  boundary_mode: outside_only
+  one_sided_weight_mode: score_softmax
+  effective_count_metric: entropy

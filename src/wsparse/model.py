@@ -93,10 +93,15 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(cfg)
         self.norm2 = RMSNorm(cfg.d_model, cfg.norm_eps)
         self.mlp = MLP(cfg)
+        # Insertion point for the activation bottleneck: it wraps the tensor
+        # that is fed to the MLP, *not* the residual stream.  Identity by
+        # default, and Identity holds no parameters or buffers, so state_dicts
+        # and parameter counts are unchanged when the experiment is off.
+        self.mlp_bottleneck = nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.norm1(x))
-        x = x + self.mlp(self.norm2(x))
+        x = x + self.mlp(self.mlp_bottleneck(self.norm2(x)))
         return x
 
 

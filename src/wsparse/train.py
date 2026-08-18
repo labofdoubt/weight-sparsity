@@ -19,6 +19,7 @@ from .config import Config, config_from_dict, load_config
 from .data import build_streams, load_meta
 from .model import build_model
 from .optim import build_optimizer, count_parameter_groups, lr_at, set_lr
+from .bottleneck import ActivationBottleneckController, apply_activation_bottleneck
 from .sparsity import SparsityController, apply_sparsity
 from .utils import Logger, autocast_context, human, resolve_device, resolve_dtype, set_seed
 
@@ -90,6 +91,9 @@ def load_for_inference(path: str, device: str = "cpu") -> Tuple[torch.nn.Module,
     cfg = config_from_dict(payload["config"])
     model = build_model(cfg.model)
     controller = apply_sparsity(model, cfg.sparsity, max_steps=cfg.train.max_steps)
+    apply_activation_bottleneck(
+        model, cfg.activation_bottleneck, max_steps=cfg.train.max_steps
+    )
     model.load_state_dict(payload["model"])
     model.to(device)
     controller.set_step(payload.get("step", cfg.train.max_steps))
@@ -114,7 +118,10 @@ def train(cfg: Config) -> Dict[str, float]:
 
     model = build_model(cfg.model).to(device)
     controller = apply_sparsity(model, cfg.sparsity, max_steps=cfg.train.max_steps)
-    model.to(device)  # sparsity parameters created on cpu -> move again
+    bottleneck = apply_activation_bottleneck(
+        model, cfg.activation_bottleneck, max_steps=cfg.train.max_steps
+    )
+    model.to(device)  # sparsity / bottleneck parameters created on cpu -> move again
 
     optimizer = build_optimizer(
         model, cfg.train, cfg.sparsity, mask_param_ids=controller.mask_parameter_ids()
@@ -122,9 +129,13 @@ def train(cfg: Config) -> Dict[str, float]:
     # Sparsity parameters are clipped separately: dL/dtau sums over every weight
     # in the layer, so a shared global norm would let it squash the weight
     # gradients (LTP section 4.1 makes the same point about its magnitude).
+    # sparsity.mask_grad_clip gives them their own threshold, which matters at
+    # large beta -- dL/ds carries a factor beta*p*(1-p).
     mask_params = controller.mask_parameters()
     mask_ids = controller.mask_parameter_ids()
     weight_params = [p for p in model.parameters() if id(p) not in mask_ids]
+    mask_clip = cfg.sparsity.mask_grad_clip
+    mask_clip = cfg.train.grad_clip if mask_clip is None else float(mask_clip)
 
     run_dir = os.path.join(cfg.train.out_dir, cfg.train.run_name)
     logger = Logger(
@@ -133,6 +144,7 @@ def train(cfg: Config) -> Dict[str, float]:
         config=cfg.to_dict(),
         wandb_project=cfg.train.wandb_project,
         wandb_entity=cfg.train.wandb_entity,
+        tensorboard=cfg.train.tensorboard,
     )
     cfg.dump(os.path.join(run_dir, "config.yaml"))
 
@@ -170,6 +182,25 @@ def train(cfg: Config) -> Dict[str, float]:
             f"beta {cfg.sparsity.beta_start:g} -> {cfg.sparsity.beta_end:g} "
             f"({cfg.sparsity.beta_schedule})"
         )
+        if cfg.sparsity.method == "topk":
+            first = controller.layers[0][1]
+            print(
+                f"[train] topk: k={first.k} j={first.j} per group "
+                f"(groups={cfg.sparsity.topk_groups}), forward density "
+                f"{controller.stats()['sparsity/density_topk']:.4f}, "
+                f"w grad on {'topk+j' if first.w_grad_explore else 'topk'}"
+            )
+
+    if bottleneck.enabled:
+        cb = cfg.activation_bottleneck
+        print(
+            f"[train] activation bottleneck: {len(bottleneck.layers)} layers "
+            f"({cfg.activation_bottleneck.layers}) {cb.placement} "
+            f"N={cb.n_features} K={cb.k} J={cb.j} n_eff={cb.n_eff:g} "
+            f"({cb.selection_mode}, {cb.boundary_mode}, {cb.effective_count_metric}, "
+            f"{cb.surrogate_mode}) density={cb.k / cb.n_features:.3f} "
+            f"params={human(bottleneck.n_parameters)}"
+        )
 
     model.train()
     t0 = time.time()
@@ -181,6 +212,7 @@ def train(cfg: Config) -> Dict[str, float]:
         lr = lr_at(step, cfg.train)
         set_lr(optimizer, lr)
         controller.set_step(step)
+        bottleneck.set_step(step)
 
         optimizer.zero_grad(set_to_none=True)
         ce_sum = 0.0
@@ -198,15 +230,13 @@ def train(cfg: Config) -> Dict[str, float]:
             scaler.scale(penalty).backward()
 
         mask_grad_norm = 0.0
-        if cfg.train.grad_clip > 0:
+        grad_norm = torch.tensor(0.0)
+        if cfg.train.grad_clip > 0 or (mask_params and mask_clip > 0):
             scaler.unscale_(optimizer)
-            grad_norm = torch.nn.utils.clip_grad_norm_(weight_params, cfg.train.grad_clip)
-            if mask_params:
-                mask_grad_norm = float(
-                    torch.nn.utils.clip_grad_norm_(mask_params, cfg.train.grad_clip)
-                )
-        else:
-            grad_norm = torch.tensor(0.0)
+            if cfg.train.grad_clip > 0:
+                grad_norm = torch.nn.utils.clip_grad_norm_(weight_params, cfg.train.grad_clip)
+            if mask_params and mask_clip > 0:
+                mask_grad_norm = float(torch.nn.utils.clip_grad_norm_(mask_params, mask_clip))
         scaler.step(optimizer)
         scaler.update()
 
@@ -231,6 +261,8 @@ def train(cfg: Config) -> Dict[str, float]:
             metrics.update(penalty_logs)
             sp = controller.stats()
             metrics.update(sp)
+            bn = bottleneck.stats()
+            metrics.update(bn)
             if mask_params:
                 metrics["sparsity/mask_grad_norm"] = mask_grad_norm
             metrics["train/loss"] = metrics["train/ce"] + sum(
@@ -252,6 +284,20 @@ def train(cfg: Config) -> Dict[str, float]:
                 key = "sparsity/threshold_mean" if cfg.sparsity.method == "ltp" else "sparsity/s_mean"
                 if key in sp:
                     line += f" | {key.split('/')[1]} {sp[key]:.3g}"
+                if "sparsity/gate_mean_topk" in sp:
+                    line += (
+                        f" | gate {sp['sparsity/gate_mean_topk']:.3f}"
+                        f" | turn {sp['sparsity/turnover']:.4f}"
+                    )
+            if "bottleneck/temperature" in bn:
+                line += (
+                    f" | t {bn['bottleneck/temperature']:.3g}"
+                    f" | t/std {bn['bottleneck/temperature_rel']:.3g}"
+                    f" | neff {bn['bottleneck/n_eff_realized']:.1f}"
+                    f" | dK {bn['bottleneck/budget_residual']:.1e}"
+                )
+            elif bn:  # the hard baseline runs no solver
+                line += f" | gap {bn['bottleneck/score_gap']:.3g}"
             line += (
                 f" | gnorm {float(grad_norm):.2f}"
                 f" | {human(tok_per_s)} tok/s | {metrics['perf/ms_per_step']:.0f} ms/step"
