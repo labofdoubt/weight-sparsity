@@ -21,22 +21,25 @@ for arg in "$@"; do
   [ "$arg" = "--with-checkpoints" ] && WITH_CKPT=1
 done
 
-# Filters are first-match-wins, so the explicit exclude leads.  It is redundant
-# while the rules below are all includes (rclone excludes anything unmatched),
-# but it keeps intermediate checkpoints out even if someone widens the list.
+# rclone warns that mixing --include and --exclude has *indeterminate* parse
+# order, so everything goes through --filter, where rules are first-match-wins
+# in the order given.  The trailing "- **" is what makes the include list
+# exhaustive; the ckpt_step rule leads so intermediate checkpoints can never be
+# picked up by a later, broader rule.
 FILTERS=(
-  --exclude "**/ckpt_step*.pt"
-  --exclude "**/*.tmp"
-  --include "*.log"
-  --include "**/metrics.jsonl"
-  --include "**/samples.txt"
-  --include "**/config.yaml"
-  --include "**/config.json"
-  --include "**/summary.json"
-  --include "**/feature_usage.*"
-  --include "**/tb/**"
+  --filter "- **/ckpt_step*.pt"
+  --filter "- **/*.tmp"
+  --filter "+ *.log"
+  --filter "+ **/metrics.jsonl"
+  --filter "+ **/samples.txt"
+  --filter "+ **/config.yaml"
+  --filter "+ **/config.json"
+  --filter "+ **/summary.json"
+  --filter "+ **/feature_usage.*"
+  --filter "+ **/tb/**"
 )
-[ "$WITH_CKPT" = 1 ] && FILTERS+=( --include "**/latest.pt" )
+[ "$WITH_CKPT" = 1 ] && FILTERS+=( --filter "+ **/latest.pt" )
+FILTERS+=( --filter "- **" )
 
 echo "[backup] $SRC -> $DST  (checkpoints: $([ $WITH_CKPT = 1 ] && echo yes || echo no))"
 rclone copy "$SRC" "$DST" "${FILTERS[@]}" \
