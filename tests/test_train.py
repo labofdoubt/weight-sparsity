@@ -454,3 +454,46 @@ def test_samples_reach_the_log_file_and_tensorboard(tmp_path, monkeypatch):
     # metrics.jsonl stays numeric-only
     records = [json.loads(l) for l in open(run_dir / "metrics.jsonl")]
     assert not any("samples" in r for r in records)
+
+
+def test_feature_usage_is_logged_to_tensorboard(tmp_path):
+    """Histogram, sorted-usage figure and quantile scalars, at validation cadence."""
+    pytest.importorskip("tensorboard")
+    pytest.importorskip("matplotlib")
+    data_dir = make_fake_dataset(tmp_path)
+    cfg = bottleneck_smoke_config(data_dir, str(tmp_path / "runs_usage"))
+    cfg.train.run_name = "usage"
+    cfg.train.tensorboard = True
+    cfg.train.validate_every_steps = 3
+    train(cfg)
+
+    run_dir = tmp_path / "runs_usage" / "usage"
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    acc = EventAccumulator(str(run_dir / "tb"), size_guidance={"histograms": 10, "images": 10})
+    acc.Reload()
+    tags = acc.Tags()
+    assert any(t.startswith("usage/blocks") for t in tags["histograms"]), tags["histograms"]
+    assert "usage/sorted" in tags["images"], tags["images"]
+    for q in ("p50", "p90", "p99"):
+        assert f"bottleneck/usage_{q}" in tags["scalars"]
+
+    records = [json.loads(l) for l in open(run_dir / "metrics.jsonl")]
+    assert any("bottleneck/usage_p50" in r for r in records)
+
+
+def test_usage_figure_survives_missing_matplotlib(monkeypatch):
+    """The plot is optional; training must not depend on it."""
+    import builtins
+
+    import wsparse.train as train_mod
+
+    real_import = builtins.__import__
+
+    def no_mpl(name, *a, **k):
+        if name == "matplotlib":
+            raise ImportError("no matplotlib")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_mpl)
+    assert train_mod.usage_figure({"blocks.0": torch.rand(64)}, 8, 64) is None

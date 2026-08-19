@@ -291,6 +291,16 @@ class AdaptiveLapSumTopKGate(nn.Module):
 
     # ---- diagnostics --------------------------------------------------------- #
     @torch.no_grad()
+    def feature_usage(self) -> torch.Tensor:
+        """Per-feature selection rate, bias-corrected, as a length-N vector.
+
+        The same quantity the ``feature_*`` scalars are reduced from, exposed so
+        the distribution itself can be logged rather than only its summaries.
+        """
+        bias = (1.0 - 0.99**self.usage_steps).clamp_min(torch.finfo(torch.float32).eps)
+        return (self.usage_ema / bias).detach()
+
+    @torch.no_grad()
     def _record_usage(self, hard_mask: torch.Tensor, decay: float = 0.99) -> None:
         """How evenly the K slots are spread over the N features.
 

@@ -325,6 +325,8 @@ def train(cfg: Config) -> Dict[str, float]:
                     f" | density {metrics['val_hard/density']:.4f}"
                 )
             metrics.update({f"layer_{k}": v for k, v in controller.layer_densities().items()})
+            if bottleneck.enabled and cfg.activation_bottleneck.log_diagnostics:
+                metrics.update(log_feature_usage(logger, bottleneck, step1))
             logger.log(step1, metrics, console=line)
             best_val = min(best_val, val["ce"])
             last_metrics.update(metrics)
@@ -362,6 +364,68 @@ def train(cfg: Config) -> Dict[str, float]:
     with open(os.path.join(run_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     return summary
+
+
+def usage_figure(usage: Dict[str, "torch.Tensor"], k: int, n_features: int):
+    """Rank-frequency curve of feature usage: the shape of the utilisation.
+
+    Sorted descending and normalised by the uniform rate ``k/n``, on log-log
+    axes, one line per bottlenecked layer.  A flat line at 1.0 would be perfectly
+    even usage; the real curves are steeply Zipfian, and what matters is how far
+    the tail falls -- features below ~1e-2 receive essentially no gradient and
+    are on their way to dying.
+    """
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except Exception:  # pragma: no cover - matplotlib is optional
+        return None
+
+    fig, ax = plt.subplots(figsize=(6.4, 4.0), dpi=110)
+    uniform = k / n_features
+    ranks = np.arange(1, n_features + 1)
+    cmap = plt.get_cmap("viridis")
+    names = sorted(usage)
+    for i, name in enumerate(names):
+        u = np.sort(usage[name].float().cpu().numpy())[::-1] / uniform
+        ax.loglog(ranks, np.maximum(u, 1e-6), lw=1.1,
+                  color=cmap(i / max(1, len(names) - 1)),
+                  label=name.split(".")[1] if "." in name else name)
+    ax.axhline(1.0, color="k", ls="--", lw=0.8)
+    ax.axvline(k, color="tab:red", ls=":", lw=0.9)
+    ax.set_xlabel(f"feature rank (of {n_features})")
+    ax.set_ylabel("selection rate / uniform")
+    ax.set_title(f"feature usage, sorted  (K={k}, dashed = even, dotted = rank K)")
+    ax.grid(alpha=0.3, which="both")
+    ax.legend(fontsize=6, ncol=2, loc="lower left")
+    fig.tight_layout()
+    return fig
+
+
+def log_feature_usage(logger, bottleneck, step: int) -> Dict[str, float]:
+    """Usage distribution to TensorBoard: histogram, sorted-usage plot, quantiles."""
+    usage = bottleneck.usage_vectors()
+    if not usage:
+        return {}
+    cfg = bottleneck.cfg
+    uniform = cfg.k / cfg.n_features
+    metrics: Dict[str, float] = {}
+    pooled = []
+    for name, u in usage.items():
+        logger.log_histogram(step, f"usage/{name}", u / uniform)
+        pooled.append(u)
+    stacked = torch.stack(pooled) / uniform
+    for q in (0.5, 0.9, 0.99):
+        metrics[f"bottleneck/usage_p{int(q * 100)}"] = float(
+            torch.quantile(stacked.flatten().float(), q)
+        )
+    fig = usage_figure(usage, cfg.k, cfg.n_features)
+    if fig is not None:
+        logger.log_figure(step, "usage/sorted", fig)
+    return metrics
 
 
 def model_params(model, non_embedding: bool = False) -> int:

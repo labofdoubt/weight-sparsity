@@ -117,6 +117,17 @@ class ActivationBottleneckController:
     def n_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters())
 
+    @torch.no_grad()
+    def usage_vectors(self) -> Dict[str, torch.Tensor]:
+        """``{layer_name: per-feature selection rate}`` for the usage plots."""
+        if not self.enabled:
+            return {}
+        return {
+            name: layer.gate.feature_usage()
+            for name, layer in self.layers
+            if float(layer.gate.usage_steps) > 0
+        }
+
     # ---- diagnostics ---------------------------------------------------------- #
     @torch.no_grad()
     def stats(self, per_layer: bool = False) -> Dict[str, float]:

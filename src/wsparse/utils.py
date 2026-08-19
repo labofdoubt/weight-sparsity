@@ -169,6 +169,20 @@ class Logger:
             except Exception:
                 pass
 
+    def log_histogram(self, step: int, tag: str, values) -> None:
+        """A distribution (TensorBoard HISTOGRAMS / DISTRIBUTIONS tabs)."""
+        if self.tb is not None:
+            self.tb.add_histogram(tag, values, step)
+
+    def log_figure(self, step: int, tag: str, figure) -> None:
+        """A rendered matplotlib figure (TensorBoard IMAGES tab, step slider)."""
+        if self.tb is not None:
+            self.tb.add_figure(tag, figure, step, close=True)
+        elif figure is not None:
+            import matplotlib.pyplot as plt
+
+            plt.close(figure)
+
     def close(self) -> None:
         if self.tb is not None:
             self.tb.flush()
