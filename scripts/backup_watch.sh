@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
 # Periodic light-tier backup, meant to run in its own tmux session:
 #
-#   tmux new -d -s backup "bash scripts/backup_watch.sh /workspace/runs_bottleneck gdrive:weight-sparsity/runs 600"
+#   backup_watch.sh <runs_dir> <remote:path> [interval_s] [extra backup_runs.sh flags]
 #
-# Checkpoints are deliberately not copied on the timer -- they are ~1.3 GB each
-# and only change at checkpoint boundaries.  Back those up once per finished run
-# with `backup_runs.sh ... --with-checkpoints`.
+#   tmux new -d -s backup "bash scripts/backup_watch.sh \\
+#       /workspace/runs_bottleneck gdrive:weight-sparsity/runs 600 --all-checkpoints"
+#
+# With --all-checkpoints the interval must stay comfortably under
+# keep_last_checkpoints x checkpoint_every_steps, or training will prune a
+# checkpoint locally before the backup has copied it.
 set -uo pipefail
 
 SRC=${1:?usage: backup_watch.sh <runs_dir> <remote:path> [interval_s]}
 DST=${2:?usage: backup_watch.sh <runs_dir> <remote:path> [interval_s]}
 INTERVAL=${3:-600}
+shift $(( $# < 3 ? $# : 3 ))
+EXTRA=( "$@" )
 HERE=$(cd "$(dirname "$0")" && pwd)
 
-echo "[backup-watch] every ${INTERVAL}s: $SRC -> $DST"
+echo "[backup-watch] every ${INTERVAL}s: $SRC -> $DST ${EXTRA[*]:-}"
 while true; do
-  bash "$HERE/backup_runs.sh" "$SRC" "$DST" || echo "[backup-watch] failed, retrying next cycle"
+  bash "$HERE/backup_runs.sh" "$SRC" "$DST" "${EXTRA[@]:-}" \
+    || echo "[backup-watch] failed, retrying next cycle"
   sleep "$INTERVAL"
 done
