@@ -54,8 +54,13 @@ FILTERS+=( --filter "- **" )
 
 tier=light; [ "$WITH_CKPT" = 1 ] && tier=final-checkpoint; [ "$ALL_CKPT" = 1 ] && tier=all-checkpoints
 echo "[backup] $SRC -> $DST  (tier: $tier)"
+# --drive-chunk-size is the one that matters for multi-GB checkpoints: at the
+# 8M default this host managed 1.4 MB/s to Drive, at 128M it manages 10 MB/s,
+# against a measured 103 MB/s raw upstream.  Slower than the link, but well
+# inside the checkpoint cadence.
 rclone copy "$SRC" "$DST" "${FILTERS[@]}" \
-    --transfers 8 --checkers 16 --retries 3 --low-level-retries 10 \
+    --drive-chunk-size 128M --drive-pacer-min-sleep 10ms \
+    --transfers 4 --checkers 16 --retries 3 --low-level-retries 10 \
     --stats 30s --stats-one-line -v
 rc=$?
 echo "[backup] rclone exit=$rc  $(date -Is)"
