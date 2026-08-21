@@ -54,6 +54,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         one_sided_weight_mode: str = "score_softmax",
         surrogate_mode: str = "lapsum_adaptive",
         surrogate_grad_scale: float = 1.0,
+        inactive_grad_scale: float = 1.0,
         fixed_temperature: float = 1.0,
         temperature_scale_mode: str = "relative",
         temperature_solver_tol: float = 1e-5,
@@ -108,6 +109,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self.one_sided_weight_mode = one_sided_weight_mode
         self.surrogate_mode = surrogate_mode
         self.surrogate_grad_scale = float(surrogate_grad_scale)
+        self.inactive_grad_scale = float(inactive_grad_scale)
         self.fixed_temperature = float(fixed_temperature)
         self.temperature_scale_mode = temperature_scale_mode
         self.temperature_solver_tol = float(temperature_solver_tol)
@@ -312,7 +314,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
         # pays is the barrier and Newton solves.  Kept because it costs nothing
         # and keeps the exponent small if b ever drifts far from the scores.
         centre = detached[..., self.k - 1 : self.k]
-        p = lapsum_probs(cand - centre, b - centre.squeeze(-1), t, self.k, sink)
+        p = lapsum_probs(
+            cand - centre, b - centre.squeeze(-1), t, self.k, sink,
+            inactive_scale=self.inactive_grad_scale,
+        )
         p_full = (
             torch.zeros_like(scores, dtype=p.dtype)
             .scatter(-1, cand_idx, p)

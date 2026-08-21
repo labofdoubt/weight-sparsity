@@ -118,6 +118,60 @@ class ActivationBottleneckController:
         return sum(p.numel() for p in self.parameters())
 
     @torch.no_grad()
+    def calibrate_output_scale(self, next_batch, batches: int = 4, iters: int = 3) -> Dict[str, float]:
+        """Fit each bottleneck's output gain so ``var(y) ~ var(x)`` at init.
+
+        The block is a projection into a K-sparse code and back, so its output
+        variance need not resemble its input's -- and it is inserted in front of
+        an MLP that was initialised expecting the latter.  This measures both
+        with forward hooks over a handful of batches and sets a fixed scalar
+        ``sqrt(var_in / var_out)`` after ``out_proj``.
+
+        Applied multiplicatively over ``iters`` passes because the layers are
+        sequential: rescaling layer *l* changes what layer *l+1* sees.  Runs in
+        eval mode under no_grad so it neither trains anything nor pollutes the
+        feature-usage EMA.
+        """
+        if not self.enabled or not self.cfg.calibrate_output:
+            return {}
+        mods = [layer for _, layer in self.layers]
+        was_training = self.model.training
+        self.model.eval()
+        acc: Dict[nn.Module, List[torch.Tensor]] = {}
+
+        def hook(mod, inp, out):
+            x = inp[0].detach().float()
+            y = out.detach().float()
+            a = acc[mod]
+            a[0] += x.sum(); a[1] += x.pow(2).sum(); a[2] += x.numel()
+            a[3] += y.sum(); a[4] += y.pow(2).sum(); a[5] += y.numel()
+
+        for _ in range(max(1, iters)):
+            acc = {m: [0.0] * 6 for m in mods}
+            handles = [m.register_forward_hook(hook) for m in mods]
+            try:
+                for _ in range(max(1, batches)):
+                    self.model(next_batch())
+            finally:
+                for h in handles:
+                    h.remove()
+            for m in mods:
+                sx, sxx, nx, sy, syy, ny = acc[m]
+                var_in = sxx / nx - (sx / nx) ** 2
+                var_out = syy / ny - (sy / ny) ** 2
+                if float(var_out) <= 0 or float(var_in) <= 0:
+                    continue
+                m.output_scale.mul_((var_in / var_out).sqrt())
+
+        self.model.train(was_training)
+        scales = [float(m.output_scale) for m in mods]
+        return {
+            "bottleneck/output_scale": sum(scales) / len(scales),
+            "bottleneck/output_scale_min": min(scales),
+            "bottleneck/output_scale_max": max(scales),
+        }
+
+    @torch.no_grad()
     def usage_vectors(self) -> Dict[str, torch.Tensor]:
         """``{layer_name: per-feature selection rate}`` for the usage plots."""
         if not self.enabled:

@@ -413,7 +413,22 @@ class ActivationBottleneckConfig:
     # hard              -> baseline: plain hard-mask backward, no surrogate
     surrogate_mode: str = "lapsum_adaptive"
     surrogate_grad_scale: float = 1.0
-    fixed_temperature: float = 1.0  # lapsum_fixed only, always absolute
+    # Reweights only the gradient reaching the J candidates outside the forward
+    # support.  1.0 leaves the exact VJP alone; anything else breaks its
+    # zero-sum property, so the surrogate can move the budget instead of purely
+    # redistributing it.  No effect under surrogate_mode: hard.
+    inactive_grad_scale: float = 1.0
+    fixed_temperature: float = 1.0
+
+    # ---- output-variance calibration (before training) -------------------- #
+    # Fit a fixed, non-trainable scalar after out_proj so each block's output
+    # variance matches its input's at init.  The block projects into a K-sparse
+    # code and back, so its output variance need not resemble its input's --
+    # and it sits in front of an MLP initialised expecting the latter.
+    calibrate_output: bool = False
+    calibration_batches: int = 4  # batches per pass
+    calibration_iters: int = 3  # passes; layers are sequential, so rescaling
+    #                             one changes what the next one sees  # lapsum_fixed only, always absolute
 
     # ---- prescribed temperature (surrogate_mode: lapsum_scheduled) --------- #
     # t is held at temperature_start for temperature_warmup_steps, annealed to

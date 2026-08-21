@@ -191,6 +191,22 @@ def train(cfg: Config) -> Dict[str, float]:
                 f"w grad on {'topk+j' if first.w_grad_explore else 'topk'}"
             )
 
+    if bottleneck.enabled and cfg.activation_bottleneck.calibrate_output and start_step == 0:
+        # Before the first step only: on resume the fitted scale comes back with
+        # the checkpoint, and re-fitting it against a trained model would be a
+        # silent change of function mid-run.
+        cal = bottleneck.calibrate_output_scale(
+            lambda: train_stream.batch(micro_bs, device)[0],
+            batches=cfg.activation_bottleneck.calibration_batches,
+            iters=cfg.activation_bottleneck.calibration_iters,
+        )
+        print(
+            f"[train] bottleneck output calibrated: scale mean "
+            f"{cal['bottleneck/output_scale']:.4f} "
+            f"(min {cal['bottleneck/output_scale_min']:.4f}, "
+            f"max {cal['bottleneck/output_scale_max']:.4f})"
+        )
+
     if bottleneck.enabled:
         cb = cfg.activation_bottleneck
         print(

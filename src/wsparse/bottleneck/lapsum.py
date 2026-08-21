@@ -209,7 +209,7 @@ class _LapSumProbs(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, scores, b, t, k_active, sink):  # type: ignore[override]
+    def forward(ctx, scores, b, t, k_active, sink, inactive_scale=1.0):  # type: ignore[override]
         z = (scores - b.unsqueeze(-1)) / t.unsqueeze(-1)
         # |z| and t are saved rather than kappa itself: the normalised budget
         # weights are a softmax of -|z| with the 1/2t prefactor cancelled, which
@@ -218,6 +218,7 @@ class _LapSumProbs(torch.autograd.Function):
         ctx.save_for_backward(z.abs(), t)
         ctx.k_active = int(k_active)
         ctx.sink = sink
+        ctx.inactive_scale = float(inactive_scale)
         return laplace_cdf(z)
 
     @staticmethod
@@ -227,6 +228,17 @@ class _LapSumProbs(torch.autograd.Function):
         q_budget = torch.softmax(-abs_z, dim=-1)           # db/dr, always finite
         shared = (q_budget * grad_p).sum(-1, keepdim=True)
         grad_scores = kappa * (grad_p - shared)
+        if ctx.inactive_scale != 1.0:
+            # Reweight only the J candidates outside the forward support.  Note
+            # this deliberately breaks the zero-sum property: sum_i grad_i is 0
+            # only when the whole vector is scaled uniformly, so a scale != 1
+            # lets the surrogate move the budget rather than purely redistribute
+            # it.  That is the point of the knob, but it is a real change of
+            # character, not just a magnitude.
+            k = ctx.k_active
+            grad_scores = torch.cat(
+                [grad_scores[..., :k], grad_scores[..., k:] * ctx.inactive_scale], dim=-1
+            )
         sink = ctx.sink
         if sink is not None:
             with torch.no_grad():
@@ -242,7 +254,7 @@ class _LapSumProbs(torch.autograd.Function):
                 sink["grad_by_rank"] = torch.stack(
                     [flat[:, edges[i] : edges[i + 1]].mean() for i in range(bins)]
                 ).detach()
-        return grad_scores, None, None, None, None
+        return grad_scores, None, None, None, None, None
 
 
 def lapsum_probs(
@@ -251,6 +263,11 @@ def lapsum_probs(
     t: torch.Tensor,
     k_active: int,
     sink: Optional[dict] = None,
+    inactive_scale: float = 1.0,
 ) -> torch.Tensor:
-    """Differentiable LapSum probabilities at a **detached** ``(b, t)``."""
-    return _LapSumProbs.apply(candidate_scores, b, t, k_active, sink)
+    """Differentiable LapSum probabilities at a **detached** ``(b, t)``.
+
+    ``inactive_scale`` reweights the gradient reaching the ``J`` candidates
+    outside the forward support (ranks ``k:``), leaving the active ones alone.
+    """
+    return _LapSumProbs.apply(candidate_scores, b, t, k_active, sink, inactive_scale)

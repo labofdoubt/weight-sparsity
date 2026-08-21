@@ -1453,3 +1453,164 @@ def test_gate_takes_its_centre_from_a_detached_tensor():
     src = inspect.getsource(AdaptiveLapSumTopKGate.forward)
     assert "detached = cand.detach()" in inspect.getsource(AdaptiveLapSumTopKGate.forward) or True
     assert "centre = detached[" in src, "centre is expected to come from the detached copy"
+
+
+# --------------------------------------------------------------------------- #
+# output-variance calibration
+# --------------------------------------------------------------------------- #
+
+
+def variance_ratios(model, batches=4, batch=(4, 32), vocab=97):
+    """std(output)/std(input) for each bottleneck block."""
+    mods = [m for m in model.modules() if isinstance(m, SparseTopKBottleneck)]
+    acc = {m: [0.0] * 6 for m in mods}
+
+    def hook(mod, inp, out):
+        x, y = inp[0].detach().float(), out.detach().float()
+        a = acc[mod]
+        a[0] += x.sum(); a[1] += x.pow(2).sum(); a[2] += x.numel()
+        a[3] += y.sum(); a[4] += y.pow(2).sum(); a[5] += y.numel()
+
+    handles = [m.register_forward_hook(hook) for m in mods]
+    with torch.no_grad():
+        for _ in range(batches):
+            model(torch.randint(0, vocab, batch))
+    for h in handles:
+        h.remove()
+    out = []
+    for m in mods:
+        sx, sxx, nx, sy, syy, ny = acc[m]
+        out.append(float(((syy / ny - (sy / ny) ** 2) / (sxx / nx - (sx / nx) ** 2)).sqrt()))
+    return out
+
+
+@pytest.mark.parametrize("mode", ["abs_topk", "topk", "gated_topk"])
+def test_calibration_matches_output_variance_to_input_variance(mode):
+    torch.manual_seed(0)
+    cfg = bottleneck_cfg(n_features=256, k=16, j=48, n_eff=8.0,
+                         selection_mode=mode, calibrate_output=True)
+    model = tiny_model(n_layers=4)
+    ctrl = apply_activation_bottleneck(model, cfg, max_steps=10)
+    model.train()
+
+    before = variance_ratios(model)
+    assert max(before) < 0.6, f"expected the raw block to attenuate, got {before}"
+
+    info = ctrl.calibrate_output_scale(
+        lambda: torch.randint(0, 97, (4, 32)), batches=4, iters=3
+    )
+    after = variance_ratios(model)
+    assert all(abs(r - 1.0) < 0.1 for r in after), after
+    assert 0.0 < info["bottleneck/output_scale_min"] <= info["bottleneck/output_scale_max"]
+
+
+def test_output_scale_is_a_non_trainable_persistent_buffer():
+    cfg = bottleneck_cfg(n_features=64, calibrate_output=True)
+    mod = SparseTopKBottleneck(32, cfg)
+    assert "output_scale" in dict(mod.named_buffers())
+    assert not any(n == "output_scale" for n, _ in mod.named_parameters())
+    assert "output_scale" in mod.state_dict()      # survives checkpointing
+    assert float(mod.output_scale) == 1.0          # identity until calibrated
+
+
+def test_no_output_scale_key_when_calibration_is_off():
+    """Keeps checkpoints written before this feature loadable."""
+    mod = SparseTopKBottleneck(32, bottleneck_cfg(n_features=64, calibrate_output=False))
+    assert mod.output_scale is None
+    assert not any("output_scale" in k for k in mod.state_dict())
+
+
+def test_calibration_is_a_noop_when_disabled():
+    cfg = bottleneck_cfg(n_features=64, calibrate_output=False)
+    model = tiny_model(n_layers=2)
+    ctrl = apply_activation_bottleneck(model, cfg, max_steps=10)
+    assert ctrl.calibrate_output_scale(lambda: torch.randint(0, 97, (2, 8))) == {}
+
+
+def test_calibration_does_not_disturb_the_usage_ema():
+    """It runs in eval mode, so it must not count as training data."""
+    cfg = bottleneck_cfg(n_features=64, calibrate_output=True)
+    model = tiny_model(n_layers=2)
+    ctrl = apply_activation_bottleneck(model, cfg, max_steps=10)
+    model.train()
+    ctrl.calibrate_output_scale(lambda: torch.randint(0, 97, (2, 8)), batches=3, iters=2)
+    for _, layer in ctrl.layers:
+        assert float(layer.gate.usage_steps) == 0.0
+    assert model.training   # mode restored
+
+
+def test_calibration_keeps_the_forward_exactly_k_sparse():
+    torch.manual_seed(0)
+    cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0, calibrate_output=True)
+    model = tiny_model(n_layers=2)
+    ctrl = apply_activation_bottleneck(model, cfg, max_steps=10)
+    model.train()
+    ctrl.calibrate_output_scale(lambda: torch.randint(0, 97, (2, 8)), batches=2, iters=2)
+    gate = ctrl.layers[0][1].gate
+    a = torch.randn(4, 128)
+    assert int((gate(a) != 0).sum(-1).max()) <= 16
+
+
+# --------------------------------------------------------------------------- #
+# inactive_grad_scale
+# --------------------------------------------------------------------------- #
+
+
+def split_grad(gate, a, scale):
+    g = make_gate(n_features=a.shape[-1], k=gate[0], j=gate[1], n_eff=gate[2],
+                  inactive_grad_scale=scale)
+    x = a.clone().requires_grad_(True)
+    g(x).pow(2).sum().backward()
+    rank = x.detach().abs().argsort(-1, descending=True).argsort(-1)
+    k, j = gate[0], gate[1]
+    return (x.grad[rank < k], x.grad[(rank >= k) & (rank < k + j)], x.grad)
+
+
+@pytest.mark.parametrize("scale", [0.0, 0.5, 1.0, 4.0])
+def test_inactive_grad_scale_reweights_only_the_j_candidates(scale):
+    torch.manual_seed(0)
+    a = torch.randn(32, 256)
+    spec = (16, 48, 8.0)
+    act_ref, ina_ref, _ = split_grad(spec, a, 1.0)
+    act, ina, _ = split_grad(spec, a, scale)
+    torch.testing.assert_close(act, act_ref, rtol=1e-5, atol=1e-7)   # active untouched
+    torch.testing.assert_close(ina, ina_ref * scale, rtol=1e-5, atol=1e-7)
+
+
+def test_inactive_grad_scale_zero_silences_the_exploration_gradient():
+    torch.manual_seed(0)
+    a = torch.randn(16, 256)
+    _, ina, _ = split_grad((16, 48, 8.0), a, 0.0)
+    assert torch.equal(ina, torch.zeros_like(ina))
+
+
+def test_inactive_grad_scale_one_preserves_zero_sum_and_other_values_break_it():
+    """The exact VJP sums to zero per row; reweighting a subset necessarily
+    does not, which is a change of character rather than of magnitude."""
+    torch.manual_seed(0)
+    r = torch.sort(torch.randn(8, 96, dtype=torch.float64), -1, descending=True).values
+    t = torch.full((8,), 0.4, dtype=torch.float64)
+    b = lapsum_barrier_sorted(r, 16, t)
+    u = torch.randn(8, 96, dtype=torch.float64)
+
+    def total(scale):
+        x = r.clone().requires_grad_(True)
+        p = lapsum_probs(x, b, t, 16, None, scale)
+        return torch.autograd.grad((p * u).sum(), x)[0].sum(-1)
+
+    torch.testing.assert_close(total(1.0), torch.zeros(8, dtype=torch.float64),
+                               rtol=0, atol=1e-12)
+    assert total(3.0).abs().max() > 1e-3
+
+
+def test_inactive_grad_scale_is_inert_without_a_surrogate():
+    torch.manual_seed(0)
+    a = torch.randn(8, 128)
+    outs = []
+    for scale in (1.0, 7.0):
+        g = make_gate(n_features=128, k=16, j=48, n_eff=8.0,
+                      surrogate_mode="hard", inactive_grad_scale=scale)
+        x = a.clone().requires_grad_(True)
+        g(x).pow(2).sum().backward()
+        outs.append(x.grad.clone())
+    torch.testing.assert_close(outs[0], outs[1], rtol=0, atol=0)

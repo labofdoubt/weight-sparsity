@@ -45,6 +45,7 @@ class SparseTopKBottleneck(nn.Module):
             one_sided_weight_mode=cfg.one_sided_weight_mode,
             surrogate_mode=cfg.surrogate_mode,
             surrogate_grad_scale=cfg.surrogate_grad_scale,
+            inactive_grad_scale=cfg.inactive_grad_scale,
             fixed_temperature=cfg.fixed_temperature,
             temperature_scale_mode=cfg.temperature_scale_mode,
             temperature_solver_tol=cfg.temperature_solver_tol,
@@ -55,6 +56,13 @@ class SparseTopKBottleneck(nn.Module):
             hard_inference=cfg.hard_inference,
         )
         self.out_proj = nn.Linear(self.n_features, self.d_model, bias=bias)
+        # Non-trainable output gain, fitted once before training so the block's
+        # output variance matches its input's.  Registered only when enabled, so
+        # checkpoints written without calibration still load.
+        if cfg.calibrate_output:
+            self.register_buffer("output_scale", torch.ones((), dtype=torch.float32))
+        else:
+            self.output_scale = None
 
     @property
     def value_proj(self) -> nn.Linear:
@@ -64,8 +72,12 @@ class SparseTopKBottleneck(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         value = self.in_proj(x)
         if self.gated:
-            return self.out_proj(self.gate(self.score_proj(x), value))
-        return self.out_proj(self.gate(value))
+            y = self.out_proj(self.gate(self.score_proj(x), value))
+        else:
+            y = self.out_proj(self.gate(value))
+        if self.output_scale is not None:
+            y = y * self.output_scale.to(y.dtype)
+        return y
 
     @property
     def diagnostics(self):
