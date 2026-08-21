@@ -65,8 +65,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
     ):
         super().__init__()
         validate_gate_shapes(n_features, k, j, n_eff, boundary_mode)
-        if selection_mode not in ("topk", "abs_topk"):
-            raise ValueError(f"unknown selection_mode: {selection_mode!r} (topk | abs_topk)")
+        if selection_mode not in ("topk", "abs_topk", "gated_topk"):
+            raise ValueError(
+                f"unknown selection_mode: {selection_mode!r} (topk | abs_topk | gated_topk)"
+            )
         if effective_count_metric not in ("ess", "entropy"):
             raise ValueError(
                 f"unknown effective_count_metric: {effective_count_metric!r} (ess | entropy)"
@@ -148,6 +150,11 @@ class AdaptiveLapSumTopKGate(nn.Module):
         return {**self._forward_diag, **self._usage_diag, **self._grad_sink}
 
     # ---- selection --------------------------------------------------------- #
+    @property
+    def gated(self) -> bool:
+        """Independent score and value branches (``selection_mode='gated_topk'``)."""
+        return self.selection_mode == "gated_topk"
+
     def scores_of(self, a: torch.Tensor) -> torch.Tensor:
         """Ranking score.  Autograd carries ``dr/da`` (1, or sign(a)) for free."""
         return a.abs() if self.selection_mode == "abs_topk" else a
@@ -253,12 +260,33 @@ class AdaptiveLapSumTopKGate(nn.Module):
         return b, t, diag
 
     # ---- forward ------------------------------------------------------------ #
-    def forward(self, a: torch.Tensor) -> torch.Tensor:
-        scores = self.scores_of(a)
+    def forward(self, a: torch.Tensor, values: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """``values * mask``, where the mask is hard TopK over the *scores*.
+
+        With ``gated_topk`` the two arguments are independent branches: ``a`` is
+        the score ``s`` that decides the support, ``values`` is the value ``v``
+        that is carried.  The gradients then separate exactly as intended --
+        ``dL/dv = m * g`` because the mask is numerically hard, and
+        ``dL/ds`` is the constrained LapSum VJP applied to ``u = g * v``, since
+        that is what autograd hands the custom Function.  For the other modes
+        the value *is* the score tensor, which is the original behaviour.
+        """
+        if self.gated:
+            if values is None:
+                raise ValueError("selection_mode='gated_topk' requires a value branch")
+            scores, value = a, values
+        else:
+            if values is not None:
+                raise ValueError(
+                    f"selection_mode={self.selection_mode!r} takes a single tensor; "
+                    "a separate value branch is only used by gated_topk"
+                )
+            scores, value = self.scores_of(a), a
+
         cand_scores, cand_idx = torch.topk(
             scores, self.m, dim=-1, largest=True, sorted=True
         )
-        hard_mask = torch.zeros_like(a).scatter(-1, cand_idx[..., : self.k], 1.0)
+        hard_mask = torch.zeros_like(scores).scatter(-1, cand_idx[..., : self.k], 1.0)
         if self.log_diagnostics and self.training:
             self._record_usage(hard_mask)
 
@@ -269,7 +297,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 # gradient on the J candidates is exactly zero by construction
                 # rather than merely absent.
                 self._record_hard(cand_scores.to(self.solver_dtype).detach())
-            return a * hard_mask
+            return value * hard_mask
 
         cand = cand_scores.to(self.solver_dtype)
         detached = cand.detach()
@@ -282,12 +310,16 @@ class AdaptiveLapSumTopKGate(nn.Module):
         # mantissa that the (usually small) temperature then amplifies.
         centre = detached[..., self.k - 1 : self.k]
         p = lapsum_probs(cand - centre, b - centre.squeeze(-1), t, self.k, sink)
-        p_full = torch.zeros_like(a, dtype=p.dtype).scatter(-1, cand_idx, p).to(a.dtype)
+        p_full = (
+            torch.zeros_like(scores, dtype=p.dtype)
+            .scatter(-1, cand_idx, p)
+            .to(value.dtype)
+        )
         mask = hard_mask + self.surrogate_grad_scale * (p_full - p_full.detach())
 
         if self.log_diagnostics:
             self._record(detached, b, t, p.detach(), solver_diag)
-        return a * mask
+        return value * mask
 
     # ---- diagnostics --------------------------------------------------------- #
     @torch.no_grad()

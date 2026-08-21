@@ -1151,3 +1151,167 @@ def test_controller_exports_usage_stats():
     for key in ("bottleneck/feature_dead_frac", "bottleneck/feature_usage_entropy",
                 "bottleneck/feature_usage_max"):
         assert key in stats, key
+
+
+# --------------------------------------------------------------------------- #
+# gated_topk: independent score and value branches
+# --------------------------------------------------------------------------- #
+
+
+def gated_gate(**kw):
+    cfg = dict(n_features=64, k=8, j=24, n_eff=6.0, selection_mode="gated_topk")
+    cfg.update(kw)
+    gate = AdaptiveLapSumTopKGate(**cfg)
+    gate.train()
+    return gate
+
+
+def hard_mask_of(scores, k):
+    return torch.zeros_like(scores).scatter(-1, torch.topk(scores, k, -1).indices, 1.0)
+
+
+def test_gated_forward_is_hard_mask_times_value():
+    torch.manual_seed(0)
+    gate = gated_gate()
+    s, v = torch.randn(4, 64), torch.randn(4, 64)
+    out = gate(s, v)
+    m = hard_mask_of(s, gate.k)
+    assert torch.equal(out, m * v)
+    assert torch.equal(m.sum(-1), torch.full((4,), 8.0))
+
+
+def test_gated_support_depends_only_on_scores():
+    """A huge value with a low score must not be selected; a high score with a
+    tiny negative value must be."""
+    gate = gated_gate(k=2, j=4, n_eff=2.0, n_features=8)
+    s = torch.tensor([[5.0, 4.0, 0.0, -1.0, -2.0, -3.0, -4.0, -5.0]])
+    v = torch.tensor([[0.01, -0.02, 900.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
+    out = gate(s, v)
+    assert out[0, 2] == 0.0  # largest |v|, but score is only 3rd
+    assert out[0, 0] == 0.01 and out[0, 1] == -0.02  # selected on score alone
+    assert int((out != 0).sum()) == 2
+
+
+def test_gated_value_gradient_is_the_exact_hard_mask_gradient():
+    torch.manual_seed(0)
+    gate = gated_gate()
+    s = torch.randn(4, 64)
+    v = torch.randn(4, 64, requires_grad=True)
+    g = torch.randn(4, 64)
+    (gate(s, v) * g).sum().backward()
+    m = hard_mask_of(s, gate.k)
+    assert torch.equal(v.grad, m * g)  # exactly m*g, not p*g
+    assert torch.equal(v.grad[m == 0], torch.zeros(int((m == 0).sum())))
+
+
+def test_gated_score_gradient_matches_the_constrained_formula():
+    """grad_s = q * (a - <q,a>/sum q) with a = g*v, over the Top-(K+J) pool."""
+    torch.manual_seed(0)
+    k, j, n = 8, 24, 64
+    gate = gated_gate(k=k, j=j, n_eff=6.0, n_features=n)
+    s = torch.randn(4, n, dtype=torch.float64, requires_grad=True)
+    v = torch.randn(4, n, dtype=torch.float64)
+    g = torch.randn(4, n, dtype=torch.float64)
+    (gate(s.float(), v.float()) * g.float()).sum().backward()
+
+    # rebuild the expectation independently
+    cand, idx = torch.topk(s.detach().float(), k + j, dim=-1, sorted=True)
+    b, t, _ = gate.solve(cand)
+    z = (cand - b[:, None]) / t[:, None]
+    q = 0.5 * torch.exp(-z.abs()) / t[:, None]
+    a = (g.float().gather(-1, idx)) * (v.float().gather(-1, idx))
+    expected_cand = q * (a - (q * a).sum(-1, keepdim=True) / q.sum(-1, keepdim=True))
+    expected = torch.zeros_like(s.float()).scatter(-1, idx, expected_cand)
+    assert torch.allclose(s.grad.float(), expected, atol=1e-5)
+
+
+def test_gated_inactive_features_get_score_gradient_but_no_value_gradient():
+    torch.manual_seed(0)
+    k, j, n = 4, 12, 32
+    gate = gated_gate(k=k, j=j, n_eff=3.0, n_features=n)
+    s = torch.randn(6, n, requires_grad=True)
+    v = torch.randn(6, n, requires_grad=True)
+    (gate(s, v).pow(2).sum()).backward()
+
+    rank = s.detach().argsort(-1, descending=True).argsort(-1)
+    inactive_pool = (rank >= k) & (rank < k + j)
+    assert torch.equal(v.grad[rank >= k], torch.zeros(int((rank >= k).sum())))
+    assert bool((s.grad[inactive_pool] != 0).any())   # can learn to enter TopK
+    assert not bool((s.grad[rank >= k + j] != 0).any())  # outside the pool: zero
+
+
+def test_gated_is_translation_invariant_in_the_scores():
+    torch.manual_seed(0)
+    gate = gated_gate()
+    s, v = torch.randn(4, 64), torch.randn(4, 64)
+    out = gate(s, v)
+    b0 = float(gate.diagnostics["barrier"])
+    shifted = gate(s + 3.0, v)
+    b1 = float(gate.diagnostics["barrier"])
+    assert torch.equal(out, shifted)          # same support, same values
+    assert b1 == pytest.approx(b0 + 3.0, abs=1e-3)   # b -> b + c
+
+
+def test_gated_both_projections_receive_input_gradient():
+    torch.manual_seed(0)
+    cfg = bottleneck_cfg(n_features=64, selection_mode="gated_topk")
+    mod = SparseTopKBottleneck(32, cfg)
+    assert mod.gated and mod.score_proj is not None
+    assert mod.value_proj is mod.in_proj
+    x = torch.randn(2, 5, 32, requires_grad=True)
+    mod(x).pow(2).sum().backward()
+    assert mod.score_proj.weight.grad.abs().sum() > 0
+    assert mod.in_proj.weight.grad.abs().sum() > 0
+    assert x.grad.abs().sum() > 0   # dL/dx = W_s^T dL/ds + W_v^T dL/dv
+
+
+@pytest.mark.parametrize("temp", [1e-3, 1.0])
+@pytest.mark.parametrize("scale", [1.0, 1e3])
+def test_gated_is_stable_at_extreme_temperatures_and_score_ranges(temp, scale):
+    torch.manual_seed(0)
+    gate = gated_gate(surrogate_mode="lapsum_fixed", fixed_temperature=temp)
+    s = (torch.randn(8, 64) * scale).requires_grad_(True)
+    v = torch.randn(8, 64, requires_grad=True)
+    out = gate(s, v)
+    out.pow(2).sum().backward()
+    assert torch.isfinite(out).all()
+    assert torch.isfinite(s.grad).all() and torch.isfinite(v.grad).all()
+    assert float(gate.diagnostics["barrier_failures"]) == 0.0
+
+
+def test_gated_handles_scores_clustered_at_the_boundary():
+    gate = gated_gate(k=8, j=24, n_eff=6.0, n_features=64)
+    s = (torch.zeros(4, 64) + torch.randn(4, 64) * 1e-6).requires_grad_(True)
+    v = torch.randn(4, 64, requires_grad=True)
+    gate(s, v).sum().backward()
+    assert torch.isfinite(s.grad).all() and torch.isfinite(v.grad).all()
+
+
+def test_gated_rejects_a_missing_or_extra_value_branch():
+    with pytest.raises(ValueError, match="requires a value branch"):
+        gated_gate()(torch.randn(2, 64))
+    with pytest.raises(ValueError, match="only used by gated_topk"):
+        make_gate()(torch.randn(2, 64), torch.randn(2, 64))
+    with pytest.raises(ValueError, match="unknown selection_mode"):
+        bottleneck_cfg(selection_mode="gate_topk")
+
+
+def test_gated_adds_one_projection_worth_of_parameters():
+    plain = SparseTopKBottleneck(32, bottleneck_cfg(n_features=64))
+    gated = SparseTopKBottleneck(32, bottleneck_cfg(n_features=64, selection_mode="gated_topk"))
+    extra = sum(p.numel() for p in gated.parameters()) - sum(p.numel() for p in plain.parameters())
+    assert extra == 32 * 64 + 64  # one d_model x n_features weight plus its bias
+
+
+def test_gated_model_trains_end_to_end():
+    torch.manual_seed(0)
+    model = tiny_model()
+    ctrl = apply_activation_bottleneck(
+        model, bottleneck_cfg(selection_mode="gated_topk"), max_steps=10
+    )
+    x = torch.randint(0, 97, (2, 8))
+    _, loss = model(x, x)
+    loss.backward()
+    for _, layer in ctrl.layers:
+        for name, prm in layer.named_parameters():
+            assert prm.grad is not None and torch.isfinite(prm.grad).all(), name

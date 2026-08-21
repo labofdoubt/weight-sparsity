@@ -363,7 +363,25 @@ With ranking score `r = a` (`topk`) or `r = |a|` (`abs_topk`):
 ```
 
 Selection is by magnitude in `abs_topk`, but the **signed** activation is
-forwarded — never `|a_i|`. The forward pass is exactly `K`-sparse no matter what
+forwarded — never `|a_i|`.
+
+`selection_mode: gated_topk` splits the two jobs the single projection
+otherwise does, with independent branches:
+
+```
+s = W_s x + b_s      ranks the support        y_i = 1[i ∈ TopK_K(s)] · v_i
+v = W_v x + b_v      carries the value
+```
+
+The support depends on `s` alone — never on `v`, `|v|` or `s·v` — and no
+nonlinearity is applied to `v`, so values stay signed. The gradients then
+separate exactly: `∂L/∂v = m ⊙ g` (only selected features get value updates,
+the exact hard-mask gradient) while `∂L/∂s` is the constrained LapSum VJP on
+`uᵢ = gᵢvᵢ`, so an inactive feature can still learn to raise its score and enter
+the support. That falls out of the same `m_hard + λ(p − stopgrad(p))` mask
+applied to a *separate* value tensor, so it reuses the existing VJP rather than
+re-deriving the Jacobian. Costs one extra `d_model × n_features` projection per
+layer (39.4M vs 26.2M at `d_model=640, N=2048`). The forward pass is exactly `K`-sparse no matter what
 `J`, `n_eff`, the metric or the boundary mode are set to; the LapSum
 probabilities below are never used numerically in the forward pass. There is no
 ReLU before the TopK.
@@ -577,7 +595,7 @@ activation_bottleneck:
   k: 256                   # K, active in the forward pass
   j: 768                   # J, extra candidates that only receive gradient
   n_eff: 32.0              # target effective boundary participants
-  selection_mode: abs_topk         # topk | abs_topk
+  selection_mode: abs_topk         # topk | abs_topk | gated_topk
   effective_count_metric: ess      # ess | entropy
   boundary_mode: outside_only      # outside_only | both_sides
   one_sided_weight_mode: score_softmax  # score_softmax | true_gradient

@@ -1,0 +1,15 @@
+# gated_topk: independent score and value branches.
+#
+#   s = W_s x + b_s   ranks the support (hard TopK over s alone)
+#   v = W_v x + b_v   carries the value, no nonlinearity, signed
+#   y = 1[i in TopK(s)] * v
+#
+# Backward separates cleanly: dL/dv = m*g exactly (only selected features get
+# value updates), while dL/ds is the constrained LapSum VJP on u = g*v, so an
+# inactive feature can still learn to raise its score and enter the support.
+#
+# Costs one extra d_model x n_features projection per layer versus topk/abs_topk.
+_base_: base.yaml
+
+activation_bottleneck:
+  selection_mode: gated_topk

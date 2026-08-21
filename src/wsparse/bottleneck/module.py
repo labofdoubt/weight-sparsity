@@ -11,18 +11,29 @@ from .gate import AdaptiveLapSumTopKGate
 class SparseTopKBottleneck(nn.Module):
     """``x -> W_in -> TopK/AbsTopK -> W_out -> (original MLP)``.
 
-    Both projections are ordinary dense ``nn.Linear`` layers trained by the
+    All projections are ordinary dense ``nn.Linear`` layers trained by the
     model's ordinary objective -- there is no reconstruction loss, no weight
     mask and no pruning anywhere in this module.  ``in_proj``/``out_proj``
     rather than down/up because ``n_features`` may be larger or smaller than
     ``d_model``.
+
+    ``selection_mode="gated_topk"`` adds a third projection: the support is
+    ranked by an independent score branch ``s = W_s x + b_s`` while ``in_proj``
+    supplies the value ``v``.  That splits the two roles the single projection
+    otherwise plays, at the cost of ``d_model * n_features`` more parameters
+    per layer.  No nonlinearity is applied to ``v``, so values stay signed.
     """
 
     def __init__(self, d_model: int, cfg, bias: bool = True):
         super().__init__()
         self.d_model = int(d_model)
         self.n_features = int(cfg.n_features)
+        self.gated = cfg.selection_mode == "gated_topk"
+        # in_proj is the value branch; score_proj (gated_topk only) ranks.
         self.in_proj = nn.Linear(self.d_model, self.n_features, bias=bias)
+        self.score_proj = (
+            nn.Linear(self.d_model, self.n_features, bias=bias) if self.gated else None
+        )
         self.gate = AdaptiveLapSumTopKGate(
             n_features=self.n_features,
             k=cfg.k,
@@ -45,12 +56,23 @@ class SparseTopKBottleneck(nn.Module):
         )
         self.out_proj = nn.Linear(self.n_features, self.d_model, bias=bias)
 
+    @property
+    def value_proj(self) -> nn.Linear:
+        """Alias: ``in_proj`` is the value branch."""
+        return self.in_proj
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.out_proj(self.gate(self.in_proj(x)))
+        value = self.in_proj(x)
+        if self.gated:
+            return self.out_proj(self.gate(self.score_proj(x), value))
+        return self.out_proj(self.gate(value))
 
     @property
     def diagnostics(self):
         return self.gate.diagnostics
 
     def extra_repr(self) -> str:
-        return f"d_model={self.d_model}, n_features={self.n_features}"
+        branches = "score+value" if self.gated else "single"
+        return (
+            f"d_model={self.d_model}, n_features={self.n_features}, branches={branches}"
+        )

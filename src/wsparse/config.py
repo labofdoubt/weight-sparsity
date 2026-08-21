@@ -389,7 +389,11 @@ class ActivationBottleneckConfig:
     j: int = 768  # extra candidates that only receive gradient
     n_eff: float = 128.0  # target effective boundary participants
 
-    selection_mode: str = "abs_topk"  # topk | abs_topk
+    # topk / abs_topk rank by the single projection's output (or its
+    # magnitude).  gated_topk adds an independent score projection: the support
+    # is ranked by s, the value v is carried separately, so dL/dv is the exact
+    # hard-mask gradient while dL/ds is the constrained LapSum VJP.
+    selection_mode: str = "abs_topk"  # topk | abs_topk | gated_topk
 
     effective_count_metric: str = "ess"  # ess | entropy
     boundary_mode: str = "outside_only"  # outside_only | both_sides
@@ -448,8 +452,11 @@ class ActivationBottleneckConfig:
             return
         if self.placement != "pre_mlp":
             raise ValueError(f"unknown bottleneck placement: {self.placement} (pre_mlp)")
-        if self.selection_mode not in ("topk", "abs_topk"):
-            raise ValueError(f"unknown selection_mode: {self.selection_mode} (topk | abs_topk)")
+        if self.selection_mode not in ("topk", "abs_topk", "gated_topk"):
+            raise ValueError(
+                f"unknown selection_mode: {self.selection_mode} "
+                "(topk | abs_topk | gated_topk)"
+            )
         if self.effective_count_metric not in ("ess", "entropy"):
             raise ValueError(
                 f"unknown effective_count_metric: {self.effective_count_metric} (ess | entropy)"
