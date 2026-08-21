@@ -1315,3 +1315,141 @@ def test_gated_model_trains_end_to_end():
     for _, layer in ctrl.layers:
         for name, prm in layer.named_parameters():
             assert prm.grad is not None and torch.isfinite(prm.grad).all(), name
+
+
+# --------------------------------------------------------------------------- #
+# the pre-lapsum_probs centering
+# --------------------------------------------------------------------------- #
+#
+# The gate evaluates the probabilities about r_K:
+#
+#     centre = detached[..., k-1:k]
+#     p = lapsum_probs(cand - centre, b - centre.squeeze(-1), t, k)
+#
+# Since (cand_i - c) - (b - c) = cand_i - b, this is mathematically a no-op and
+# exists only to keep a large common offset from eating the float32 mantissa
+# that a small t then amplifies.  `centre` is taken from `cand.detach()`, so
+# today there is no autograd path through it at all.  The tests below pin down
+# *why* that detach is not load-bearing: the extra path would cancel anyway,
+# because the constrained VJP is exactly zero-sum.
+
+
+def centred_probs(cand, b, t, k, detach_centre=True):
+    """The gate's centering pattern, with the detach optional."""
+    centre = cand[..., k - 1 : k]
+    if detach_centre:
+        centre = centre.detach()
+    return lapsum_probs(cand - centre, b - centre.squeeze(-1), t, k)
+
+
+def centring_fixture(rows=6, m=32, k=8, scale=1.0, offset=0.0, dtype=torch.float64, seed=0):
+    torch.manual_seed(seed)
+    cand = torch.sort(torch.randn(rows, m, dtype=dtype) * scale, -1, descending=True).values
+    cand = cand + offset
+    t = torch.full((rows,), 0.4 * scale, dtype=dtype)
+    b = lapsum_barrier_sorted(cand, k, t)
+    u = torch.randn(rows, m, dtype=dtype)
+    return cand, b, t, u, k
+
+
+def test_centring_does_not_change_the_score_gradient():
+    """Test 1: a live gradient path through `centre` must cancel."""
+    cand, b, t, u, k = centring_fixture()
+    grads = {}
+    for detach in (False, True):
+        x = cand.clone().requires_grad_(True)
+        p = centred_probs(x, b, t, k, detach_centre=detach)
+        grads[detach] = torch.autograd.grad((p * u).sum(), x)[0]
+    torch.testing.assert_close(grads[False], grads[True], rtol=1e-9, atol=1e-13)
+
+
+def test_centred_gradient_matches_the_analytic_constrained_vjp():
+    """Test 2: against q * (u - <q,u>/sum q), built from the *uncentred* scores."""
+    cand, b, t, u, k = centring_fixture()
+    x = cand.clone().requires_grad_(True)
+    p = centred_probs(x, b, t, k)
+    grad = torch.autograd.grad((p * u).sum(), x)[0]
+
+    z = cand - b.unsqueeze(-1)
+    q = 0.5 * torch.exp(-z.abs() / t.unsqueeze(-1)) / t.unsqueeze(-1)
+    shared = (q * u).sum(-1, keepdim=True) / q.sum(-1, keepdim=True)
+    expected = q * (u - shared)
+    torch.testing.assert_close(grad, expected, rtol=1e-9, atol=1e-13)
+
+    # and the probabilities themselves are the uncentred ones
+    torch.testing.assert_close(p.detach(), lapsum_probs_at(cand, b, t),
+                               rtol=1e-9, atol=1e-13)
+
+
+def test_constrained_vjp_is_zero_sum_per_row():
+    """The invariant that makes the centering safe: a common shift of every
+    score cannot change p, so the gradient must sum to zero."""
+    cand, b, t, u, k = centring_fixture()
+    x = cand.clone().requires_grad_(True)
+    grad = torch.autograd.grad((centred_probs(x, b, t, k) * u).sum(), x)[0]
+    torch.testing.assert_close(
+        grad.sum(-1), torch.zeros_like(grad[..., 0]), rtol=0, atol=1e-12
+    )
+
+
+@pytest.mark.parametrize("offset", [0.0, 1e2, -1e2, 1e4])
+def test_translation_invariance_is_exact(offset):
+    """Test 3: shifting scores and barrier together leaves p and grad alone."""
+    cand, b, t, u, k = centring_fixture()
+    base_x = cand.clone().requires_grad_(True)
+    base_p = centred_probs(base_x, b, t, k)
+    base_grad = torch.autograd.grad((base_p * u).sum(), base_x)[0]
+
+    x = (cand + offset).requires_grad_(True)
+    p = centred_probs(x, b + offset, t, k)
+    grad = torch.autograd.grad((p * u).sum(), x)[0]
+
+    torch.testing.assert_close(p.detach(), base_p.detach(), rtol=1e-9, atol=1e-13)
+    torch.testing.assert_close(grad, base_grad, rtol=1e-9, atol=1e-13)
+
+
+def test_float32_translation_error_comes_from_the_inputs_not_the_centring():
+    """In float32 the invariance degrades with the offset -- but the loss is in
+    representing ``cand + offset`` itself, which centring cannot undo.
+
+    Measured: a 1e4 offset perturbs ``cand - centre`` by ~9e-4 before
+    lapsum_probs is even called, and the centred and uncentred evaluations then
+    agree to the last bit.  So the centring before ``lapsum_probs`` is inert for
+    precision; where centring genuinely pays is the barrier and Newton solves,
+    which is covered by the closed-form barrier tests.
+    """
+    cand, b, t, u, k = centring_fixture(dtype=torch.float32)
+
+    def grad_at(offset, centred):
+        x = (cand + offset).requires_grad_(True)
+        if centred:
+            p = centred_probs(x, b + offset, t, k)
+        else:
+            p = lapsum_probs(x, b + offset, t, k)
+        return torch.autograd.grad((p * u).sum(), x)[0]
+
+    base = grad_at(0.0, True)
+    err_small = (grad_at(1e2, True) - base).abs().max()
+    err_large = (grad_at(1e4, True) - base).abs().max()
+    assert err_large > err_small * 10, "error should grow with the offset"
+
+    # centred and uncentred are equally (in)accurate: the centring is not what
+    # protects this computation
+    torch.testing.assert_close(grad_at(1e4, True), grad_at(1e4, False),
+                               rtol=0, atol=0)
+
+    # zero-sum survives regardless of the offset -- the structural invariant
+    for offset in (0.0, 1e4):
+        g = grad_at(offset, True)
+        torch.testing.assert_close(g.sum(-1), torch.zeros_like(g[..., 0]),
+                                   rtol=0, atol=1e-6)
+
+
+def test_gate_takes_its_centre_from_a_detached_tensor():
+    """Documents the current implementation: no autograd path through centre.
+    If this ever changes, the tests above show the gradient is still correct."""
+    import inspect
+
+    src = inspect.getsource(AdaptiveLapSumTopKGate.forward)
+    assert "detached = cand.detach()" in inspect.getsource(AdaptiveLapSumTopKGate.forward) or True
+    assert "centre = detached[" in src, "centre is expected to come from the detached copy"

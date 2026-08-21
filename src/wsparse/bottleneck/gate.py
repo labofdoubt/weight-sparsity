@@ -304,10 +304,13 @@ class AdaptiveLapSumTopKGate(nn.Module):
         b, t, solver_diag = self.solve(detached)
 
         sink = self._grad_sink if self.log_diagnostics else None
-        # Evaluate the probabilities about r_K as well.  Shifting by a detached
-        # constant leaves dz/dr -- and so the whole VJP -- untouched, but it
-        # keeps a large common activation offset from eating the float32
-        # mantissa that the (usually small) temperature then amplifies.
+        # Evaluate the probabilities about r_K.  Shifting by a detached constant
+        # leaves dz/dr -- and so the whole VJP -- untouched.  Note this is inert
+        # for *precision*: (s-c)-(b-c) loses the same mantissa as s-b, since the
+        # damage is done representing s itself (measured: a 1e4 offset perturbs
+        # s-c by ~9e-4 in float32, centred or not).  Where centring genuinely
+        # pays is the barrier and Newton solves.  Kept because it costs nothing
+        # and keeps the exponent small if b ever drifts far from the scores.
         centre = detached[..., self.k - 1 : self.k]
         p = lapsum_probs(cand - centre, b - centre.squeeze(-1), t, self.k, sink)
         p_full = (
