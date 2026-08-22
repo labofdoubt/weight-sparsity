@@ -93,13 +93,20 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(cfg)
         self.norm2 = RMSNorm(cfg.d_model, cfg.norm_eps)
         self.mlp = MLP(cfg)
-        # Insertion point for the activation bottleneck: it wraps the tensor
-        # that is fed to the MLP, *not* the residual stream.  Identity by
-        # default, and Identity holds no parameters or buffers, so state_dicts
-        # and parameter counts are unchanged when the experiment is off.
+        # Two insertion points for the activation bottleneck, and the choice
+        # matters more than it looks.  `mlp_bottleneck` wraps the tensor fed to
+        # the MLP, so it sits *inside* a residual branch and the skip routes
+        # around it -- whatever it discards is still carried forward by x.
+        # `residual_bottleneck` replaces the stream itself before attention, so
+        # nothing routes around it: every later op in the block, and every later
+        # block, sees only what survived.  Identity by default, and Identity
+        # holds no parameters or buffers, so state_dicts and parameter counts
+        # are unchanged when the experiment is off.
+        self.residual_bottleneck = nn.Identity()
         self.mlp_bottleneck = nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.residual_bottleneck(x)
         x = x + self.attn(self.norm1(x))
         x = x + self.mlp(self.mlp_bottleneck(self.norm2(x)))
         return x

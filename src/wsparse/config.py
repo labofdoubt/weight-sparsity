@@ -382,7 +382,11 @@ class ActivationBottleneckConfig:
     enabled: bool = False
 
     layers: Any = "all"  # all | even | odd | first:n | last:n | [0, 2, 4]
-    placement: str = "pre_mlp"
+    # pre_mlp : on the MLP input, inside the residual branch -- the skip routes
+    #           around it, so x still carries what the bottleneck dropped.
+    # residual: on the residual stream itself, before attention -- nothing
+    #           routes around it, so every later op sees only what survived.
+    placement: str = "pre_mlp"  # pre_mlp | residual
 
     n_features: int = 4096  # N
     k: int = 256  # active in the forward pass
@@ -465,8 +469,10 @@ class ActivationBottleneckConfig:
     def __post_init__(self) -> None:
         if not self.enabled:
             return
-        if self.placement != "pre_mlp":
-            raise ValueError(f"unknown bottleneck placement: {self.placement} (pre_mlp)")
+        if self.placement not in ("pre_mlp", "residual"):
+            raise ValueError(
+                f"unknown bottleneck placement: {self.placement!r} (pre_mlp | residual)"
+            )
         if self.selection_mode not in ("topk", "abs_topk", "gated_topk"):
             raise ValueError(
                 f"unknown selection_mode: {self.selection_mode} "

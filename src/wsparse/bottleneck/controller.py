@@ -39,6 +39,12 @@ def resolve_layers(spec, n_layers: int) -> List[int]:
     return idx
 
 
+#: where in a block the bottleneck is spliced in -> the attribute it replaces.
+#: ``pre_mlp`` sits inside the MLP branch, so the residual skip routes around
+#: it; ``residual`` replaces the stream before attention, so nothing does.
+_PLACEMENT_ATTR = {"pre_mlp": "mlp_bottleneck", "residual": "residual_bottleneck"}
+
+
 class ActivationBottleneckController:
     """Owns the installed bottlenecks and the metrics they export."""
 
@@ -90,8 +96,12 @@ class ActivationBottleneckController:
 
     def _install(self) -> None:
         cfg = self.cfg
-        if cfg.placement != "pre_mlp":
-            raise ValueError(f"unknown bottleneck placement: {cfg.placement} (pre_mlp)")
+        attr = _PLACEMENT_ATTR.get(cfg.placement)
+        if attr is None:
+            raise ValueError(
+                f"unknown bottleneck placement: {cfg.placement!r} "
+                f"({' | '.join(_PLACEMENT_ATTR)})"
+            )
         blocks = getattr(self.model, "blocks", None)
         if blocks is None:
             raise ValueError("activation bottleneck requires a model with .blocks")
@@ -103,7 +113,7 @@ class ActivationBottleneckController:
             block = blocks[i]
             bottleneck = SparseTopKBottleneck(d_model, cfg, bias=cfg.bias)
             # each selected layer gets its own parameters
-            block.mlp_bottleneck = bottleneck
+            setattr(block, attr, bottleneck)
             self.layers.append((f"blocks.{i}", bottleneck))
 
     # ---- parameters ---------------------------------------------------------- #

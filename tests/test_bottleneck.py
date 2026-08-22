@@ -1680,3 +1680,115 @@ def test_hard_mode_accepts_the_degenerate_geometry_and_ignores_n_eff():
         validate_gate_shapes(64, 65, 0, 8.0, "both_sides", "hard")
     with pytest.raises(ValueError, match="k \\+ j <= n_features"):
         validate_gate_shapes(64, 64, 8, 8.0, "both_sides", "hard")
+
+
+# --------------------------------------------------------------------------- #
+# placement: pre_mlp (inside the MLP branch) vs residual (on the stream)
+# --------------------------------------------------------------------------- #
+
+
+def placed_model(placement, n_layers=3, **kw):
+    torch.manual_seed(0)
+    cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0, placement=placement, **kw)
+    model = tiny_model(n_layers=n_layers)
+    return model, apply_activation_bottleneck(model, cfg, max_steps=10)
+
+
+@pytest.mark.parametrize(
+    "placement,attr,other",
+    [("pre_mlp", "mlp_bottleneck", "residual_bottleneck"),
+     ("residual", "residual_bottleneck", "mlp_bottleneck")],
+)
+def test_placement_installs_at_the_requested_point(placement, attr, other):
+    model, ctrl = placed_model(placement)
+    for block in model.blocks:
+        assert isinstance(getattr(block, attr), SparseTopKBottleneck)
+        assert isinstance(getattr(block, other), nn.Identity)
+    assert len(ctrl.layers) == len(model.blocks)
+
+
+def test_residual_placement_runs_before_attention():
+    model, _ = placed_model("residual")
+    block = model.blocks[0]
+    model.eval()
+    x = torch.randn(2, 5, model.cfg.d_model)
+    with torch.no_grad():
+        want = block.residual_bottleneck(x)
+        want = want + block.attn(block.norm1(want))
+        want = want + block.mlp(block.norm2(want))
+        torch.testing.assert_close(block(x), want, atol=1e-6, rtol=1e-5)
+
+
+def test_residual_placement_has_no_skip_around_it():
+    """The topological difference, made observable.
+
+    With a bottleneck that returns zeros: under `residual` the block output
+    cannot depend on x at all, because nothing routes past the bottleneck.
+    Under `pre_mlp` the residual skip still carries x forward.
+    """
+    class Zero(nn.Module):
+        def forward(self, t):
+            return torch.zeros_like(t)
+
+    outs = {}
+    for placement, attr in (("residual", "residual_bottleneck"),
+                            ("pre_mlp", "mlp_bottleneck")):
+        model, _ = placed_model(placement)
+        model.eval()
+        block = model.blocks[0]
+        setattr(block, attr, Zero())
+        with torch.no_grad():
+            a, b = torch.randn(2, 5, model.cfg.d_model), torch.randn(2, 5, model.cfg.d_model)
+            outs[placement] = (block(a), block(b))
+    torch.testing.assert_close(*outs["residual"], atol=1e-6, rtol=1e-5)  # x is gone
+    assert not torch.allclose(*outs["pre_mlp"], atol=1e-3)               # x survives
+
+
+def test_both_placements_cost_the_same_parameters():
+    _, a = placed_model("pre_mlp")
+    _, b = placed_model("residual")
+    assert a.n_parameters == b.n_parameters
+
+
+def test_placement_names_the_right_state_dict_keys():
+    model, _ = placed_model("residual")
+    keys = model.state_dict()
+    assert any("residual_bottleneck.in_proj.weight" in k for k in keys)
+    assert not any("mlp_bottleneck" in k for k in keys)
+
+
+def test_unknown_placement_is_rejected():
+    with pytest.raises(ValueError, match="pre_mlp \\| residual"):
+        ActivationBottleneckConfig(enabled=True, placement="pre_attn")
+
+
+@pytest.mark.parametrize("placement", ["pre_mlp", "residual"])
+def test_calibration_works_at_either_placement(placement):
+    model, ctrl = placed_model(placement, calibrate_output=True)
+    model.train()
+    info = ctrl.calibrate_output_scale(
+        lambda: torch.randint(0, 97, (4, 16)), batches=3, iters=3
+    )
+    after = variance_ratios(model, batches=4, batch=(4, 16))
+    assert all(abs(r - 1.0) < 0.15 for r in after), after
+    assert info["bottleneck/output_scale_min"] > 0.0
+
+
+@pytest.mark.parametrize("placement", ["pre_mlp", "residual"])
+def test_residual_placement_keeps_the_forward_k_sparse(placement):
+    model, ctrl = placed_model(placement)
+    model.train()
+    gate = ctrl.layers[0][1].gate
+    a = torch.randn(4, 128)
+    assert int((gate(a) != 0).sum(-1).max()) <= 16
+
+
+@pytest.mark.parametrize("placement", ["pre_mlp", "residual"])
+def test_gradient_reaches_the_bottleneck_at_either_placement(placement):
+    model, ctrl = placed_model(placement)
+    model.train()
+    logits = model(torch.randint(0, 97, (2, 16)))
+    (logits[0] if isinstance(logits, tuple) else logits).sum().backward()
+    for _, layer in ctrl.layers:
+        assert layer.in_proj.weight.grad is not None
+        assert torch.isfinite(layer.in_proj.weight.grad).all()
