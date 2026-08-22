@@ -65,7 +65,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         hard_inference: bool = True,
     ):
         super().__init__()
-        validate_gate_shapes(n_features, k, j, n_eff, boundary_mode)
+        validate_gate_shapes(n_features, k, j, n_eff, boundary_mode, surrogate_mode)
         if selection_mode not in ("topk", "abs_topk", "gated_topk"):
             raise ValueError(
                 f"unknown selection_mode: {selection_mode!r} (topk | abs_topk | gated_topk)"
@@ -102,6 +102,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self.k = int(k)
         self.j = int(j)
         self.m = self.k + self.j
+        # all features active: no boundary exists, so no surrogate can apply
+        self.trivial = self.k >= self.n_features
         self.n_eff = float(n_eff)
         self.selection_mode = selection_mode
         self.effective_count_metric = effective_count_metric
@@ -285,6 +287,15 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 )
             scores, value = self.scores_of(a), a
 
+        if self.trivial:
+            # k == n_features: every feature is active, so the mask is all ones
+            # and topk would be a full sort for nothing.  Kept as a control run
+            # rather than an optimisation of a real configuration.
+            hard_mask = torch.ones_like(scores)
+            if self.log_diagnostics and self.training:
+                self._record_usage(hard_mask)
+            return value * hard_mask
+
         cand_scores, cand_idx = torch.topk(
             scores, self.m, dim=-1, largest=True, sorted=True
         )
@@ -462,9 +473,34 @@ class AdaptiveLapSumTopKGate(nn.Module):
 
 
 def validate_gate_shapes(
-    n_features: int, k: int, j: int, n_eff: float, boundary_mode: str
+    n_features: int,
+    k: int,
+    j: int,
+    n_eff: float,
+    boundary_mode: str,
+    surrogate_mode: str = "lapsum_adaptive",
 ) -> None:
-    """Section 23 of the spec, enforced up front rather than as runtime NaNs."""
+    """Section 23 of the spec, enforced up front rather than as runtime NaNs.
+
+    A hard mask never solves a barrier, so two geometries that are degenerate
+    for the surrogate are meaningful there: ``j = 0`` (no candidates beyond the
+    support) and ``k = n_features`` (every feature active -- a *trivial*
+    bottleneck, i.e. the bare ``W_in -> W_out`` projection pair, which isolates
+    the cost of the extra parameters from the cost of the sparsity).  ``n_eff``
+    is inert without a surrogate, so it is left unchecked.
+    """
+    if surrogate_mode == "hard":
+        if not 1 <= k <= n_features:
+            raise ValueError(
+                f"require 1 <= k <= n_features, got k={k}, n_features={n_features}"
+            )
+        if j < 0:
+            raise ValueError(f"require j >= 0, got j={j}")
+        if k + j > n_features:
+            raise ValueError(
+                f"require k + j <= n_features, got k={k}, j={j}, n_features={n_features}"
+            )
+        return
     if not 1 <= k < n_features:
         raise ValueError(f"require 1 <= k < n_features, got k={k}, n_features={n_features}")
     if j < 1:

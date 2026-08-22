@@ -33,6 +33,7 @@ from wsparse.bottleneck import (
     solve_joint_temperature,
     solve_reference_temperature,
     solve_score_softmax_temperature,
+    validate_gate_shapes,
 )
 from wsparse.config import ActivationBottleneckConfig, Config, ModelConfig, SparsityConfig
 from wsparse.model import build_model
@@ -1614,3 +1615,68 @@ def test_inactive_grad_scale_is_inert_without_a_surrogate():
         g(x).pow(2).sum().backward()
         outs.append(x.grad.clone())
     torch.testing.assert_close(outs[0], outs[1], rtol=0, atol=0)
+
+
+# --------------------------------------------------------------------------- #
+# trivial bottleneck: k == n_features, hard mask, no J
+# --------------------------------------------------------------------------- #
+
+
+def test_trivial_bottleneck_keeps_every_feature():
+    torch.manual_seed(0)
+    g = make_gate(n_features=64, k=64, j=0, surrogate_mode="hard")
+    a = torch.randn(8, 64)
+    out = g(a)
+    torch.testing.assert_close(out, a, rtol=0, atol=0)   # mask is exactly ones
+
+
+def test_trivial_bottleneck_reduces_to_the_bare_projection_pair():
+    """The control run: same parameters as a sparse bottleneck, no sparsity."""
+    torch.manual_seed(0)
+    cfg = bottleneck_cfg(n_features=64, k=64, j=0, surrogate_mode="hard",
+                         calibrate_output=True)
+    mod = SparseTopKBottleneck(32, cfg).eval()
+    x = torch.randn(4, 7, 32)
+    with torch.no_grad():
+        torch.testing.assert_close(
+            mod(x), mod.out_proj(mod.in_proj(x)) * mod.output_scale, atol=1e-6, rtol=1e-5
+        )
+
+
+def test_trivial_bottleneck_passes_gradient_to_every_feature():
+    torch.manual_seed(0)
+    g = make_gate(n_features=64, k=64, j=0, surrogate_mode="hard")
+    a = torch.randn(8, 64, requires_grad=True)
+    g(a).pow(2).sum().backward()
+    assert (a.grad != 0).all()
+
+
+def test_trivial_bottleneck_reports_no_dead_features():
+    g = make_gate(n_features=64, k=64, j=0, surrogate_mode="hard", log_diagnostics=True)
+    g.train()
+    for _ in range(5):
+        g(torch.randn(16, 64))
+    assert float(g.feature_usage().min()) > 0.0
+
+
+@pytest.mark.parametrize("mode", ["lapsum_adaptive", "lapsum_scheduled"])
+def test_k_equal_n_features_is_rejected_for_every_surrogate(mode):
+    """No barrier exists when the support is everything: sum p_i = K = N
+    drives b to -inf, so this must fail up front rather than as runtime NaNs."""
+    with pytest.raises(ValueError, match="1 <= k < n_features"):
+        validate_gate_shapes(64, 64, 0, 8.0, "both_sides", mode)
+
+
+@pytest.mark.parametrize("mode", ["lapsum_adaptive", "lapsum_scheduled"])
+def test_zero_j_is_rejected_for_every_surrogate(mode):
+    with pytest.raises(ValueError, match="j >= 1"):
+        validate_gate_shapes(64, 32, 0, 8.0, "both_sides", mode)
+
+
+def test_hard_mode_accepts_the_degenerate_geometry_and_ignores_n_eff():
+    validate_gate_shapes(64, 64, 0, 8.0, "both_sides", "hard")   # k == N, j == 0
+    validate_gate_shapes(64, 32, 0, 999.0, "both_sides", "hard")  # n_eff inert
+    with pytest.raises(ValueError, match="k <= n_features"):
+        validate_gate_shapes(64, 65, 0, 8.0, "both_sides", "hard")
+    with pytest.raises(ValueError, match="k \\+ j <= n_features"):
+        validate_gate_shapes(64, 64, 8, 8.0, "both_sides", "hard")

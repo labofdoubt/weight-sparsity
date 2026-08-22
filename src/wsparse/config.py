@@ -519,7 +519,10 @@ class ActivationBottleneckConfig:
         # shape rules live with the gate so the module can be built standalone
         from .bottleneck.gate import validate_gate_shapes
 
-        validate_gate_shapes(self.n_features, self.k, self.j, self.n_eff, self.boundary_mode)
+        validate_gate_shapes(
+            self.n_features, self.k, self.j, self.n_eff,
+            self.boundary_mode, self.surrogate_mode,
+        )
 
 
 # --------------------------------------------------------------------------- #
