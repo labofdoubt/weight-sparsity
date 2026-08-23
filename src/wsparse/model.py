@@ -104,11 +104,20 @@ class Block(nn.Module):
         # are unchanged when the experiment is off.
         self.residual_bottleneck = nn.Identity()
         self.mlp_bottleneck = nn.Identity()
+        # `residual_out` is the same stream, at the far end of the block.  Note
+        # that with every layer selected the two stream placements differ in
+        # only one position out of n_layers + 1: `residual` also bottlenecks the
+        # embedding output before block 0 but never the final hidden state,
+        # while `residual_out` never touches the embedding but does bottleneck
+        # the state that feeds norm_f and the unembedding.  The n_layers - 1
+        # interior positions are identical.
+        self.residual_out_bottleneck = nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.residual_bottleneck(x)
         x = x + self.attn(self.norm1(x))
         x = x + self.mlp(self.mlp_bottleneck(self.norm2(x)))
+        x = self.residual_out_bottleneck(x)
         return x
 
 

@@ -523,13 +523,14 @@ def test_trivial_bottleneck_trains_end_to_end(tmp_path, placement):
     assert np.isfinite([r["train/ce"] for r in records if "train/ce" in r]).all()
 
 
+@pytest.mark.parametrize("placement", ["residual", "residual_out"])
 @pytest.mark.parametrize("surrogate", ["hard", "lapsum_scheduled"])
-def test_residual_placement_trains_end_to_end(tmp_path, surrogate):
+def test_stream_placements_train_end_to_end(tmp_path, surrogate, placement):
     data_dir = make_fake_dataset(tmp_path)
-    name = f"bn_res_{surrogate}"
+    name = f"bn_{placement}_{surrogate}"
     cfg = bottleneck_smoke_config(
         data_dir, str(tmp_path / "runs_res"),
-        placement="residual", surrogate_mode=surrogate,
+        placement=placement, surrogate_mode=surrogate,
         temperature_schedule="constant", temperature_start=1.0,
         temperature_scale_mode="relative",
     )

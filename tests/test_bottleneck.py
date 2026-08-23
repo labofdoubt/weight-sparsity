@@ -1694,16 +1694,21 @@ def placed_model(placement, n_layers=3, **kw):
     return model, apply_activation_bottleneck(model, cfg, max_steps=10)
 
 
-@pytest.mark.parametrize(
-    "placement,attr,other",
-    [("pre_mlp", "mlp_bottleneck", "residual_bottleneck"),
-     ("residual", "residual_bottleneck", "mlp_bottleneck")],
-)
-def test_placement_installs_at_the_requested_point(placement, attr, other):
+_PLACEMENT_ATTRS = {
+    "pre_mlp": "mlp_bottleneck",
+    "residual": "residual_bottleneck",
+    "residual_out": "residual_out_bottleneck",
+}
+
+
+@pytest.mark.parametrize("placement", sorted(_PLACEMENT_ATTRS))
+def test_placement_installs_at_the_requested_point(placement):
     model, ctrl = placed_model(placement)
+    chosen = _PLACEMENT_ATTRS[placement]
     for block in model.blocks:
-        assert isinstance(getattr(block, attr), SparseTopKBottleneck)
-        assert isinstance(getattr(block, other), nn.Identity)
+        assert isinstance(getattr(block, chosen), SparseTopKBottleneck)
+        for other in set(_PLACEMENT_ATTRS.values()) - {chosen}:
+            assert isinstance(getattr(block, other), nn.Identity)
     assert len(ctrl.layers) == len(model.blocks)
 
 
@@ -1745,9 +1750,8 @@ def test_residual_placement_has_no_skip_around_it():
 
 
 def test_both_placements_cost_the_same_parameters():
-    _, a = placed_model("pre_mlp")
-    _, b = placed_model("residual")
-    assert a.n_parameters == b.n_parameters
+    counts = {p: placed_model(p)[1].n_parameters for p in _PLACEMENT_ATTRS}
+    assert len(set(counts.values())) == 1, counts
 
 
 def test_placement_names_the_right_state_dict_keys():
@@ -1762,7 +1766,7 @@ def test_unknown_placement_is_rejected():
         ActivationBottleneckConfig(enabled=True, placement="pre_attn")
 
 
-@pytest.mark.parametrize("placement", ["pre_mlp", "residual"])
+@pytest.mark.parametrize("placement", ["pre_mlp", "residual", "residual_out"])
 def test_calibration_works_at_either_placement(placement):
     model, ctrl = placed_model(placement, calibrate_output=True)
     model.train()
@@ -1774,7 +1778,7 @@ def test_calibration_works_at_either_placement(placement):
     assert info["bottleneck/output_scale_min"] > 0.0
 
 
-@pytest.mark.parametrize("placement", ["pre_mlp", "residual"])
+@pytest.mark.parametrize("placement", ["pre_mlp", "residual", "residual_out"])
 def test_residual_placement_keeps_the_forward_k_sparse(placement):
     model, ctrl = placed_model(placement)
     model.train()
@@ -1783,7 +1787,7 @@ def test_residual_placement_keeps_the_forward_k_sparse(placement):
     assert int((gate(a) != 0).sum(-1).max()) <= 16
 
 
-@pytest.mark.parametrize("placement", ["pre_mlp", "residual"])
+@pytest.mark.parametrize("placement", ["pre_mlp", "residual", "residual_out"])
 def test_gradient_reaches_the_bottleneck_at_either_placement(placement):
     model, ctrl = placed_model(placement)
     model.train()
@@ -1792,3 +1796,56 @@ def test_gradient_reaches_the_bottleneck_at_either_placement(placement):
     for _, layer in ctrl.layers:
         assert layer.in_proj.weight.grad is not None
         assert torch.isfinite(layer.in_proj.weight.grad).all()
+
+
+def test_residual_out_placement_runs_after_the_mlp():
+    model, _ = placed_model("residual_out")
+    block = model.blocks[0]
+    model.eval()
+    x = torch.randn(2, 5, model.cfg.d_model)
+    with torch.no_grad():
+        want = x + block.attn(block.norm1(x))
+        want = want + block.mlp(block.norm2(want))
+        want = block.residual_out_bottleneck(want)
+        torch.testing.assert_close(block(x), want, atol=1e-6, rtol=1e-5)
+
+
+def test_residual_out_has_no_skip_around_it():
+    class Zero(nn.Module):
+        def forward(self, t):
+            return torch.zeros_like(t)
+
+    model, _ = placed_model("residual_out")
+    model.eval()
+    block = model.blocks[0]
+    block.residual_out_bottleneck = Zero()
+    with torch.no_grad():
+        a, b = (torch.randn(2, 5, model.cfg.d_model) for _ in range(2))
+        torch.testing.assert_close(block(a), block(b), atol=1e-6, rtol=1e-5)
+
+
+def test_stream_placements_differ_in_exactly_one_position():
+    """`residual` and `residual_out` are adjacent on the stream, not opposite.
+
+    With every layer selected, `residual` inserts at the head of each block and
+    `residual_out` at the tail -- and the tail of block i *is* the head of block
+    i + 1.  So the interior positions coincide and the two differ only at the
+    ends: `residual` bottlenecks the embedding output but never the final hidden
+    state, `residual_out` the reverse.  Recorded as a test because it is the
+    main thing needed to read a comparison of the two.
+    """
+    n = 4
+    head = {f"pre_block{i}" for i in range(n)}
+    # post_block{i} is the same point on the stream as pre_block{i+1}; the last
+    # one lands on the input to norm_f rather than on another block.
+    tail = {f"pre_block{i + 1}" for i in range(n - 1)} | {"pre_norm_f"}
+
+    assert len(head & tail) == n - 1
+    assert head - tail == {"pre_block0"}    # only `residual` sees the embedding
+    assert tail - head == {"pre_norm_f"}    # only `residual_out` sees the last state
+
+    # and the two really do install at different attributes
+    m1, _ = placed_model("residual", n_layers=n)
+    m2, _ = placed_model("residual_out", n_layers=n)
+    assert isinstance(m1.blocks[0].residual_out_bottleneck, nn.Identity)
+    assert isinstance(m2.blocks[0].residual_bottleneck, nn.Identity)

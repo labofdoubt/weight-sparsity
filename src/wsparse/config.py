@@ -382,11 +382,15 @@ class ActivationBottleneckConfig:
     enabled: bool = False
 
     layers: Any = "all"  # all | even | odd | first:n | last:n | [0, 2, 4]
-    # pre_mlp : on the MLP input, inside the residual branch -- the skip routes
-    #           around it, so x still carries what the bottleneck dropped.
-    # residual: on the residual stream itself, before attention -- nothing
-    #           routes around it, so every later op sees only what survived.
-    placement: str = "pre_mlp"  # pre_mlp | residual
+    # pre_mlp     : on the MLP input, inside the residual branch -- the skip
+    #               routes around it, so x still carries what was dropped.
+    # residual     : on the stream itself, at the head of the block (before
+    #               attention).  Nothing routes around it.
+    # residual_out : on the stream itself, at the tail of the block (after the
+    #               MLP add).  With layers="all" this differs from `residual`
+    #               in one position only: it bottlenecks the final hidden state
+    #               feeding the unembedding instead of the embedding output.
+    placement: str = "pre_mlp"  # pre_mlp | residual | residual_out
 
     n_features: int = 4096  # N
     k: int = 256  # active in the forward pass
@@ -469,9 +473,10 @@ class ActivationBottleneckConfig:
     def __post_init__(self) -> None:
         if not self.enabled:
             return
-        if self.placement not in ("pre_mlp", "residual"):
+        if self.placement not in ("pre_mlp", "residual", "residual_out"):
             raise ValueError(
-                f"unknown bottleneck placement: {self.placement!r} (pre_mlp | residual)"
+                f"unknown bottleneck placement: {self.placement!r} "
+                "(pre_mlp | residual | residual_out)"
             )
         if self.selection_mode not in ("topk", "abs_topk", "gated_topk"):
             raise ValueError(

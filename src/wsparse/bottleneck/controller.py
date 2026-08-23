@@ -41,8 +41,13 @@ def resolve_layers(spec, n_layers: int) -> List[int]:
 
 #: where in a block the bottleneck is spliced in -> the attribute it replaces.
 #: ``pre_mlp`` sits inside the MLP branch, so the residual skip routes around
-#: it; ``residual`` replaces the stream before attention, so nothing does.
-_PLACEMENT_ATTR = {"pre_mlp": "mlp_bottleneck", "residual": "residual_bottleneck"}
+#: it; the two stream placements replace the stream itself, so nothing does --
+#: ``residual`` at the head of the block, ``residual_out`` at the tail.
+_PLACEMENT_ATTR = {
+    "pre_mlp": "mlp_bottleneck",
+    "residual": "residual_bottleneck",
+    "residual_out": "residual_out_bottleneck",
+}
 
 
 class ActivationBottleneckController:
