@@ -312,8 +312,12 @@ def train(cfg: Config) -> Dict[str, float]:
                     f" | neff {bn['bottleneck/n_eff_realized']:.1f}"
                     f" | dK {bn['bottleneck/budget_residual']:.1e}"
                 )
-            elif bn:  # the hard baseline runs no solver
+            elif "bottleneck/score_gap" in bn:  # the hard baseline runs no solver
                 line += f" | gap {bn['bottleneck/score_gap']:.3g}"
+            elif bn:
+                # k == n_features: every feature is active, so there is no
+                # boundary between kept and dropped and no gap to report.
+                line += f" | dense {bn.get('bottleneck/density', 1.0):.3g}"
             line += (
                 f" | gnorm {float(grad_norm):.2f}"
                 f" | {human(tok_per_s)} tok/s | {metrics['perf/ms_per_step']:.0f} ms/step"

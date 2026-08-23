@@ -497,3 +497,47 @@ def test_usage_figure_survives_missing_matplotlib(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", no_mpl)
     assert train_mod.usage_figure({"blocks.0": torch.rand(64)}, 8, 64) is None
+
+
+@pytest.mark.parametrize("placement", ["pre_mlp", "residual"])
+def test_trivial_bottleneck_trains_end_to_end(tmp_path, placement):
+    """Regression: with k == n_features there is no boundary, so the console
+    line had no gap statistic to print and the run died three seconds in --
+    while every unit test on the geometry passed.  Train it for real instead.
+    """
+    data_dir = make_fake_dataset(tmp_path)
+    name = f"bn_trivial_{placement}"
+    cfg = bottleneck_smoke_config(
+        data_dir, str(tmp_path / "runs_triv"),
+        placement=placement, k=128, j=0, surrogate_mode="hard",
+        calibrate_output=True,
+    )
+    cfg.train.run_name = name
+    train(cfg)
+
+    records = [json.loads(l) for l in open(tmp_path / "runs_triv" / name / "metrics.jsonl")]
+    bn = [r for r in records if "bottleneck/density" in r]
+    assert bn, "no bottleneck diagnostics were logged"
+    assert bn[-1]["bottleneck/density"] == pytest.approx(1.0)
+    assert "bottleneck/score_gap" not in bn[-1]  # undefined without a boundary
+    assert np.isfinite([r["train/ce"] for r in records if "train/ce" in r]).all()
+
+
+@pytest.mark.parametrize("surrogate", ["hard", "lapsum_scheduled"])
+def test_residual_placement_trains_end_to_end(tmp_path, surrogate):
+    data_dir = make_fake_dataset(tmp_path)
+    name = f"bn_res_{surrogate}"
+    cfg = bottleneck_smoke_config(
+        data_dir, str(tmp_path / "runs_res"),
+        placement="residual", surrogate_mode=surrogate,
+        temperature_schedule="constant", temperature_start=1.0,
+        temperature_scale_mode="relative",
+    )
+    cfg.train.run_name = name
+    train(cfg)
+
+    records = [json.loads(l) for l in open(tmp_path / "runs_res" / name / "metrics.jsonl")]
+    ce = [r["train/ce"] for r in records if "train/ce" in r]
+    assert ce and np.isfinite(ce).all()
+    bn = [r for r in records if "bottleneck/density" in r]
+    assert bn[-1]["bottleneck/density"] == pytest.approx(16 / 128)
