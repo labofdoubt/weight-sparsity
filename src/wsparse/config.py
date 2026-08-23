@@ -390,7 +390,13 @@ class ActivationBottleneckConfig:
     #               MLP add).  With layers="all" this differs from `residual`
     #               in one position only: it bottlenecks the final hidden state
     #               feeding the unembedding instead of the embedding output.
-    placement: str = "pre_mlp"  # pre_mlp | residual | residual_out
+    # post_attn    : on the attention output, before the residual add.
+    # post_mlp     : on the MLP output, before the residual add.  These two are
+    #               also inside a branch, but constrain what the branch may
+    #               *contribute* rather than what it may read.
+    # Several may be combined ("post_mlp,post_attn"); each installs its own
+    # bottleneck, so the parameter cost scales with how many are named.
+    placement: str = "pre_mlp"  # pre_mlp | residual | residual_out | post_attn | post_mlp
 
     n_features: int = 4096  # N
     k: int = 256  # active in the forward pass
@@ -473,11 +479,9 @@ class ActivationBottleneckConfig:
     def __post_init__(self) -> None:
         if not self.enabled:
             return
-        if self.placement not in ("pre_mlp", "residual", "residual_out"):
-            raise ValueError(
-                f"unknown bottleneck placement: {self.placement!r} "
-                "(pre_mlp | residual | residual_out)"
-            )
+        from .bottleneck.controller import parse_placements
+
+        parse_placements(self.placement)  # raises on an unknown or empty name
         if self.selection_mode not in ("topk", "abs_topk", "gated_topk"):
             raise ValueError(
                 f"unknown selection_mode: {self.selection_mode} "

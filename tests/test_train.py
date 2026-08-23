@@ -10,6 +10,7 @@ from wsparse.data import TokenStream, load_meta
 from wsparse.optim import lr_at
 from wsparse.train import evaluate, load_for_inference, train
 from wsparse.model import build_model
+from wsparse.bottleneck import apply_activation_bottleneck
 
 
 VOCAB = 64
@@ -542,3 +543,47 @@ def test_stream_placements_train_end_to_end(tmp_path, surrogate, placement):
     assert ce and np.isfinite(ce).all()
     bn = [r for r in records if "bottleneck/density" in r]
     assert bn[-1]["bottleneck/density"] == pytest.approx(16 / 128)
+
+
+@pytest.mark.parametrize("placement", ["post_mlp", "post_attn,post_mlp"])
+@pytest.mark.parametrize("geometry", ["trivial", "sparse"])
+def test_branch_output_placements_train_end_to_end(tmp_path, placement, geometry):
+    """The four shapes queued for the branch-output sweep, trained for real.
+
+    A geometry that validates and a geometry that survives a training step are
+    different claims -- k == n_features passed every unit test while killing
+    the run on step 1.
+    """
+    data_dir = make_fake_dataset(tmp_path)
+    name = "bn_" + placement.replace(",", "_") + "_" + geometry
+    extra = (
+        dict(k=128, j=0, surrogate_mode="hard")
+        if geometry == "trivial"
+        else dict(k=16, j=48, surrogate_mode="lapsum_scheduled",
+                  temperature_schedule="constant", temperature_start=1.0,
+                  temperature_scale_mode="relative")
+    )
+    cfg = bottleneck_smoke_config(
+        data_dir, str(tmp_path / "runs_branch"), placement=placement, **extra
+    )
+    cfg.train.run_name = name
+    train(cfg)
+
+    records = [json.loads(l) for l in open(tmp_path / "runs_branch" / name / "metrics.jsonl")]
+    ce = [r["train/ce"] for r in records if "train/ce" in r]
+    assert ce and np.isfinite(ce).all()
+    bn = [r for r in records if "bottleneck/density" in r]
+    assert bn[-1]["bottleneck/density"] == pytest.approx(1.0 if geometry == "trivial" else 16 / 128)
+
+
+def test_combined_placement_reports_double_the_bottleneck_parameters(tmp_path):
+    data_dir = make_fake_dataset(tmp_path)
+    counts = {}
+    for placement in ("post_mlp", "post_attn,post_mlp"):
+        cfg = bottleneck_smoke_config(
+            data_dir, str(tmp_path / "runs_cnt"), placement=placement
+        )
+        model = build_model(cfg.model)
+        ctrl = apply_activation_bottleneck(model, cfg.activation_bottleneck, max_steps=1)
+        counts[placement] = ctrl.n_parameters
+    assert counts["post_attn,post_mlp"] == 2 * counts["post_mlp"]

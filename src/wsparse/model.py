@@ -112,11 +112,18 @@ class Block(nn.Module):
         # the state that feeds norm_f and the unembedding.  The n_layers - 1
         # interior positions are identical.
         self.residual_out_bottleneck = nn.Identity()
+        # `post_attn` / `post_mlp` sit on a sub-block's *output*, before it is
+        # added back to the stream.  Like `pre_mlp` they live inside a residual
+        # branch, so the skip still carries x -- but they constrain what the
+        # branch may contribute rather than what it may read.  Both can be
+        # active at once, and each gets its own parameters.
+        self.post_attn_bottleneck = nn.Identity()
+        self.post_mlp_bottleneck = nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.residual_bottleneck(x)
-        x = x + self.attn(self.norm1(x))
-        x = x + self.mlp(self.mlp_bottleneck(self.norm2(x)))
+        x = x + self.post_attn_bottleneck(self.attn(self.norm1(x)))
+        x = x + self.post_mlp_bottleneck(self.mlp(self.mlp_bottleneck(self.norm2(x))))
         x = self.residual_out_bottleneck(x)
         return x
 

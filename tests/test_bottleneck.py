@@ -33,6 +33,7 @@ from wsparse.bottleneck import (
     solve_joint_temperature,
     solve_reference_temperature,
     solve_score_softmax_temperature,
+    parse_placements,
     validate_gate_shapes,
 )
 from wsparse.config import ActivationBottleneckConfig, Config, ModelConfig, SparsityConfig
@@ -1698,6 +1699,8 @@ _PLACEMENT_ATTRS = {
     "pre_mlp": "mlp_bottleneck",
     "residual": "residual_bottleneck",
     "residual_out": "residual_out_bottleneck",
+    "post_attn": "post_attn_bottleneck",
+    "post_mlp": "post_mlp_bottleneck",
 }
 
 
@@ -1766,7 +1769,7 @@ def test_unknown_placement_is_rejected():
         ActivationBottleneckConfig(enabled=True, placement="pre_attn")
 
 
-@pytest.mark.parametrize("placement", ["pre_mlp", "residual", "residual_out"])
+@pytest.mark.parametrize("placement", sorted(_PLACEMENT_ATTRS))
 def test_calibration_works_at_either_placement(placement):
     model, ctrl = placed_model(placement, calibrate_output=True)
     model.train()
@@ -1778,7 +1781,7 @@ def test_calibration_works_at_either_placement(placement):
     assert info["bottleneck/output_scale_min"] > 0.0
 
 
-@pytest.mark.parametrize("placement", ["pre_mlp", "residual", "residual_out"])
+@pytest.mark.parametrize("placement", sorted(_PLACEMENT_ATTRS))
 def test_residual_placement_keeps_the_forward_k_sparse(placement):
     model, ctrl = placed_model(placement)
     model.train()
@@ -1787,7 +1790,7 @@ def test_residual_placement_keeps_the_forward_k_sparse(placement):
     assert int((gate(a) != 0).sum(-1).max()) <= 16
 
 
-@pytest.mark.parametrize("placement", ["pre_mlp", "residual", "residual_out"])
+@pytest.mark.parametrize("placement", sorted(_PLACEMENT_ATTRS))
 def test_gradient_reaches_the_bottleneck_at_either_placement(placement):
     model, ctrl = placed_model(placement)
     model.train()
@@ -1849,3 +1852,84 @@ def test_stream_placements_differ_in_exactly_one_position():
     m2, _ = placed_model("residual_out", n_layers=n)
     assert isinstance(m1.blocks[0].residual_out_bottleneck, nn.Identity)
     assert isinstance(m2.blocks[0].residual_bottleneck, nn.Identity)
+
+
+# --------------------------------------------------------------------------- #
+# post_attn / post_mlp, and combining placements
+# --------------------------------------------------------------------------- #
+
+
+def test_post_attn_and_post_mlp_gate_the_branch_contribution():
+    """They sit on a sub-block's output, before it rejoins the stream."""
+    model, _ = placed_model("post_attn,post_mlp")
+    block = model.blocks[0]
+    model.eval()
+    x = torch.randn(2, 5, model.cfg.d_model)
+    with torch.no_grad():
+        want = x + block.post_attn_bottleneck(block.attn(block.norm1(x)))
+        want = want + block.post_mlp_bottleneck(block.mlp(block.norm2(want)))
+        torch.testing.assert_close(block(x), want, atol=1e-6, rtol=1e-5)
+
+
+def test_branch_output_placements_keep_the_skip_intact():
+    """Zeroing the branch output leaves x itself untouched -- unlike the stream
+    placements, where zeroing the bottleneck erases x entirely."""
+    class Zero(nn.Module):
+        def forward(self, t):
+            return torch.zeros_like(t)
+
+    model, _ = placed_model("post_attn,post_mlp")
+    model.eval()
+    block = model.blocks[0]
+    block.post_attn_bottleneck = Zero()
+    block.post_mlp_bottleneck = Zero()
+    with torch.no_grad():
+        x = torch.randn(2, 5, model.cfg.d_model)
+        torch.testing.assert_close(block(x), x, atol=1e-6, rtol=1e-5)  # pure identity
+
+
+def test_combining_placements_installs_one_bottleneck_each():
+    model, ctrl = placed_model("post_attn,post_mlp", n_layers=3)
+    assert len(ctrl.layers) == 6  # 3 layers x 2 placements
+    for block in model.blocks:
+        assert isinstance(block.post_attn_bottleneck, SparseTopKBottleneck)
+        assert isinstance(block.post_mlp_bottleneck, SparseTopKBottleneck)
+        assert block.post_attn_bottleneck is not block.post_mlp_bottleneck
+    names = [n for n, _ in ctrl.layers]
+    assert len(set(names)) == 6, names  # labels disambiguate the placement
+
+
+def test_combining_placements_doubles_the_parameter_cost():
+    _, one = placed_model("post_mlp", n_layers=3)
+    _, two = placed_model("post_attn,post_mlp", n_layers=3)
+    assert two.n_parameters == 2 * one.n_parameters
+
+
+@pytest.mark.parametrize(
+    "spec,expected",
+    [("post_mlp", ["post_mlp"]),
+     ("post_mlp,post_attn", ["post_attn", "post_mlp"]),      # forward order
+     ("post_attn+post_mlp", ["post_attn", "post_mlp"]),      # '+' separator
+     ("post_mlp post_attn", ["post_attn", "post_mlp"]),      # whitespace
+     ("post_mlp,post_mlp", ["post_mlp"]),                    # deduplicated
+     ("residual,pre_mlp", ["pre_mlp", "residual"])],
+)
+def test_parse_placements_normalises_to_forward_order(spec, expected):
+    assert parse_placements(spec) == expected
+
+
+@pytest.mark.parametrize("spec", ["", "   ", "post_norm", "post_mlp,nonsense"])
+def test_parse_placements_rejects_bad_specs(spec):
+    with pytest.raises(ValueError):
+        parse_placements(spec)
+
+
+def test_gradient_reaches_both_combined_placements():
+    model, ctrl = placed_model("post_attn,post_mlp", n_layers=2)
+    model.train()
+    logits = model(torch.randint(0, 97, (2, 16)))
+    (logits[0] if isinstance(logits, tuple) else logits).sum().backward()
+    for _, layer in ctrl.layers:
+        assert layer.in_proj.weight.grad is not None
+        assert torch.isfinite(layer.in_proj.weight.grad).all()
+        assert layer.in_proj.weight.grad.abs().sum() > 0

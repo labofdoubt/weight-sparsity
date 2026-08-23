@@ -43,11 +43,36 @@ def resolve_layers(spec, n_layers: int) -> List[int]:
 #: ``pre_mlp`` sits inside the MLP branch, so the residual skip routes around
 #: it; the two stream placements replace the stream itself, so nothing does --
 #: ``residual`` at the head of the block, ``residual_out`` at the tail.
+#: ``post_attn`` / ``post_mlp`` sit on a sub-block output before the residual
+#: add: inside a branch like ``pre_mlp``, but constraining what the branch may
+#: contribute rather than what it may read.
 _PLACEMENT_ATTR = {
     "pre_mlp": "mlp_bottleneck",
     "residual": "residual_bottleneck",
     "residual_out": "residual_out_bottleneck",
+    "post_attn": "post_attn_bottleneck",
+    "post_mlp": "post_mlp_bottleneck",
 }
+
+
+def parse_placements(spec: str) -> List[str]:
+    """``"post_mlp"`` or ``"post_mlp,post_attn"`` -> a list of placement names.
+
+    Several placements may be active at once; each installs its own bottleneck
+    with its own parameters, so the parameter cost scales with how many are
+    named.  Order is normalised to the order they occur in a block's forward.
+    """
+    names = [t for t in str(spec).replace("+", ",").replace(" ", ",").split(",") if t]
+    if not names:
+        raise ValueError("bottleneck placement is empty")
+    unknown = [n for n in names if n not in _PLACEMENT_ATTR]
+    if unknown:
+        raise ValueError(
+            f"unknown bottleneck placement: {', '.join(repr(u) for u in unknown)} "
+            f"({' | '.join(_PLACEMENT_ATTR)})"
+        )
+    seen = list(dict.fromkeys(names))
+    return [n for n in _PLACEMENT_ATTR if n in seen]
 
 
 class ActivationBottleneckController:
@@ -101,12 +126,7 @@ class ActivationBottleneckController:
 
     def _install(self) -> None:
         cfg = self.cfg
-        attr = _PLACEMENT_ATTR.get(cfg.placement)
-        if attr is None:
-            raise ValueError(
-                f"unknown bottleneck placement: {cfg.placement!r} "
-                f"({' | '.join(_PLACEMENT_ATTR)})"
-            )
+        placements = parse_placements(cfg.placement)
         blocks = getattr(self.model, "blocks", None)
         if blocks is None:
             raise ValueError("activation bottleneck requires a model with .blocks")
@@ -116,10 +136,12 @@ class ActivationBottleneckController:
         d_model = self.model.cfg.d_model
         for i in indices:
             block = blocks[i]
-            bottleneck = SparseTopKBottleneck(d_model, cfg, bias=cfg.bias)
-            # each selected layer gets its own parameters
-            setattr(block, attr, bottleneck)
-            self.layers.append((f"blocks.{i}", bottleneck))
+            for name in placements:
+                bottleneck = SparseTopKBottleneck(d_model, cfg, bias=cfg.bias)
+                # each selected layer *and* placement gets its own parameters
+                setattr(block, _PLACEMENT_ATTR[name], bottleneck)
+                label = f"blocks.{i}" if len(placements) == 1 else f"blocks.{i}.{name}"
+                self.layers.append((label, bottleneck))
 
     # ---- parameters ---------------------------------------------------------- #
     def parameters(self) -> List[nn.Parameter]:

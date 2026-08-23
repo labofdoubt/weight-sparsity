@@ -1,6 +1,7 @@
 from .controller import (
     ActivationBottleneckController,
     apply_activation_bottleneck,
+    parse_placements,
     resolve_layers,
 )
 from .gate import AdaptiveLapSumTopKGate, validate_gate_shapes
@@ -34,6 +35,7 @@ __all__ = [
     "ActivationBottleneckController",
     "apply_activation_bottleneck",
     "resolve_layers",
+    "parse_placements",
     "SparseTopKBottleneck",
     "AdaptiveLapSumTopKGate",
     "validate_gate_shapes",
