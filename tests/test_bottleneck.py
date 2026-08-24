@@ -1959,3 +1959,97 @@ def test_placement_survives_the_cli_override_path():
 
     single = load_config(None, ["--activation_bottleneck.placement=post_mlp"])
     assert parse_placements(single.activation_bottleneck.placement) == ["post_mlp"]
+
+
+# --------------------------------------------------------------------------- #
+# reconstruction loss
+# --------------------------------------------------------------------------- #
+
+
+def test_reconstruction_term_is_recorded_and_popped():
+    cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0, reconstruction_coef=0.1)
+    mod = SparseTopKBottleneck(32, cfg).train()
+    assert mod.take_reconstruction() is None       # nothing recorded yet
+    mod(torch.randn(2, 5, 32))
+    term = mod.take_reconstruction()
+    assert term is not None and term.requires_grad
+    assert mod.take_reconstruction() is None       # popped, not reusable
+
+
+def test_reconstruction_term_is_absent_when_disabled_or_not_training():
+    on = SparseTopKBottleneck(32, bottleneck_cfg(n_features=128, k=16, j=48,
+                                                 n_eff=8.0, reconstruction_coef=0.5))
+    off = SparseTopKBottleneck(32, bottleneck_cfg(n_features=128, k=16, j=48,
+                                                  n_eff=8.0, reconstruction_coef=0.0))
+    x = torch.randn(2, 5, 32)
+    off.train()(x)
+    assert off.take_reconstruction() is None
+    on.eval()
+    with torch.no_grad():
+        on(x)
+    assert on.take_reconstruction() is None        # eval must not build a graph
+
+
+def test_normalised_reconstruction_is_scale_invariant():
+    """The point of normalising: one coefficient works at any activation scale."""
+    torch.manual_seed(0)
+    cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0,
+                         reconstruction_coef=1.0, reconstruction_normalize=True)
+    mod = SparseTopKBottleneck(32, cfg).train()
+    mod.out_proj.bias.data.zero_()
+    mod.in_proj.bias.data.zero_()   # make the block exactly homogeneous in x
+    x = torch.randn(4, 6, 32)
+    mod(x)
+    a = float(mod.take_reconstruction())
+    mod(x * 37.0)
+    b = float(mod.take_reconstruction())
+    assert abs(a - b) / a < 1e-3, (a, b)
+
+
+def test_unnormalised_reconstruction_is_not_scale_invariant():
+    torch.manual_seed(0)
+    cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0,
+                         reconstruction_coef=1.0, reconstruction_normalize=False)
+    mod = SparseTopKBottleneck(32, cfg).train()
+    mod.out_proj.bias.data.zero_()
+    mod.in_proj.bias.data.zero_()
+    x = torch.randn(4, 6, 32)
+    mod(x)
+    a = float(mod.take_reconstruction())
+    mod(x * 10.0)
+    b = float(mod.take_reconstruction())
+    assert b > 50 * a   # quadratic in the scale
+
+
+def test_controller_averages_reconstruction_over_layers():
+    cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0, reconstruction_coef=0.1)
+    model = tiny_model(n_layers=3)
+    ctrl = apply_activation_bottleneck(model, cfg, max_steps=10)
+    model.train()
+    assert ctrl.reconstruction_loss()[0] is None   # before any forward
+    model(torch.randint(0, 97, (2, 8)))
+    total, logs = ctrl.reconstruction_loss()
+    assert total is not None and total.requires_grad
+    assert logs["bottleneck/reconstruction"] == pytest.approx(float(total), rel=1e-6)
+    assert ctrl.reconstruction_loss()[0] is None   # consumed
+
+
+def test_reconstruction_loss_is_off_by_default():
+    cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0)
+    assert cfg.reconstruction_coef == 0.0
+    model = tiny_model(n_layers=2)
+    ctrl = apply_activation_bottleneck(model, cfg, max_steps=10)
+    model.train()
+    model(torch.randint(0, 97, (2, 8)))
+    assert ctrl.reconstruction_loss() == (None, {})
+
+
+def test_reconstruction_gradient_reaches_both_projections():
+    torch.manual_seed(0)
+    cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0, reconstruction_coef=1.0)
+    mod = SparseTopKBottleneck(32, cfg).train()
+    mod(torch.randn(4, 6, 32))
+    mod.take_reconstruction().backward()
+    for name in ("in_proj", "out_proj"):
+        g = getattr(mod, name).weight.grad
+        assert g is not None and torch.isfinite(g).all() and g.abs().sum() > 0

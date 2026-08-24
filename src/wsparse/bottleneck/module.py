@@ -63,6 +63,9 @@ class SparseTopKBottleneck(nn.Module):
             self.register_buffer("output_scale", torch.ones((), dtype=torch.float32))
         else:
             self.output_scale = None
+        self.reconstruction_coef = float(cfg.reconstruction_coef)
+        self.reconstruction_normalize = bool(cfg.reconstruction_normalize)
+        self._reconstruction = None
 
     @property
     def value_proj(self) -> nn.Linear:
@@ -77,7 +80,23 @@ class SparseTopKBottleneck(nn.Module):
             y = self.out_proj(self.gate(value))
         if self.output_scale is not None:
             y = y * self.output_scale.to(y.dtype)
+        if self.reconstruction_coef and self.training and torch.is_grad_enabled():
+            # Held for the controller to collect after this forward.  It has to
+            # be produced here rather than recomputed later: the term depends on
+            # the activations of *this* micro-batch, unlike the weight-sparsity
+            # penalty, which is a function of parameters alone.
+            diff = (y.float() - x.float()).pow(2).sum(-1)
+            if self.reconstruction_normalize:
+                # relative error, so the coefficient means the same thing at any
+                # activation scale and across placements
+                diff = diff / (x.float().pow(2).sum(-1) + 1e-8)
+            self._reconstruction = diff.mean()
         return y
+
+    def take_reconstruction(self):
+        """Pop the term recorded by the last forward (None if disabled)."""
+        term, self._reconstruction = self._reconstruction, None
+        return term
 
     @property
     def diagnostics(self):

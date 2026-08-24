@@ -232,12 +232,24 @@ def train(cfg: Config) -> Dict[str, float]:
 
         optimizer.zero_grad(set_to_none=True)
         ce_sum = 0.0
+        recon_sum, recon_logs = 0.0, {}
+        recon_coef = (
+            cfg.activation_bottleneck.reconstruction_coef if bottleneck.enabled else 0.0
+        )
         for _ in range(accum):
             x, y = train_stream.batch(micro_bs, device)
             with autocast_context(device, dtype):
                 _, ce = model(x, y)
             ce_sum += ce.detach().float().item()
-            scaler.scale(ce / accum).backward()
+            micro = ce
+            if recon_coef:
+                # activation-dependent, so it belongs to *this* micro-batch and
+                # is accumulated with the same 1/accum weighting as the CE
+                recon, recon_logs = bottleneck.reconstruction_loss()
+                if recon is not None:
+                    recon_sum += float(recon.detach())
+                    micro = micro + recon_coef * recon
+            scaler.scale(micro / accum).backward()
 
         # sparsity penalty: added once per optimiser step (it does not depend on
         # the batch), so its gradient is not divided by the accumulation count.
@@ -257,6 +269,8 @@ def train(cfg: Config) -> Dict[str, float]:
         scaler.update()
 
         ce_mean = ce_sum / accum
+        if recon_coef:
+            recon_logs = {"bottleneck/reconstruction": recon_sum / accum}
         running_ce += ce_mean
         running_n += 1
         step1 = step + 1
@@ -275,6 +289,7 @@ def train(cfg: Config) -> Dict[str, float]:
                 "perf/tokens_seen": step1 * tokens_per_step,
             }
             metrics.update(penalty_logs)
+            metrics.update(recon_logs)
             sp = controller.stats()
             metrics.update(sp)
             bn = bottleneck.stats()

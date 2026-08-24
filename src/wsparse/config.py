@@ -441,6 +441,16 @@ class ActivationBottleneckConfig:
     # variance matches its input's at init.  The block projects into a K-sparse
     # code and back, so its output variance need not resemble its input's --
     # and it sits in front of an MLP initialised expecting the latter.
+    # Pull the bottleneck output back towards its input.  Without it these
+    # bottlenecks are not autoencoders at all -- the output is a learned
+    # transform of the input, measured cos(x, x_hat) ~ 0 -- which is fine for
+    # language modelling but makes "did the concept survive the bottleneck"
+    # unanswerable in the input's coordinates.
+    reconstruction_coef: float = 0.0
+    # normalised: ||x_hat - x||^2 / ||x||^2, so the coefficient means the same
+    # thing at any activation scale and at any placement
+    reconstruction_normalize: bool = True
+
     calibrate_output: bool = False
     calibration_batches: int = 4  # batches per pass
     calibration_iters: int = 3  # passes; layers are sequential, so rescaling

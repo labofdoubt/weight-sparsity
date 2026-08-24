@@ -587,3 +587,58 @@ def test_combined_placement_reports_double_the_bottleneck_parameters(tmp_path):
         ctrl = apply_activation_bottleneck(model, cfg.activation_bottleneck, max_steps=1)
         counts[placement] = ctrl.n_parameters
     assert counts["post_attn,post_mlp"] == 2 * counts["post_mlp"]
+
+
+@pytest.mark.parametrize("surrogate", ["hard", "lapsum_scheduled"])
+def test_reconstruction_loss_trains_and_is_logged(tmp_path, surrogate):
+    data_dir = make_fake_dataset(tmp_path)
+    name = f"bn_recon_{surrogate}"
+    cfg = bottleneck_smoke_config(
+        data_dir, str(tmp_path / "runs_recon"), surrogate_mode=surrogate,
+        reconstruction_coef=0.5, temperature_schedule="constant",
+        temperature_start=1.0, temperature_scale_mode="relative",
+    )
+    cfg.train.run_name = name
+    train(cfg)
+
+    records = [json.loads(l) for l in open(tmp_path / "runs_recon" / name / "metrics.jsonl")]
+    logged = [r["bottleneck/reconstruction"] for r in records
+              if "bottleneck/reconstruction" in r]
+    assert logged, "reconstruction term was never logged"
+    assert np.isfinite(logged).all() and min(logged) >= 0.0
+    ce = [r["train/ce"] for r in records if "train/ce" in r]
+    assert np.isfinite(ce).all()
+
+
+def test_reconstruction_loss_actually_improves_reconstruction(tmp_path):
+    """The point of the term: without it these bottlenecks do not reconstruct."""
+    import torch
+
+    from wsparse.bottleneck.controller import _PLACEMENT_ATTR
+
+    data_dir = make_fake_dataset(tmp_path)
+    cos = {}
+    for coef in (0.0, 5.0):
+        cfg = bottleneck_smoke_config(
+            data_dir, str(tmp_path / f"runs_r{coef}"), surrogate_mode="hard",
+            reconstruction_coef=coef,
+        )
+        cfg.train.run_name = f"r{coef}"
+        cfg.train.max_steps = 60
+        cfg.train.seed = 1234
+        train(cfg)
+        model, loaded, _ = load_for_inference(
+            str(tmp_path / f"runs_r{coef}" / f"r{coef}" / "latest.pt")
+        )
+        model.eval()
+        mod = getattr(model.blocks[0], _PLACEMENT_ATTR["pre_mlp"])
+        grab = {}
+        mod.register_forward_pre_hook(lambda m, i: grab.__setitem__("x", i[0].detach()))
+        mod.register_forward_hook(lambda m, i, o: grab.__setitem__("y", o.detach()))
+        with torch.no_grad():
+            model(torch.randint(0, VOCAB, (4, 16)))
+        a, b = grab["x"].flatten(0, 1).float(), grab["y"].flatten(0, 1).float()
+        cos[coef] = float(
+            torch.nn.functional.cosine_similarity(a, b, dim=-1).mean()
+        )
+    assert cos[5.0] > cos[0.0] + 0.1, cos

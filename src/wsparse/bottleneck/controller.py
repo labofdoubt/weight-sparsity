@@ -150,6 +150,26 @@ class ActivationBottleneckController:
                 label = f"blocks.{i}" if len(placements) == 1 else f"blocks.{i}.{name}"
                 self.layers.append((label, bottleneck))
 
+    # ---- objective ----------------------------------------------------------- #
+    def reconstruction_loss(self):
+        """Mean reconstruction error over the installed bottlenecks.
+
+        Must be called after each forward and before the matching backward: the
+        terms are activation-dependent, so unlike the weight-sparsity penalty
+        they cannot be recomputed once per optimiser step.
+
+        Returns ``(None, {})`` when the loss is disabled, so the caller can skip
+        it without building a graph.
+        """
+        if not self.enabled or not self.cfg.reconstruction_coef:
+            return None, {}
+        terms = [t for t in (layer.take_reconstruction() for _, layer in self.layers)
+                 if t is not None]
+        if not terms:
+            return None, {}
+        total = torch.stack(terms).mean()
+        return total, {"bottleneck/reconstruction": float(total.detach())}
+
     # ---- parameters ---------------------------------------------------------- #
     def parameters(self) -> List[nn.Parameter]:
         params: List[nn.Parameter] = []
