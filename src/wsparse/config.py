@@ -396,7 +396,9 @@ class ActivationBottleneckConfig:
     #               *contribute* rather than what it may read.
     # Several may be combined ("post_mlp,post_attn"); each installs its own
     # bottleneck, so the parameter cost scales with how many are named.
-    placement: str = "pre_mlp"  # pre_mlp | residual | residual_out | post_attn | post_mlp
+    # Typed Any, not str, for the same reason as `layers`: the CLI turns a bare
+    # "a,b" into a list, and a declared str would coerce that to its repr.
+    placement: Any = "pre_mlp"  # pre_mlp | residual | residual_out | post_attn | post_mlp
 
     n_features: int = 4096  # N
     k: int = 256  # active in the forward pass

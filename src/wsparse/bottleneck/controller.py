@@ -55,14 +55,21 @@ _PLACEMENT_ATTR = {
 }
 
 
-def parse_placements(spec: str) -> List[str]:
+def parse_placements(spec) -> List[str]:
     """``"post_mlp"`` or ``"post_mlp,post_attn"`` -> a list of placement names.
+
+    Accepts a list as readily as a string: the CLI parser turns a bare ``a,b``
+    into ``["a", "b"]`` before this ever sees it, and YAML may give a sequence
+    too.  Stringifying a list here would silently produce its repr.
 
     Several placements may be active at once; each installs its own bottleneck
     with its own parameters, so the parameter cost scales with how many are
     named.  Order is normalised to the order they occur in a block's forward.
     """
-    names = [t for t in str(spec).replace("+", ",").replace(" ", ",").split(",") if t]
+    if isinstance(spec, (list, tuple, set)):
+        names = [str(t).strip() for t in spec if str(t).strip()]
+    else:
+        names = [t for t in str(spec).replace("+", ",").replace(" ", ",").split(",") if t]
     if not names:
         raise ValueError("bottleneck placement is empty")
     unknown = [n for n in names if n not in _PLACEMENT_ATTR]

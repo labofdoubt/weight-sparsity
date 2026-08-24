@@ -1933,3 +1933,29 @@ def test_gradient_reaches_both_combined_placements():
         assert layer.in_proj.weight.grad is not None
         assert torch.isfinite(layer.in_proj.weight.grad).all()
         assert layer.in_proj.weight.grad.abs().sum() > 0
+
+
+def test_parse_placements_accepts_a_list():
+    """The CLI turns `--...placement=post_attn,post_mlp` into a list before the
+    config ever sees it; stringifying that yields its repr, not the names."""
+    assert parse_placements(["post_attn", "post_mlp"]) == ["post_attn", "post_mlp"]
+    assert parse_placements(("post_mlp",)) == ["post_mlp"]
+    with pytest.raises(ValueError):
+        parse_placements(["post_mlp", "nope"])
+
+
+def test_placement_survives_the_cli_override_path():
+    """The regression that killed both combined runs: every unit test passed a
+    Python string straight to the config, while the experiments went through
+    the CLI parser, which turns a bare "a,b" into a list."""
+    from wsparse.config import load_config
+
+    cfg = load_config(
+        None,
+        ["--activation_bottleneck.enabled=true",
+         "--activation_bottleneck.placement=post_attn,post_mlp"],
+    )
+    assert parse_placements(cfg.activation_bottleneck.placement) == ["post_attn", "post_mlp"]
+
+    single = load_config(None, ["--activation_bottleneck.placement=post_mlp"])
+    assert parse_placements(single.activation_bottleneck.placement) == ["post_mlp"]
