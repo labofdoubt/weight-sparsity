@@ -1,0 +1,461 @@
+[32mActivated conda/uv virtual environment at [36m/venv/main[0m
+######## bn_const1_relative 2026-08-24T19:58:15+00:00
+[extract] layer 5/10 (pre_mlp) N=2048 K=32 signed=True
+[extract] active per token: mean 32.0 max 32 (K=32); 16 features never active
+[probe] SparseProbeTop1 = 0.6951 (95% CI 0.676-0.714)
+[probe] ResidualProbe   = 0.9998
+[probe] sanity: shuffled 0.501 | random feature 0.509 | top1-random +0.186
+[local] animal                 miss 0.676  scatter 0.080/0.676  out 0.986  C1 0.194  Ccan 0.000  Neff 9.0
+[local] body_part              miss 0.514  scatter 0.237/0.510  out 0.994  C1 0.164  Ccan 0.000  Neff 10.6
+[local] cognition              miss 0.598  scatter 0.120/0.594  out 0.996  C1 0.199  Ccan 0.000  Neff 9.0
+[local] color                  miss 0.404  scatter 0.240/0.404  out 0.986  C1 0.134  Ccan 0.000  Neff 13.5
+[local] desire_intention       miss 0.446  scatter 0.000/0.446  out 0.998  C1 0.203  Ccan 0.000  Neff 9.8
+[local] eating_drinking        miss 0.488  scatter 0.000/0.488  out 0.994  C1 0.172  Ccan 0.000  Neff 10.1
+[local] family_relation        miss 0.528  scatter 0.093/0.520  out 0.982  C1 0.201  Ccan 0.009  Neff 9.1
+[local] female_pronoun         miss 0.464  scatter 0.068/0.396  out 0.826  C1 0.173  Ccan 0.016  Neff 10.5
+[local] first_person_pronoun   miss 0.558  scatter 0.169/0.550  out 0.982  C1 0.163  Ccan 0.030  Neff 11.0
+[local] food_drink             miss 0.284  scatter 0.012/0.280  out 0.984  C1 0.182  Ccan 0.000  Neff 10.1
+[local] helping_prosocial      miss 0.664  scatter 0.088/0.644  out 0.990  C1 0.173  Ccan 0.029  Neff 10.5
+[local] human_person           miss 0.685  scatter 0.145/0.685  out 0.988  C1 0.197  Ccan 0.000  Neff 9.0
+[local] inside_dialogue        miss 0.660  scatter 0.320/0.578  out 0.906  C1 0.180  Ccan 0.000  Neff 10.0
+[local] male_pronoun           miss 0.656  scatter 0.092/0.584  out 0.824  C1 0.166  Ccan 0.043  Neff 10.5
+[local] motion                 miss 0.696  scatter 0.008/0.692  out 0.994  C1 0.165  Ccan 0.000  Neff 11.2
+[local] nature_weather         miss 0.711  scatter 0.036/0.663  out 0.938  C1 0.157  Ccan 0.031  Neff 11.8
+[local] negation               miss 0.648  scatter 0.016/0.648  out 1.000  C1 0.194  Ccan 0.000  Neff 8.5
+[local] negative_emotion       miss 0.408  scatter 0.032/0.408  out 0.996  C1 0.175  Ccan 0.000  Neff 10.8
+[local] perception             miss 0.608  scatter 0.044/0.600  out 0.990  C1 0.163  Ccan 0.009  Neff 10.8
+[local] place_location         miss 0.512  scatter 0.012/0.496  out 0.984  C1 0.180  Ccan 0.000  Neff 10.1
+[local] positive_emotion       miss 0.571  scatter 0.016/0.563  out 0.988  C1 0.197  Ccan 0.000  Neff 9.5
+[local] size                   miss 0.624  scatter 0.140/0.592  out 0.982  C1 0.161  Ccan 0.039  Neff 10.6
+[local] speech                 miss 0.364  scatter 0.012/0.352  out 0.992  C1 0.184  Ccan 0.000  Neff 9.8
+[local] toy_play_object        miss 0.436  scatter 0.116/0.396  out 0.954  C1 0.183  Ccan 0.057  Neff 9.6
+[local] CanonicalMissRate 0.550
+[local] ScatterRate       0.087 (refit 0.532)
+[local] Neff (median)     10.22
+######## bn_k32_j128_rel 2026-08-24T20:00:03+00:00
+[extract] layer 5/10 (pre_mlp) N=2048 K=32 signed=True
+[extract] active per token: mean 32.0 max 32 (K=32); 4 features never active
+[probe] SparseProbeTop1 = 0.7143 (95% CI 0.687-0.743)
+[probe] ResidualProbe   = 0.9998
+[probe] sanity: shuffled 0.505 | random feature 0.507 | top1-random +0.207
+[local] animal                 miss 0.700  scatter 0.464/0.688  out 0.988  C1 0.164  Ccan 0.034  Neff 11.0
+[local] body_part              miss 0.498  scatter 0.357/0.494  out 0.996  C1 0.172  Ccan 0.000  Neff 10.7
+[local] cognition              miss 0.528  scatter 0.248/0.524  out 0.988  C1 0.164  Ccan 0.000  Neff 11.1
+[local] color                  miss 0.373  scatter 0.100/0.373  out 0.996  C1 0.171  Ccan 0.010  Neff 10.3
+[local] desire_intention       miss 0.440  scatter 0.136/0.440  out 0.998  C1 0.155  Ccan 0.029  Neff 11.8
+[local] eating_drinking        miss 0.552  scatter 0.272/0.544  out 0.992  C1 0.157  Ccan 0.000  Neff 11.3
+[local] family_relation        miss 0.382  scatter 0.265/0.369  out 0.980  C1 0.151  Ccan 0.036  Neff 12.2
+[local] female_pronoun         miss 0.512  scatter 0.168/0.408  out 0.856  C1 0.185  Ccan 0.003  Neff 9.8
+[local] first_person_pronoun   miss 0.632  scatter 0.296/0.620  out 0.988  C1 0.183  Ccan 0.000  Neff 10.0
+[local] food_drink             miss 0.244  scatter 0.072/0.240  out 0.986  C1 0.177  Ccan 0.032  Neff 10.4
+[local] helping_prosocial      miss 0.652  scatter 0.376/0.648  out 0.994  C1 0.167  Ccan 0.000  Neff 10.6
+[local] human_person           miss 0.723  scatter 0.112/0.703  out 0.972  C1 0.187  Ccan 0.000  Neff 9.7
+[local] inside_dialogue        miss 0.645  scatter 0.387/0.528  out 0.882  C1 0.174  Ccan 0.000  Neff 10.4
+[local] male_pronoun           miss 0.532  scatter 0.048/0.456  out 0.832  C1 0.154  Ccan 0.057  Neff 11.4
+[local] motion                 miss 0.580  scatter 0.356/0.572  out 0.990  C1 0.169  Ccan 0.017  Neff 11.5
+[local] nature_weather         miss 0.640  scatter 0.288/0.584  out 0.948  C1 0.176  Ccan 0.062  Neff 10.3
+[local] negation               miss 0.536  scatter 0.064/0.536  out 1.000  C1 0.172  Ccan 0.052  Neff 10.7
+[local] negative_emotion       miss 0.332  scatter 0.216/0.328  out 0.990  C1 0.187  Ccan 0.000  Neff 10.0
+[local] perception             miss 0.756  scatter 0.464/0.756  out 0.998  C1 0.159  Ccan 0.000  Neff 11.0
+[local] place_location         miss 0.457  scatter 0.000/0.453  out 0.998  C1 0.197  Ccan 0.000  Neff 9.6
+[local] positive_emotion       miss 0.710  scatter 0.173/0.706  out 0.988  C1 0.179  Ccan 0.008  Neff 9.5
+[local] size                   miss 0.532  scatter 0.296/0.516  out 0.982  C1 0.156  Ccan 0.041  Neff 12.0
+[local] speech                 miss 0.228  scatter 0.148/0.220  out 0.990  C1 0.157  Ccan 0.000  Neff 11.1
+[local] toy_play_object        miss 0.699  scatter 0.189/0.627  out 0.912  C1 0.215  Ccan 0.052  Neff 8.9
+[local] CanonicalMissRate 0.537
+[local] ScatterRate       0.229 (refit 0.514)
+[local] Neff (median)     10.63
+######## bn_k32_j256_rel 2026-08-24T20:01:47+00:00
+[extract] layer 5/10 (pre_mlp) N=2048 K=32 signed=True
+[extract] active per token: mean 32.0 max 32 (K=32); 0 features never active
+[probe] SparseProbeTop1 = 0.7327 (95% CI 0.703-0.765)
+[probe] ResidualProbe   = 0.9998
+[probe] sanity: shuffled 0.503 | random feature 0.507 | top1-random +0.226
+[local] animal                 miss 0.604  scatter 0.592/0.600  out 0.990  C1 0.142  Ccan 0.030  Neff 13.4
+[local] body_part              miss 0.430  scatter 0.229/0.426  out 0.996  C1 0.194  Ccan 0.000  Neff 9.6
+[local] cognition              miss 0.480  scatter 0.144/0.480  out 0.996  C1 0.178  Ccan 0.023  Neff 10.4
+[local] color                  miss 0.157  scatter 0.004/0.153  out 0.990  C1 0.231  Ccan 0.044  Neff 7.5
+[local] desire_intention       miss 0.560  scatter 0.376/0.560  out 0.998  C1 0.159  Ccan 0.025  Neff 11.5
+[local] eating_drinking        miss 0.416  scatter 0.200/0.412  out 0.990  C1 0.176  Ccan 0.000  Neff 10.8
+[local] family_relation        miss 0.490  scatter 0.084/0.462  out 0.974  C1 0.187  Ccan 0.000  Neff 9.6
+[local] female_pronoun         miss 0.604  scatter 0.372/0.504  out 0.820  C1 0.177  Ccan 0.004  Neff 10.7
+[local] first_person_pronoun   miss 0.500  scatter 0.096/0.492  out 0.988  C1 0.184  Ccan 0.000  Neff 10.0
+[local] food_drink             miss 0.160  scatter 0.156/0.148  out 0.986  C1 0.140  Ccan 0.050  Neff 12.9
+[local] helping_prosocial      miss 0.596  scatter 0.396/0.588  out 0.992  C1 0.182  Ccan 0.074  Neff 10.8
+[local] human_person           miss 0.676  scatter 0.068/0.668  out 0.980  C1 0.193  Ccan 0.022  Neff 9.4
+[local] inside_dialogue        miss 0.593  scatter 0.113/0.520  out 0.902  C1 0.190  Ccan 0.040  Neff 9.6
+[local] male_pronoun           miss 0.628  scatter 0.156/0.496  out 0.790  C1 0.186  Ccan 0.000  Neff 9.8
+[local] motion                 miss 0.452  scatter 0.328/0.444  out 0.996  C1 0.178  Ccan 0.000  Neff 10.0
+[local] nature_weather         miss 0.612  scatter 0.560/0.576  out 0.952  C1 0.147  Ccan 0.041  Neff 12.0
+[local] negation               miss 0.428  scatter 0.160/0.428  out 0.998  C1 0.174  Ccan 0.000  Neff 10.3
+[local] negative_emotion       miss 0.388  scatter 0.284/0.384  out 0.990  C1 0.168  Ccan 0.089  Neff 11.0
+[local] perception             miss 0.640  scatter 0.368/0.636  out 0.998  C1 0.161  Ccan 0.049  Neff 11.1
+[local] place_location         miss 0.360  scatter 0.300/0.356  out 0.996  C1 0.158  Ccan 0.073  Neff 10.9
+[local] positive_emotion       miss 0.543  scatter 0.389/0.543  out 0.996  C1 0.186  Ccan 0.036  Neff 9.6
+[local] size                   miss 0.380  scatter 0.268/0.360  out 0.984  C1 0.180  Ccan 0.112  Neff 11.0
+[local] speech                 miss 0.268  scatter 0.224/0.264  out 0.998  C1 0.172  Ccan 0.000  Neff 10.2
+[local] toy_play_object        miss 0.632  scatter 0.571/0.591  out 0.950  C1 0.153  Ccan 0.000  Neff 12.2
+[local] CanonicalMissRate 0.483
+[local] ScatterRate       0.268 (refit 0.462)
+[local] Neff (median)     10.59
+######## bn_k64_j64_rel 2026-08-24T20:03:24+00:00
+[extract] layer 5/10 (pre_mlp) N=2048 K=64 signed=True
+[extract] active per token: mean 64.0 max 64 (K=64); 1 features never active
+[probe] SparseProbeTop1 = 0.7790 (95% CI 0.743-0.815)
+[probe] ResidualProbe   = 0.9996
+[probe] sanity: shuffled 0.499 | random feature 0.511 | top1-random +0.268
+[local] animal                 miss 0.410  scatter 0.410/0.406  out 0.992  C1 0.068  Ccan 0.010  Neff 32.5
+[local] body_part              miss 0.474  scatter 0.474/0.470  out 0.992  C1 0.075  Ccan 0.043  Neff 28.3
+[local] cognition              miss 0.328  scatter 0.328/0.328  out 1.000  C1 0.072  Ccan 0.014  Neff 29.2
+[local] color                  miss 0.353  scatter 0.353/0.353  out 0.994  C1 0.065  Ccan 0.000  Neff 31.4
+[local] desire_intention       miss 0.064  scatter 0.064/0.060  out 0.996  C1 0.075  Ccan 0.000  Neff 28.7
+[local] eating_drinking        miss 0.252  scatter 0.252/0.252  out 1.000  C1 0.072  Ccan 0.009  Neff 30.1
+[local] family_relation        miss 0.301  scatter 0.301/0.276  out 0.978  C1 0.078  Ccan 0.052  Neff 27.0
+[local] female_pronoun         miss 0.376  scatter 0.004/0.332  out 0.896  C1 0.111  Ccan 0.000  Neff 17.5
+[local] first_person_pronoun   miss 0.364  scatter 0.364/0.352  out 0.982  C1 0.077  Ccan 0.038  Neff 29.1
+[local] food_drink             miss 0.160  scatter 0.160/0.156  out 0.996  C1 0.062  Ccan 0.030  Neff 33.2
+[local] helping_prosocial      miss 0.309  scatter 0.309/0.305  out 0.998  C1 0.072  Ccan 0.000  Neff 27.7
+[local] human_person           miss 0.414  scatter 0.414/0.402  out 0.978  C1 0.069  Ccan 0.014  Neff 29.3
+[local] inside_dialogue        miss 0.654  scatter 0.642/0.606  out 0.932  C1 0.078  Ccan 0.008  Neff 26.2
+[local] male_pronoun           miss 0.404  scatter 0.000/0.300  out 0.836  C1 0.162  Ccan 0.000  Neff 11.4
+[local] motion                 miss 0.028  scatter 0.028/0.028  out 0.996  C1 0.091  Ccan 0.087  Neff 24.8
+[local] nature_weather         miss 0.556  scatter 0.008/0.548  out 0.978  C1 0.131  Ccan 0.000  Neff 14.2
+[local] negation               miss 0.328  scatter 0.328/0.328  out 1.000  C1 0.071  Ccan 0.000  Neff 29.4
+[local] negative_emotion       miss 0.228  scatter 0.228/0.228  out 0.996  C1 0.079  Ccan 0.034  Neff 27.1
+[local] perception             miss 0.452  scatter 0.000/0.452  out 1.000  C1 0.172  Ccan 0.000  Neff 11.5
+[local] place_location         miss 0.315  scatter 0.000/0.310  out 0.994  C1 0.172  Ccan 0.000  Neff 10.5
+[local] positive_emotion       miss 0.393  scatter 0.393/0.393  out 0.992  C1 0.073  Ccan 0.000  Neff 28.4
+[local] size                   miss 0.349  scatter 0.000/0.349  out 0.982  C1 0.174  Ccan 0.028  Neff 11.0
+[local] speech                 miss 0.392  scatter 0.392/0.388  out 0.998  C1 0.067  Ccan 0.020  Neff 29.4
+[local] toy_play_object        miss 0.502  scatter 0.502/0.470  out 0.946  C1 0.076  Ccan 0.000  Neff 27.4
+[local] CanonicalMissRate 0.350
+[local] ScatterRate       0.248 (refit 0.337)
+[local] Neff (median)     24.80
+######## bn_k128_j64_rel 2026-08-24T20:05:04+00:00
+[extract] layer 5/10 (pre_mlp) N=2048 K=128 signed=True
+[extract] active per token: mean 128.0 max 128 (K=128); 0 features never active
+[probe] SparseProbeTop1 = 0.7834 (95% CI 0.745-0.821)
+[probe] ResidualProbe   = 0.9996
+[probe] sanity: shuffled 0.499 | random feature 0.518 | top1-random +0.266
+[local] animal                 miss 0.189  scatter 0.040/0.189  out 0.996  C1 0.059  Ccan 0.001  Neff 37.5
+[local] body_part              miss 0.245  scatter 0.092/0.237  out 0.992  C1 0.060  Ccan 0.000  Neff 36.4
+[local] cognition              miss 0.438  scatter 0.422/0.438  out 0.998  C1 0.060  Ccan 0.000  Neff 40.7
+[local] color                  miss 0.056  scatter 0.036/0.056  out 0.994  C1 0.048  Ccan 0.012  Neff 43.6
+[local] desire_intention       miss 0.216  scatter 0.152/0.216  out 1.000  C1 0.072  Ccan 0.013  Neff 37.0
+[local] eating_drinking        miss 0.204  scatter 0.016/0.204  out 1.000  C1 0.062  Ccan 0.000  Neff 38.1
+[local] family_relation        miss 0.223  scatter 0.028/0.219  out 0.992  C1 0.056  Ccan 0.000  Neff 38.6
+[local] female_pronoun         miss 0.624  scatter 0.212/0.580  out 0.896  C1 0.055  Ccan 0.017  Neff 38.6
+[local] first_person_pronoun   miss 0.422  scatter 0.197/0.418  out 0.990  C1 0.059  Ccan 0.000  Neff 38.7
+[local] food_drink             miss 0.344  scatter 0.160/0.332  out 0.988  C1 0.057  Ccan 0.000  Neff 39.8
+[local] helping_prosocial      miss 0.468  scatter 0.028/0.464  out 0.998  C1 0.062  Ccan 0.002  Neff 37.0
+[local] human_person           miss 0.233  scatter 0.080/0.229  out 0.984  C1 0.055  Ccan 0.016  Neff 39.8
+[local] inside_dialogue        miss 0.661  scatter 0.302/0.601  out 0.914  C1 0.061  Ccan 0.000  Neff 37.5
+[local] male_pronoun           miss 0.564  scatter 0.240/0.496  out 0.844  C1 0.056  Ccan 0.000  Neff 39.2
+[local] motion                 miss 0.249  scatter 0.108/0.245  out 0.996  C1 0.052  Ccan 0.004  Neff 42.5
+[local] nature_weather         miss 0.478  scatter 0.373/0.474  out 0.986  C1 0.060  Ccan 0.002  Neff 40.4
+[local] negation               miss 0.352  scatter 0.080/0.352  out 1.000  C1 0.062  Ccan 0.015  Neff 37.5
+[local] negative_emotion       miss 0.264  scatter 0.128/0.264  out 1.000  C1 0.056  Ccan 0.000  Neff 38.5
+[local] perception             miss 0.448  scatter 0.236/0.448  out 1.000  C1 0.057  Ccan 0.010  Neff 40.4
+[local] place_location         miss 0.053  scatter 0.032/0.049  out 0.990  C1 0.058  Ccan 0.006  Neff 41.6
+[local] positive_emotion       miss 0.255  scatter 0.186/0.255  out 1.000  C1 0.054  Ccan 0.000  Neff 40.0
+[local] size                   miss 0.117  scatter 0.052/0.113  out 0.974  C1 0.054  Ccan 0.000  Neff 39.8
+[local] speech                 miss 0.212  scatter 0.008/0.212  out 1.000  C1 0.062  Ccan 0.006  Neff 34.8
+[local] toy_play_object        miss 0.475  scatter 0.143/0.459  out 0.946  C1 0.070  Ccan 0.000  Neff 36.9
+[local] CanonicalMissRate 0.325
+[local] ScatterRate       0.140 (refit 0.315)
+[local] Neff (median)     38.96
+######## bn_k256_j64_rel 2026-08-24T20:06:48+00:00
+[extract] layer 5/10 (pre_mlp) N=2048 K=256 signed=True
+[extract] active per token: mean 256.0 max 256 (K=256); 0 features never active
+[probe] SparseProbeTop1 = 0.8285 (95% CI 0.799-0.857)
+[probe] ResidualProbe   = 0.9997
+[probe] sanity: shuffled 0.500 | random feature 0.522 | top1-random +0.306
+[local] animal                 miss 0.020  scatter 0.012/0.020  out 0.994  C1 0.031  Ccan 0.009  Neff 80.1
+[local] body_part              miss 0.402  scatter 0.229/0.398  out 0.994  C1 0.032  Ccan 0.004  Neff 78.3
+[local] cognition              miss 0.108  scatter 0.060/0.108  out 1.000  C1 0.031  Ccan 0.002  Neff 79.4
+[local] color                  miss 0.108  scatter 0.020/0.108  out 0.994  C1 0.039  Ccan 0.000  Neff 74.2
+[local] desire_intention       miss 0.153  scatter 0.124/0.153  out 1.000  C1 0.031  Ccan 0.009  Neff 85.9
+[local] eating_drinking        miss 0.276  scatter 0.120/0.276  out 1.000  C1 0.037  Ccan 0.026  Neff 77.7
+[local] family_relation        miss 0.094  scatter 0.041/0.094  out 0.992  C1 0.031  Ccan 0.000  Neff 78.1
+[local] female_pronoun         miss 0.504  scatter 0.192/0.484  out 0.928  C1 0.032  Ccan 0.000  Neff 77.6
+[local] first_person_pronoun   miss 0.328  scatter 0.152/0.324  out 0.996  C1 0.039  Ccan 0.018  Neff 76.5
+[local] food_drink             miss 0.120  scatter 0.092/0.120  out 1.000  C1 0.039  Ccan 0.005  Neff 73.4
+[local] helping_prosocial      miss 0.356  scatter 0.000/0.356  out 1.000  C1 0.034  Ccan 0.000  Neff 69.0
+[local] human_person           miss 0.241  scatter 0.177/0.241  out 0.992  C1 0.031  Ccan 0.000  Neff 78.9
+[local] inside_dialogue        miss 0.454  scatter 0.265/0.438  out 0.966  C1 0.035  Ccan 0.002  Neff 79.4
+[local] male_pronoun           miss 0.456  scatter 0.268/0.400  out 0.888  C1 0.033  Ccan 0.000  Neff 77.3
+[local] motion                 miss 0.069  scatter 0.040/0.069  out 0.996  C1 0.036  Ccan 0.000  Neff 74.1
+[local] nature_weather         miss 0.286  scatter 0.173/0.278  out 0.980  C1 0.036  Ccan 0.000  Neff 76.2
+[local] negation               miss 0.172  scatter 0.108/0.172  out 0.998  C1 0.031  Ccan 0.000  Neff 79.9
+[local] negative_emotion       miss 0.216  scatter 0.096/0.216  out 0.994  C1 0.035  Ccan 0.011  Neff 76.7
+[local] perception             miss 0.260  scatter 0.172/0.260  out 1.000  C1 0.030  Ccan 0.000  Neff 90.9
+[local] place_location         miss 0.129  scatter 0.024/0.121  out 0.994  C1 0.034  Ccan 0.000  Neff 76.6
+[local] positive_emotion       miss 0.109  scatter 0.061/0.109  out 0.998  C1 0.029  Ccan 0.007  Neff 82.7
+[local] size                   miss 0.217  scatter 0.088/0.205  out 0.990  C1 0.036  Ccan 0.010  Neff 76.2
+[local] speech                 miss 0.129  scatter 0.012/0.129  out 1.000  C1 0.033  Ccan 0.000  Neff 75.4
+[local] toy_play_object        miss 0.212  scatter 0.053/0.208  out 0.968  C1 0.031  Ccan 0.016  Neff 81.8
+[local] CanonicalMissRate 0.226
+[local] ScatterRate       0.108 (refit 0.220)
+[local] Neff (median)     78.18
+######## bn_cal_k32j64_rel 2026-08-24T20:08:32+00:00
+[extract] layer 5/10 (pre_mlp) N=2048 K=32 signed=True
+[extract] active per token: mean 32.0 max 32 (K=32); 28 features never active
+[probe] SparseProbeTop1 = 0.7431 (95% CI 0.708-0.781)
+[probe] ResidualProbe   = 0.9998
+[probe] sanity: shuffled 0.502 | random feature 0.506 | top1-random +0.237
+[local] animal                 miss 0.400  scatter 0.068/0.396  out 0.994  C1 0.191  Ccan 0.000  Neff 9.1
+[local] body_part              miss 0.610  scatter 0.317/0.602  out 0.992  C1 0.171  Ccan 0.027  Neff 10.2
+[local] cognition              miss 0.628  scatter 0.296/0.628  out 1.000  C1 0.181  Ccan 0.000  Neff 9.9
+[local] color                  miss 0.040  scatter 0.016/0.036  out 0.996  C1 0.154  Ccan 0.097  Neff 11.8
+[local] desire_intention       miss 0.552  scatter 0.324/0.552  out 0.998  C1 0.180  Ccan 0.000  Neff 10.1
+[local] eating_drinking        miss 0.308  scatter 0.248/0.308  out 0.998  C1 0.181  Ccan 0.122  Neff 10.3
+[local] family_relation        miss 0.004  scatter 0.004/0.000  out 0.988  C1 0.168  Ccan 0.000  Neff 10.3
+[local] female_pronoun         miss 0.380  scatter 0.264/0.340  out 0.828  C1 0.179  Ccan 0.000  Neff 10.0
+[local] first_person_pronoun   miss 0.652  scatter 0.348/0.628  out 0.984  C1 0.174  Ccan 0.000  Neff 10.4
+[local] food_drink             miss 0.128  scatter 0.076/0.120  out 0.986  C1 0.153  Ccan 0.060  Neff 11.6
+[local] helping_prosocial      miss 0.440  scatter 0.192/0.432  out 0.994  C1 0.190  Ccan 0.027  Neff 9.0
+[local] human_person           miss 0.498  scatter 0.305/0.498  out 0.994  C1 0.166  Ccan 0.000  Neff 10.9
+[local] inside_dialogue        miss 0.894  scatter 0.212/0.714  out 0.826  C1 0.190  Ccan 0.000  Neff 9.5
+[local] male_pronoun           miss 0.408  scatter 0.300/0.292  out 0.786  C1 0.158  Ccan 0.036  Neff 11.1
+[local] motion                 miss 0.532  scatter 0.420/0.528  out 0.996  C1 0.167  Ccan 0.030  Neff 11.0
+[local] nature_weather         miss 0.352  scatter 0.092/0.348  out 0.982  C1 0.171  Ccan 0.058  Neff 10.4
+[local] negation               miss 0.516  scatter 0.048/0.516  out 1.000  C1 0.178  Ccan 0.000  Neff 10.0
+[local] negative_emotion       miss 0.308  scatter 0.052/0.304  out 0.994  C1 0.185  Ccan 0.001  Neff 9.9
+[local] perception             miss 0.792  scatter 0.264/0.792  out 1.000  C1 0.176  Ccan 0.000  Neff 10.4
+[local] place_location         miss 0.528  scatter 0.408/0.516  out 0.992  C1 0.184  Ccan 0.000  Neff 10.2
+[local] positive_emotion       miss 0.552  scatter 0.068/0.544  out 0.988  C1 0.201  Ccan 0.022  Neff 9.0
+[local] size                   miss 0.494  scatter 0.056/0.486  out 0.992  C1 0.217  Ccan 0.042  Neff 8.8
+[local] speech                 miss 0.308  scatter 0.048/0.304  out 0.998  C1 0.286  Ccan 0.226  Neff 7.3
+[local] toy_play_object        miss 0.272  scatter 0.108/0.256  out 0.928  C1 0.199  Ccan 0.003  Neff 9.6
+[local] CanonicalMissRate 0.442
+[local] ScatterRate       0.189 (refit 0.423)
+[local] Neff (median)     10.03
+######## bn_cal_k128j64_rel 2026-08-24T20:10:06+00:00
+[extract] layer 5/10 (pre_mlp) N=2048 K=128 signed=True
+[extract] active per token: mean 128.0 max 128 (K=128); 0 features never active
+[probe] SparseProbeTop1 = 0.7698 (95% CI 0.736-0.804)
+[probe] ResidualProbe   = 0.9998
+[probe] sanity: shuffled 0.495 | random feature 0.514 | top1-random +0.256
+[local] animal                 miss 0.237  scatter 0.141/0.237  out 0.996  C1 0.057  Ccan 0.004  Neff 38.2
+[local] body_part              miss 0.442  scatter 0.209/0.438  out 0.996  C1 0.059  Ccan 0.005  Neff 38.9
+[local] cognition              miss 0.276  scatter 0.188/0.276  out 1.000  C1 0.057  Ccan 0.038  Neff 42.8
+[local] color                  miss 0.141  scatter 0.088/0.141  out 0.994  C1 0.051  Ccan 0.004  Neff 42.0
+[local] desire_intention       miss 0.440  scatter 0.420/0.436  out 0.998  C1 0.072  Ccan 0.049  Neff 40.4
+[local] eating_drinking        miss 0.256  scatter 0.136/0.256  out 1.000  C1 0.055  Ccan 0.003  Neff 38.5
+[local] family_relation        miss 0.012  scatter 0.008/0.004  out 0.984  C1 0.054  Ccan 0.022  Neff 40.8
+[local] female_pronoun         miss 0.376  scatter 0.252/0.356  out 0.926  C1 0.058  Ccan 0.000  Neff 40.2
+[local] first_person_pronoun   miss 0.324  scatter 0.088/0.320  out 0.992  C1 0.059  Ccan 0.000  Neff 37.4
+[local] food_drink             miss 0.052  scatter 0.032/0.044  out 0.992  C1 0.057  Ccan 0.000  Neff 39.7
+[local] helping_prosocial      miss 0.260  scatter 0.100/0.256  out 0.998  C1 0.055  Ccan 0.004  Neff 40.2
+[local] human_person           miss 0.426  scatter 0.193/0.426  out 0.994  C1 0.059  Ccan 0.020  Neff 38.9
+[local] inside_dialogue        miss 0.837  scatter 0.528/0.756  out 0.916  C1 0.060  Ccan 0.000  Neff 38.9
+[local] male_pronoun           miss 0.396  scatter 0.188/0.364  out 0.896  C1 0.072  Ccan 0.048  Neff 37.3
+[local] motion                 miss 0.498  scatter 0.345/0.498  out 1.000  C1 0.060  Ccan 0.000  Neff 38.5
+[local] nature_weather         miss 0.376  scatter 0.076/0.372  out 0.996  C1 0.053  Ccan 0.018  Neff 41.2
+[local] negation               miss 0.416  scatter 0.108/0.416  out 0.998  C1 0.054  Ccan 0.014  Neff 40.6
+[local] negative_emotion       miss 0.044  scatter 0.012/0.044  out 0.996  C1 0.060  Ccan 0.000  Neff 36.6
+[local] perception             miss 0.152  scatter 0.028/0.152  out 1.000  C1 0.076  Ccan 0.016  Neff 36.2
+[local] place_location         miss 0.305  scatter 0.149/0.305  out 0.996  C1 0.070  Ccan 0.000  Neff 35.4
+[local] positive_emotion       miss 0.478  scatter 0.235/0.478  out 0.996  C1 0.054  Ccan 0.000  Neff 41.4
+[local] size                   miss 0.448  scatter 0.056/0.444  out 0.994  C1 0.067  Ccan 0.015  Neff 39.0
+[local] speech                 miss 0.292  scatter 0.184/0.288  out 0.998  C1 0.054  Ccan 0.017  Neff 41.4
+[local] toy_play_object        miss 0.308  scatter 0.206/0.296  out 0.968  C1 0.055  Ccan 0.026  Neff 41.2
+[local] CanonicalMissRate 0.325
+[local] ScatterRate       0.165 (refit 0.317)
+[local] Neff (median)     39.39
+######## bn_cal_k256j64_rel 2026-08-24T20:12:00+00:00
+[extract] layer 5/10 (pre_mlp) N=2048 K=256 signed=True
+[extract] active per token: mean 256.0 max 256 (K=256); 0 features never active
+[probe] SparseProbeTop1 = 0.8262 (95% CI 0.798-0.854)
+[probe] ResidualProbe   = 0.9998
+[probe] sanity: shuffled 0.502 | random feature 0.524 | top1-random +0.302
+[local] animal                 miss 0.152  scatter 0.144/0.152  out 0.998  C1 0.031  Ccan 0.023  Neff 85.2
+[local] body_part              miss 0.313  scatter 0.265/0.313  out 0.998  C1 0.033  Ccan 0.000  Neff 81.3
+[local] cognition              miss 0.288  scatter 0.248/0.288  out 1.000  C1 0.033  Ccan 0.008  Neff 81.2
+[local] color                  miss 0.084  scatter 0.000/0.084  out 1.000  C1 0.034  Ccan 0.004  Neff 71.5
+[local] desire_intention       miss 0.321  scatter 0.321/0.321  out 0.998  C1 0.027  Ccan 0.002  Neff 93.2
+[local] eating_drinking        miss 0.084  scatter 0.012/0.084  out 1.000  C1 0.035  Ccan 0.006  Neff 73.4
+[local] family_relation        miss 0.122  scatter 0.094/0.122  out 0.998  C1 0.035  Ccan 0.014  Neff 81.4
+[local] female_pronoun         miss 0.484  scatter 0.248/0.464  out 0.968  C1 0.032  Ccan 0.000  Neff 79.0
+[local] first_person_pronoun   miss 0.268  scatter 0.256/0.264  out 0.998  C1 0.031  Ccan 0.009  Neff 83.6
+[local] food_drink             miss 0.016  scatter 0.004/0.016  out 1.000  C1 0.030  Ccan 0.007  Neff 85.2
+[local] helping_prosocial      miss 0.156  scatter 0.156/0.156  out 0.998  C1 0.029  Ccan 0.011  Neff 90.6
+[local] human_person           miss 0.044  scatter 0.036/0.044  out 0.994  C1 0.034  Ccan 0.030  Neff 82.0
+[local] inside_dialogue        miss 0.510  scatter 0.469/0.510  out 0.984  C1 0.031  Ccan 0.001  Neff 86.8
+[local] male_pronoun           miss 0.464  scatter 0.000/0.420  out 0.924  C1 0.039  Ccan 0.000  Neff 66.3
+[local] motion                 miss 0.172  scatter 0.048/0.172  out 0.998  C1 0.031  Ccan 0.016  Neff 76.2
+[local] nature_weather         miss 0.188  scatter 0.068/0.188  out 0.986  C1 0.034  Ccan 0.000  Neff 77.3
+[local] negation               miss 0.020  scatter 0.008/0.020  out 1.000  C1 0.032  Ccan 0.017  Neff 82.2
+[local] negative_emotion       miss 0.096  scatter 0.092/0.096  out 0.996  C1 0.029  Ccan 0.011  Neff 90.1
+[local] perception             miss 0.236  scatter 0.072/0.236  out 1.000  C1 0.036  Ccan 0.000  Neff 77.3
+[local] place_location         miss 0.172  scatter 0.032/0.168  out 0.998  C1 0.036  Ccan 0.000  Neff 72.1
+[local] positive_emotion       miss 0.060  scatter 0.052/0.056  out 0.996  C1 0.031  Ccan 0.004  Neff 81.7
+[local] size                   miss 0.180  scatter 0.036/0.176  out 0.992  C1 0.036  Ccan 0.000  Neff 74.8
+[local] speech                 miss 0.229  scatter 0.229/0.229  out 0.998  C1 0.029  Ccan 0.000  Neff 87.9
+[local] toy_play_object        miss 0.286  scatter 0.181/0.274  out 0.970  C1 0.033  Ccan 0.000  Neff 78.3
+[local] CanonicalMissRate 0.206
+[local] ScatterRate       0.128 (refit 0.202)
+[local] Neff (median)     80.77
+######## bn_hard 2026-08-24T20:13:44+00:00
+[extract] layer 5/10 (pre_mlp) N=2048 K=32 signed=True
+[extract] active per token: mean 32.0 max 32 (K=32); 218 features never active
+[probe] SparseProbeTop1 = 0.7438 (95% CI 0.713-0.776)
+[probe] ResidualProbe   = 0.9998
+[probe] sanity: shuffled 0.501 | random feature 0.506 | top1-random +0.238
+[local] animal                 miss 0.416  scatter 0.172/0.412  out 0.986  C1 0.180  Ccan 0.000  Neff 10.3
+[local] body_part              miss 0.470  scatter 0.129/0.462  out 0.990  C1 0.203  Ccan 0.040  Neff 9.6
+[local] cognition              miss 0.466  scatter 0.285/0.466  out 0.992  C1 0.162  Ccan 0.032  Neff 11.5
+[local] color                  miss 0.312  scatter 0.100/0.312  out 0.986  C1 0.185  Ccan 0.000  Neff 10.0
+[local] desire_intention       miss 0.532  scatter 0.272/0.528  out 0.992  C1 0.173  Ccan 0.000  Neff 10.3
+[local] eating_drinking        miss 0.296  scatter 0.148/0.280  out 0.988  C1 0.190  Ccan 0.000  Neff 9.8
+[local] family_relation        miss 0.252  scatter 0.088/0.232  out 0.976  C1 0.193  Ccan 0.000  Neff 9.0
+[local] female_pronoun         miss 0.628  scatter 0.208/0.508  out 0.828  C1 0.183  Ccan 0.007  Neff 9.6
+[local] first_person_pronoun   miss 0.588  scatter 0.448/0.568  out 0.980  C1 0.154  Ccan 0.019  Neff 11.8
+[local] food_drink             miss 0.384  scatter 0.272/0.348  out 0.954  C1 0.167  Ccan 0.024  Neff 11.4
+[local] helping_prosocial      miss 0.564  scatter 0.272/0.540  out 0.974  C1 0.174  Ccan 0.000  Neff 10.1
+[local] human_person           miss 0.261  scatter 0.048/0.257  out 0.994  C1 0.194  Ccan 0.000  Neff 9.2
+[local] inside_dialogue        miss 0.734  scatter 0.440/0.605  out 0.884  C1 0.176  Ccan 0.000  Neff 10.7
+[local] male_pronoun           miss 0.620  scatter 0.148/0.536  out 0.844  C1 0.187  Ccan 0.003  Neff 9.7
+[local] motion                 miss 0.596  scatter 0.352/0.580  out 0.974  C1 0.165  Ccan 0.006  Neff 11.3
+[local] nature_weather         miss 0.632  scatter 0.388/0.568  out 0.952  C1 0.166  Ccan 0.000  Neff 11.1
+[local] negation               miss 0.356  scatter 0.124/0.356  out 0.996  C1 0.194  Ccan 0.110  Neff 9.3
+[local] negative_emotion       miss 0.284  scatter 0.032/0.276  out 0.986  C1 0.192  Ccan 0.046  Neff 9.4
+[local] perception             miss 0.628  scatter 0.148/0.624  out 0.980  C1 0.190  Ccan 0.000  Neff 9.5
+[local] place_location         miss 0.284  scatter 0.052/0.268  out 0.978  C1 0.199  Ccan 0.000  Neff 8.8
+[local] positive_emotion       miss 0.591  scatter 0.036/0.587  out 0.988  C1 0.189  Ccan 0.049  Neff 9.0
+[local] size                   miss 0.264  scatter 0.148/0.236  out 0.978  C1 0.205  Ccan 0.138  Neff 9.4
+[local] speech                 miss 0.140  scatter 0.040/0.128  out 0.994  C1 0.167  Ccan 0.042  Neff 10.7
+[local] toy_play_object        miss 0.528  scatter 0.196/0.484  out 0.938  C1 0.193  Ccan 0.000  Neff 9.8
+[local] CanonicalMissRate 0.451
+[local] ScatterRate       0.189 (refit 0.423)
+[local] Neff (median)     10.05
+######## bn_k64_hard 2026-08-24T20:15:37+00:00
+[extract] layer 5/10 (pre_mlp) N=2048 K=64 signed=True
+[extract] active per token: mean 64.0 max 64 (K=64); 18 features never active
+[probe] SparseProbeTop1 = 0.8225 (95% CI 0.789-0.857)
+[probe] ResidualProbe   = 0.9996
+[probe] sanity: shuffled 0.504 | random feature 0.508 | top1-random +0.314
+[local] animal                 miss 0.148  scatter 0.020/0.148  out 0.996  C1 0.120  Ccan 0.000  Neff 18.2
+[local] body_part              miss 0.201  scatter 0.165/0.201  out 0.998  C1 0.108  Ccan 0.000  Neff 18.7
+[local] cognition              miss 0.276  scatter 0.084/0.276  out 0.996  C1 0.107  Ccan 0.000  Neff 19.3
+[local] color                  miss 0.008  scatter 0.000/0.008  out 0.998  C1 0.100  Ccan 0.000  Neff 20.8
+[local] desire_intention       miss 0.276  scatter 0.072/0.276  out 1.000  C1 0.101  Ccan 0.004  Neff 19.0
+[local] eating_drinking        miss 0.300  scatter 0.076/0.300  out 1.000  C1 0.094  Ccan 0.000  Neff 21.8
+[local] family_relation        miss 0.178  scatter 0.049/0.174  out 0.992  C1 0.173  Ccan 0.000  Neff 14.1
+[local] female_pronoun         miss 0.320  scatter 0.144/0.300  out 0.900  C1 0.105  Ccan 0.046  Neff 19.7
+[local] first_person_pronoun   miss 0.320  scatter 0.172/0.316  out 0.996  C1 0.111  Ccan 0.000  Neff 19.1
+[local] food_drink             miss 0.000  scatter 0.000/0.000  out 1.000  C1 0.097  Ccan 0.002  Neff 21.3
+[local] helping_prosocial      miss 0.408  scatter 0.328/0.400  out 0.992  C1 0.108  Ccan 0.048  Neff 19.9
+[local] human_person           miss 0.565  scatter 0.222/0.565  out 1.000  C1 0.127  Ccan 0.000  Neff 17.4
+[local] inside_dialogue        miss 0.382  scatter 0.153/0.361  out 0.962  C1 0.111  Ccan 0.000  Neff 19.3
+[local] male_pronoun           miss 0.424  scatter 0.092/0.392  out 0.918  C1 0.109  Ccan 0.000  Neff 19.1
+[local] motion                 miss 0.373  scatter 0.024/0.369  out 0.994  C1 0.109  Ccan 0.004  Neff 17.7
+[local] nature_weather         miss 0.292  scatter 0.116/0.288  out 0.988  C1 0.106  Ccan 0.000  Neff 19.0
+[local] negation               miss 0.176  scatter 0.028/0.176  out 1.000  C1 0.114  Ccan 0.000  Neff 17.1
+[local] negative_emotion       miss 0.244  scatter 0.112/0.244  out 0.998  C1 0.098  Ccan 0.056  Neff 21.1
+[local] perception             miss 0.556  scatter 0.276/0.556  out 0.998  C1 0.096  Ccan 0.029  Neff 20.7
+[local] place_location         miss 0.184  scatter 0.060/0.172  out 0.992  C1 0.104  Ccan 0.050  Neff 19.1
+[local] positive_emotion       miss 0.219  scatter 0.016/0.219  out 0.998  C1 0.118  Ccan 0.000  Neff 17.7
+[local] size                   miss 0.268  scatter 0.072/0.264  out 0.996  C1 0.106  Ccan 0.000  Neff 19.3
+[local] speech                 miss 0.284  scatter 0.056/0.272  out 0.994  C1 0.121  Ccan 0.000  Neff 17.5
+[local] toy_play_object        miss 0.496  scatter 0.266/0.448  out 0.954  C1 0.101  Ccan 0.026  Neff 20.7
+[local] CanonicalMissRate 0.287
+[local] ScatterRate       0.108 (refit 0.280)
+[local] Neff (median)     19.06
+######## bn_k128_hard 2026-08-24T20:17:13+00:00
+[extract] layer 5/10 (pre_mlp) N=2048 K=128 signed=True
+[extract] active per token: mean 128.0 max 128 (K=128); 1 features never active
+[probe] SparseProbeTop1 = 0.8429 (95% CI 0.807-0.877)
+[probe] ResidualProbe   = 0.9997
+[probe] sanity: shuffled 0.502 | random feature 0.512 | top1-random +0.331
+[local] animal                 miss 0.164  scatter 0.016/0.164  out 0.996  C1 0.063  Ccan 0.008  Neff 38.6
+[local] body_part              miss 0.060  scatter 0.012/0.060  out 0.996  C1 0.084  Ccan 0.000  Neff 31.6
+[local] cognition              miss 0.144  scatter 0.008/0.140  out 0.998  C1 0.067  Ccan 0.000  Neff 34.1
+[local] color                  miss 0.016  scatter 0.008/0.012  out 0.998  C1 0.067  Ccan 0.038  Neff 36.6
+[local] desire_intention       miss 0.208  scatter 0.100/0.204  out 0.998  C1 0.071  Ccan 0.018  Neff 36.6
+[local] eating_drinking        miss 0.176  scatter 0.048/0.176  out 1.000  C1 0.058  Ccan 0.000  Neff 38.8
+[local] family_relation        miss 0.008  scatter 0.000/0.008  out 0.992  C1 0.061  Ccan 0.012  Neff 38.1
+[local] female_pronoun         miss 0.376  scatter 0.112/0.340  out 0.904  C1 0.058  Ccan 0.000  Neff 41.6
+[local] first_person_pronoun   miss 0.108  scatter 0.052/0.108  out 0.996  C1 0.067  Ccan 0.000  Neff 35.7
+[local] food_drink             miss 0.148  scatter 0.040/0.148  out 0.998  C1 0.071  Ccan 0.000  Neff 36.0
+[local] helping_prosocial      miss 0.528  scatter 0.376/0.528  out 0.998  C1 0.062  Ccan 0.000  Neff 40.5
+[local] human_person           miss 0.008  scatter 0.000/0.008  out 0.998  C1 0.070  Ccan 0.000  Neff 33.7
+[local] inside_dialogue        miss 0.522  scatter 0.309/0.498  out 0.956  C1 0.062  Ccan 0.000  Neff 39.8
+[local] male_pronoun           miss 0.376  scatter 0.048/0.332  out 0.872  C1 0.067  Ccan 0.000  Neff 35.9
+[local] motion                 miss 0.353  scatter 0.092/0.349  out 0.996  C1 0.065  Ccan 0.000  Neff 35.1
+[local] nature_weather         miss 0.324  scatter 0.128/0.316  out 0.992  C1 0.075  Ccan 0.007  Neff 37.4
+[local] negation               miss 0.136  scatter 0.032/0.136  out 1.000  C1 0.071  Ccan 0.000  Neff 34.7
+[local] negative_emotion       miss 0.088  scatter 0.008/0.088  out 0.996  C1 0.066  Ccan 0.024  Neff 35.0
+[local] perception             miss 0.488  scatter 0.228/0.488  out 1.000  C1 0.055  Ccan 0.016  Neff 40.6
+[local] place_location         miss 0.080  scatter 0.040/0.080  out 1.000  C1 0.062  Ccan 0.029  Neff 36.7
+[local] positive_emotion       miss 0.016  scatter 0.004/0.016  out 0.996  C1 0.057  Ccan 0.000  Neff 40.7
+[local] size                   miss 0.084  scatter 0.008/0.080  out 0.998  C1 0.056  Ccan 0.000  Neff 38.6
+[local] speech                 miss 0.292  scatter 0.016/0.292  out 1.000  C1 0.058  Ccan 0.002  Neff 39.3
+[local] toy_play_object        miss 0.423  scatter 0.089/0.403  out 0.962  C1 0.057  Ccan 0.011  Neff 40.4
+[local] CanonicalMissRate 0.214
+[local] ScatterRate       0.074 (refit 0.207)
+[local] Neff (median)     37.33
+######## bn_k256_hard 2026-08-24T20:18:58+00:00
+[extract] layer 5/10 (pre_mlp) N=2048 K=256 signed=True
+[extract] active per token: mean 256.0 max 256 (K=256); 0 features never active
+[probe] SparseProbeTop1 = 0.8191 (95% CI 0.776-0.857)
+[probe] ResidualProbe   = 0.9996
+[probe] sanity: shuffled 0.501 | random feature 0.525 | top1-random +0.294
+[local] animal                 miss 0.100  scatter 0.000/0.100  out 0.998  C1 0.033  Ccan 0.001  Neff 77.1
+[local] body_part              miss 0.349  scatter 0.120/0.349  out 1.000  C1 0.032  Ccan 0.010  Neff 79.3
+[local] cognition              miss 0.141  scatter 0.044/0.141  out 1.000  C1 0.035  Ccan 0.000  Neff 76.5
+[local] color                  miss 0.016  scatter 0.004/0.016  out 0.998  C1 0.037  Ccan 0.000  Neff 74.6
+[local] desire_intention       miss 0.064  scatter 0.004/0.064  out 0.998  C1 0.038  Ccan 0.030  Neff 78.0
+[local] eating_drinking        miss 0.176  scatter 0.020/0.176  out 1.000  C1 0.037  Ccan 0.004  Neff 75.2
+[local] family_relation        miss 0.024  scatter 0.008/0.024  out 0.994  C1 0.035  Ccan 0.013  Neff 79.1
+[local] female_pronoun         miss 0.368  scatter 0.052/0.364  out 0.960  C1 0.031  Ccan 0.000  Neff 81.0
+[local] first_person_pronoun   miss 0.208  scatter 0.076/0.200  out 0.994  C1 0.036  Ccan 0.000  Neff 75.5
+[local] food_drink             miss 0.064  scatter 0.004/0.064  out 1.000  C1 0.037  Ccan 0.016  Neff 75.6
+[local] helping_prosocial      miss 0.328  scatter 0.008/0.328  out 1.000  C1 0.034  Ccan 0.006  Neff 77.0
+[local] human_person           miss 0.072  scatter 0.024/0.072  out 0.994  C1 0.033  Ccan 0.000  Neff 82.2
+[local] inside_dialogue        miss 0.633  scatter 0.286/0.601  out 0.954  C1 0.036  Ccan 0.000  Neff 75.7
+[local] male_pronoun           miss 0.388  scatter 0.012/0.368  out 0.934  C1 0.038  Ccan 0.000  Neff 70.8
+[local] motion                 miss 0.172  scatter 0.008/0.172  out 1.000  C1 0.037  Ccan 0.000  Neff 74.6
+[local] nature_weather         miss 0.254  scatter 0.004/0.250  out 0.990  C1 0.036  Ccan 0.001  Neff 73.6
+[local] negation               miss 0.036  scatter 0.000/0.036  out 1.000  C1 0.038  Ccan 0.000  Neff 73.6
+[local] negative_emotion       miss 0.064  scatter 0.000/0.064  out 1.000  C1 0.034  Ccan 0.000  Neff 73.7
+[local] perception             miss 0.220  scatter 0.008/0.220  out 1.000  C1 0.036  Ccan 0.000  Neff 71.8
+[local] place_location         miss 0.312  scatter 0.028/0.300  out 0.994  C1 0.034  Ccan 0.000  Neff 75.2
+[local] positive_emotion       miss 0.206  scatter 0.000/0.206  out 0.996  C1 0.036  Ccan 0.008  Neff 76.6
+[local] size                   miss 0.129  scatter 0.000/0.129  out 1.000  C1 0.039  Ccan 0.000  Neff 69.2
+[local] speech                 miss 0.212  scatter 0.000/0.212  out 1.000  C1 0.037  Ccan 0.005  Neff 73.3
+[local] toy_play_object        miss 0.154  scatter 0.000/0.154  out 0.976  C1 0.034  Ccan 0.001  Neff 71.7
+[local] CanonicalMissRate 0.195
+[local] ScatterRate       0.030 (refit 0.192)
+[local] Neff (median)     75.45
+######## bn_pmlp_pattn_k32j64_rel 2026-08-24T20:20:39+00:00
+[extract] layer 5/10 (post_mlp) N=2048 K=32 signed=True
+[extract] active per token: mean 32.0 max 32 (K=32); 25 features never active
+[probe] SparseProbeTop1 = 0.6670 (95% CI 0.631-0.706)
+[probe] ResidualProbe   = 0.9585
+[probe] sanity: shuffled 0.502 | random feature 0.506 | top1-random +0.161
+[local] animal                 miss 0.645  scatter 0.253/0.604  out 0.940  C1 0.181  Ccan 0.051  Neff 10.3
+[local] body_part              miss 0.857  scatter 0.045/0.808  out 0.942  C1 0.181  Ccan 0.012  Neff 9.8
+[local] cognition              miss 0.377  scatter 0.000/0.372  out 0.986  C1 0.194  Ccan 0.000  Neff 8.9
+[local] color                  miss 0.077  scatter 0.016/0.073  out 0.976  C1 0.168  Ccan 0.000  Neff 11.1
+[local] desire_intention       miss 0.470  scatter 0.000/0.445  out 0.978  C1 0.168  Ccan 0.000  Neff 10.4
+[local] eating_drinking        miss 0.557  scatter 0.004/0.536  out 0.972  C1 0.192  Ccan 0.001  Neff 9.8
+[local] family_relation        miss 0.756  scatter 0.094/0.688  out 0.870  C1 0.228  Ccan 0.007  Neff 7.7
+[local] first_person_pronoun   miss 0.775  scatter 0.137/0.735  out 0.890  C1 0.189  Ccan 0.013  Neff 10.0
+[local] food_drink             miss 0.577  scatter 0.000/0.514  out 0.892  C1 0.190  Ccan 0.021  Neff 9.7
+[local] helping_prosocial      miss 0.457  scatter 0.038/0.440  out 0.972  C1 0.175  Ccan 0.034  Neff 10.6
+[local] human_person           miss 0.602  scatter 0.074/0.532  out 0.900  C1 0.212  Ccan 0.000  Neff 8.8
+[local] motion                 miss 0.424  scatter 0.008/0.415  out 0.982  C1 0.161  Ccan 0.069  Neff 11.8
+[local] nature_weather         miss 0.838  scatter 0.157/0.770  out 0.830  C1 0.181  Ccan 0.017  Neff 10.0
+[local] negation               miss 0.624  scatter 0.025/0.624  out 0.982  C1 0.189  Ccan 0.000  Neff 9.4
+[local] negative_emotion       miss 0.553  scatter 0.038/0.536  out 0.958  C1 0.159  Ccan 0.050  Neff 11.3
+[local] perception             miss 0.800  scatter 0.020/0.784  out 0.970  C1 0.173  Ccan 0.000  Neff 10.8
+[local] place_location         miss 0.541  scatter 0.023/0.518  out 0.932  C1 0.190  Ccan 0.000  Neff 9.8
+[local] positive_emotion       miss 0.549  scatter 0.008/0.529  out 0.962  C1 0.166  Ccan 0.010  Neff 10.7
+[local] size                   miss 0.556  scatter 0.298/0.524  out 0.966  C1 0.189  Ccan 0.000  Neff 10.3
+[local] speech                 miss 0.504  scatter 0.000/0.491  out 0.964  C1 0.173  Ccan 0.000  Neff 10.1
+[local] toy_play_object        miss 0.722  scatter 0.255/0.623  out 0.836  C1 0.186  Ccan 0.000  Neff 9.8
+[local] CanonicalMissRate 0.584
+[local] ScatterRate       0.071 (refit 0.551)
+[local] Neff (median)     10.05
+######## all done 2026-08-24T20:22:39+00:00

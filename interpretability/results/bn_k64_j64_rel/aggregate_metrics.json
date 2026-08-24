@@ -1,0 +1,185 @@
+{
+  "meta": {
+    "evaluation_layer": 5,
+    "model_depth": 10,
+    "target_depth_fraction": 0.5,
+    "bottleneck_location": "pre_mlp",
+    "bottleneck_width": 2048,
+    "K": 64,
+    "J": 64,
+    "selection_mode": "abs_topk",
+    "surrogate_mode": "lapsum_scheduled",
+    "signed": true,
+    "checkpoint": "/workspace/runs_bottleneck/bn_k64_j64_rel/latest.pt",
+    "run_name": "bn_k64_j64_rel",
+    "n_positions": 40101,
+    "mean_active": 64.0,
+    "max_active": 64,
+    "output_scale": 1.0,
+    "dead_features": 1,
+    "signed_unfolded": true
+  },
+  "n_concepts": 24,
+  "n_core_concepts": 24,
+  "SparseProbeTop1": 0.7789999999999999,
+  "SparseProbeTop1_ci95": [
+    0.743,
+    0.8153333333333332
+  ],
+  "ResidualProbeAccuracy": 0.9995833333333334,
+  "ResidualProbeAccuracy_ci95": [
+    0.9988333333333334,
+    1.0
+  ],
+  "k_curve": {
+    "k1": 0.7789999999999999,
+    "k2": 0.8291666666666666,
+    "k4": 0.8690833333333333,
+    "k8": 0.8936666666666667,
+    "k16": 0.9054166666666666
+  },
+  "by_group": {
+    "attributes": {
+      "n": 4,
+      "SparseProbeTop1": 0.7795,
+      "ResidualProbeAccuracy": 1.0
+    },
+    "entities": {
+      "n": 8,
+      "SparseProbeTop1": 0.7697499999999999,
+      "ResidualProbeAccuracy": 0.99975
+    },
+    "grammar": {
+      "n": 5,
+      "SparseProbeTop1": 0.694,
+      "ResidualProbeAccuracy": 0.9984
+    },
+    "verbs": {
+      "n": 7,
+      "SparseProbeTop1": 0.85,
+      "ResidualProbeAccuracy": 1.0
+    }
+  },
+  "sanity": {
+    "shuffled_label_accuracy": 0.4993333333333334,
+    "random_feature_accuracy": 0.5111125,
+    "top1_minus_random": 0.2678875,
+    "splits_disjoint": true,
+    "residual_probe_threshold": 0.8,
+    "n_concepts_passing_residual_threshold": 24
+  },
+  "localization": {
+    "n_concepts_evaluated": 24,
+    "residual_probe_threshold": 0.8,
+    "gt_present_min_probability": 0.8,
+    "survives_min_probability": 0.5,
+    "decoder_identity_max_rel_error": 1.0316331848928552e-07,
+    "macro": {
+      "ResidualProbeAccuracy": 0.9995833333333334,
+      "BottleneckOutputProbeAccuracy": 0.50025,
+      "BottleneckOutputProbeAUROC": 0.49519599999999997,
+      "probe_accuracy_before": 0.9995833333333334,
+      "probe_auroc_before": 0.9999493333333334,
+      "reconstruction_norm_ratio": 1.4255158454179764,
+      "reconstruction_cosine": 0.0013628612286993302,
+      "Top1SparseProbeAccuracy": 0.7789999999999999,
+      "CanonicalMissRate": 0.3502446109251646,
+      "ScatterRate": 0.24807340920245943,
+      "RetainedElsewhere": 0.7502663852795126,
+      "BottleneckOutputProbeAccuracy_refit": 0.9771666666666666,
+      "BottleneckOutputProbeAUROC_refit": 0.9924200000000001,
+      "ScatterRate_refit": 0.3371851155347385,
+      "RetainedElsewhere_refit": 0.9661527457170975,
+      "MeanTop1ContributionShare": 0.09337204437894031,
+      "MeanCanonicalContributionShare": 0.01612246191127108,
+      "MedianEffectiveContributorCount": 24.797052082608626,
+      "MeanEffectiveContributorCount": 24.821888032589044
+    },
+    "by_group": {
+      "attributes": {
+        "ResidualProbeAccuracy": 1.0,
+        "BottleneckOutputProbeAccuracy": 0.5,
+        "BottleneckOutputProbeAUROC": 0.40914799999999996,
+        "probe_accuracy_before": 1.0,
+        "probe_auroc_before": 1.0,
+        "reconstruction_norm_ratio": 1.3699148297309875,
+        "reconstruction_cosine": 0.004563808033708483,
+        "Top1SparseProbeAccuracy": 0.7795,
+        "CanonicalMissRate": 0.33088094889680175,
+        "ScatterRate": 0.24353155130644033,
+        "RetainedElsewhere": 0.75,
+        "BottleneckOutputProbeAccuracy_refit": 0.9910000000000001,
+        "BottleneckOutputProbeAUROC_refit": 0.999244,
+        "ScatterRate_refit": 0.33088094889680175,
+        "RetainedElsewhere_refit": 1.0,
+        "MeanTop1ContributionShare": 0.09756235319182541,
+        "MeanCanonicalContributionShare": 0.015484288080289912,
+        "MedianEffectiveContributorCount": 24.46360282900526,
+        "MeanEffectiveContributorCount": 24.569080103147382
+      },
+      "entities": {
+        "ResidualProbeAccuracy": 0.99975,
+        "BottleneckOutputProbeAccuracy": 0.5005,
+        "BottleneckOutputProbeAUROC": 0.530898,
+        "probe_accuracy_before": 0.99975,
+        "probe_auroc_before": 1.0,
+        "reconstruction_norm_ratio": 1.4400367438793182,
+        "reconstruction_cosine": 0.0038774532949901186,
+        "Top1SparseProbeAccuracy": 0.7697499999999999,
+        "CanonicalMissRate": 0.39131574053886675,
+        "ScatterRate": 0.2835012244098345,
+        "RetainedElsewhere": 0.7517985611510791,
+        "BottleneckOutputProbeAccuracy_refit": 0.98175,
+        "BottleneckOutputProbeAUROC_refit": 0.997912,
+        "ScatterRate_refit": 0.37973682337532666,
+        "RetainedElsewhere_refit": 0.9694131506822158,
+        "MeanTop1ContributionShare": 0.09136410266174241,
+        "MeanCanonicalContributionShare": 0.018621670754337294,
+        "MedianEffectiveContributorCount": 25.29357944106612,
+        "MeanEffectiveContributorCount": 25.305829931736305
+      },
+      "grammar": {
+        "ResidualProbeAccuracy": 0.9984,
+        "BottleneckOutputProbeAccuracy": 0.5,
+        "BottleneckOutputProbeAUROC": 0.5287680000000001,
+        "probe_accuracy_before": 0.9984,
+        "probe_auroc_before": 0.9997568000000001,
+        "reconstruction_norm_ratio": 1.4995611906051636,
+        "reconstruction_cosine": -0.0007291657384485006,
+        "Top1SparseProbeAccuracy": 0.694,
+        "CanonicalMissRate": 0.4252943089430894,
+        "ScatterRate": 0.2676552845528456,
+        "RetainedElsewhere": 0.598400951499934,
+        "BottleneckOutputProbeAccuracy_refit": 0.9292,
+        "BottleneckOutputProbeAUROC_refit": 0.9677792000000001,
+        "ScatterRate_refit": 0.38353821138211386,
+        "RetainedElsewhere_refit": 0.9036103572744564,
+        "MeanTop1ContributionShare": 0.09978368281459687,
+        "MeanCanonicalContributionShare": 0.009199493814699781,
+        "MedianEffectiveContributorCount": 22.698981877059033,
+        "MeanEffectiveContributorCount": 22.719709299747127
+      },
+      "verbs": {
+        "ResidualProbeAccuracy": 1.0,
+        "BottleneckOutputProbeAccuracy": 0.5002857142857142,
+        "BottleneckOutputProbeAUROC": 0.4795839999999999,
+        "probe_accuracy_before": 1.0,
+        "probe_auroc_before": 1.0,
+        "reconstruction_norm_ratio": 1.38780300957816,
+        "reconstruction_cosine": -0.0018457657591040646,
+        "Top1SparseProbeAccuracy": 0.85,
+        "CanonicalMissRate": 0.26076419965576597,
+        "ScatterRate": 0.19619277108433736,
+        "RetainedElsewhere": 0.8571428571428571,
+        "BottleneckOutputProbeAccuracy_refit": 0.9982857142857143,
+        "BottleneckOutputProbeAUROC_refit": 0.9998445714285714,
+        "ScatterRate_refit": 0.2590476190476191,
+        "RetainedElsewhere_refit": 0.9877584150543334,
+        "MeanTop1ContributionShare": 0.08869263099433464,
+        "MeanCanonicalContributionShare": 0.018575871205878426,
+        "MedianEffectiveContributorCount": 25.918756250394534,
+        "MeanEffectiveContributorCount": 25.914829488131627
+      }
+    }
+  }
+}
