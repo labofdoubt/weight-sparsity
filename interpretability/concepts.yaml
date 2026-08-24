@@ -1,0 +1,113 @@
+# TinyStories interpretability benchmark -- concept definitions (v0).
+#
+# Labels are deterministic: a token is positive for a concept iff the word it
+# ends belongs to that concept's positive lexicon, and negative iff the word
+# belongs to the concept's negative pool.  No LLM is involved, so the benchmark
+# is reproducible.
+#
+# Negative pools are chosen from the same coarse semantic/grammatical family as
+# the positives (spec section 7), so that a feature cannot win by encoding
+# "is a noun" or "is punctuation".  A word appearing in both pools for the same
+# concept is ambiguous and is dropped from that concept entirely.
+#
+# The seed lists below are filtered against the held-out corpus at build time;
+# words that do not actually occur are reported and discarded.
+
+version: v0
+seed: 1234
+
+lexicons:
+  humans_generic: [boy, boys, girl, girls, man, men, woman, women, child, children, kid,
+                   kids, baby, teacher, friend, friends, people, person, lady, prince,
+                   princess, king, queen, neighbor, doctor, farmer, boyfriend]
+  family: [mother, mom, mommy, father, dad, daddy, sister, brother, grandma, grandpa,
+           grandmother, grandfather, parents, aunt, uncle, son, daughter, cousin]
+  animals: [dog, dogs, cat, cats, bird, birds, rabbit, bunny, bear, duck, horse, cow,
+            frog, fish, mouse, lion, tiger, puppy, kitten, squirrel, butterfly, bee,
+            monkey, elephant, pig, sheep, chicken, turtle, snake, owl]
+  places: [home, house, room, kitchen, bedroom, school, park, garden, forest, store,
+           shop, beach, farm, yard, playground, zoo, village, town, castle, cave,
+           library, pond, hill]
+  food: [apple, apples, cake, cookie, cookies, bread, milk, juice, banana, soup,
+         candy, food, pizza, carrot, berries, sandwich, cheese, honey, pie, snack]
+  toys: [toy, toys, ball, doll, kite, blocks, puzzle, game, games, teddy, balloon,
+         truck, bike, blocks, crayons, bear]
+  nature: [sun, rain, snow, wind, cloud, clouds, sky, tree, trees, flower, flowers,
+           grass, river, moon, star, stars, leaf, leaves, rainbow, ocean, water]
+  body: [hand, hands, head, eye, eyes, face, arm, arms, leg, legs, foot, feet, mouth,
+         nose, hair, ear, ears, finger, fingers, tummy, back]
+  objects: [box, door, window, table, chair, bed, book, books, car, boat, hat, shoe,
+            shoes, bag, key, cup, plate, spoon, rock, stick, basket, blanket, hole,
+            wall, floor, boxes, jar, bottle, paper, letter]
+
+  colors: [red, blue, green, yellow, pink, purple, orange, black, white, brown, grey, gray]
+  sizes: [big, small, little, tiny, huge, tall, short, long, giant, wide, thin]
+  adjectives_neutral: [new, old, soft, hard, warm, cold, clean, dirty, bright, dark,
+                       quiet, loud, fast, slow, pretty, nice, good, bad, silly, funny,
+                       brave, curious, kind, shiny, sweet, strong, busy, safe, special]
+  emotion_pos: [happy, glad, excited, proud, smile, smiled, smiling, laugh, laughed,
+                laughing, loved, joyful, cheerful, delighted]
+  emotion_neg: [sad, angry, upset, scared, afraid, worried, cry, cried, crying, hurt,
+                lonely, mad, frightened, nervous, sorry]
+
+  verbs_motion: [go, goes, went, come, came, walk, walked, run, ran, jump, jumped,
+                 climb, climbed, fly, flew, swim, swam, ride, rode, chase, chased]
+  verbs_speech: [say, says, said, ask, asked, tell, told, shout, shouted, call, called,
+                 answer, answered, reply, replied, talk, talked, whisper, whispered,
+                 explain, explained]
+  verbs_perception: [see, saw, look, looked, hear, heard, watch, watched, feel, felt,
+                     notice, noticed, smell, smelled, listen, listened]
+  verbs_cognition: [think, thought, know, knew, remember, remembered, forget, forgot,
+                    learn, learned, understand, understood, realize, realized, wonder,
+                    wondered]
+  verbs_desire: [want, wanted, wish, wished, try, tried, decide, decided, hope, hoped,
+                 need, needed]
+  verbs_help: [help, helped, share, shared, give, gave, thank, thanked, hug, hugged,
+               care, cared, save, saved]
+  verbs_eat: [eat, eats, ate, drink, drank, taste, tasted, chew, chewed, bite, bit]
+  verbs_generic: [make, made, take, took, put, get, got, find, found, open, opened,
+                  close, closed, play, played, work, worked, keep, kept, show, showed,
+                  bring, brought, start, started, stop, stopped, build, built]
+
+  pron_male: [he, him, his]
+  pron_female: [she, her, hers]
+  pron_first: [i, me, my, mine, we, us, our, ours]
+  pron_other: [they, them, their, theirs, it, its, you, your, yours]
+
+  negation: ["no", not, never, "don't", "didn't", "can't", "couldn't", "won't", nothing,
+             nobody, "wasn't", "isn't", "doesn't"]
+  function_words: [very, really, just, also, too, always, still, only, even, quite,
+                   again, then, here, there, now, soon]
+
+# group is used for the per-group aggregate report (spec section 23)
+concepts:
+  human_person:      {group: entities,   positive: [humans_generic, family], negative: [animals, objects, places]}
+  animal:            {group: entities,   positive: [animals],       negative: [objects, food, toys, places]}
+  family_relation:   {group: entities,   positive: [family],        negative: [humans_generic]}
+  place_location:    {group: entities,   positive: [places],        negative: [objects, toys, food]}
+  food_drink:        {group: entities,   positive: [food],          negative: [objects, toys, body]}
+  toy_play_object:   {group: entities,   positive: [toys],          negative: [food, objects, body]}
+  nature_weather:    {group: entities,   positive: [nature],        negative: [objects, toys, body]}
+  body_part:         {group: entities,   positive: [body],          negative: [objects, toys, food]}
+
+  color:             {group: attributes, positive: [colors],        negative: [sizes, adjectives_neutral]}
+  size:              {group: attributes, positive: [sizes],         negative: [colors, adjectives_neutral]}
+  positive_emotion:  {group: attributes, positive: [emotion_pos],   negative: [emotion_neg, adjectives_neutral]}
+  negative_emotion:  {group: attributes, positive: [emotion_neg],   negative: [emotion_pos, adjectives_neutral]}
+
+  motion:            {group: verbs,      positive: [verbs_motion],     negative: [verbs_speech, verbs_perception, verbs_cognition, verbs_generic]}
+  speech:            {group: verbs,      positive: [verbs_speech],     negative: [verbs_motion, verbs_perception, verbs_cognition, verbs_generic]}
+  perception:        {group: verbs,      positive: [verbs_perception], negative: [verbs_motion, verbs_speech, verbs_cognition, verbs_generic]}
+  cognition:         {group: verbs,      positive: [verbs_cognition],  negative: [verbs_motion, verbs_speech, verbs_perception, verbs_generic]}
+  desire_intention:  {group: verbs,      positive: [verbs_desire],     negative: [verbs_motion, verbs_speech, verbs_perception, verbs_generic]}
+  helping_prosocial: {group: verbs,      positive: [verbs_help],       negative: [verbs_motion, verbs_speech, verbs_cognition, verbs_generic]}
+  eating_drinking:   {group: verbs,      positive: [verbs_eat],        negative: [verbs_motion, verbs_speech, verbs_cognition, verbs_generic]}
+
+  male_pronoun:      {group: grammar,    positive: [pron_male],   negative: [pron_female, pron_first, pron_other]}
+  female_pronoun:    {group: grammar,    positive: [pron_female], negative: [pron_male, pron_first, pron_other]}
+  first_person_pronoun: {group: grammar, positive: [pron_first],  negative: [pron_male, pron_female, pron_other]}
+  negation:          {group: grammar,    positive: [negation],    negative: [function_words]}
+  # contextual: the label is a property of the position, not of the word.  Handled
+  # by a dedicated rule -- positives are content tokens inside quotation marks,
+  # negatives are *the same lexical items* outside quotation marks.
+  inside_dialogue:   {group: grammar,    kind: contextual}
