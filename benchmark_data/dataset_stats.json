@@ -1,0 +1,4054 @@
+{
+  "version": "v0",
+  "seed": 1234,
+  "tokenizer": "gpt_neo",
+  "n_stories": 20000,
+  "n_examples": 40800,
+  "n_concepts": 24,
+  "n_core_concepts": 24,
+  "split_caps": {
+    "train": 500,
+    "validation": 100,
+    "test": 250
+  },
+  "split_minimums": {
+    "train": 150,
+    "validation": 50,
+    "test": 100
+  },
+  "concepts": {
+    "human_person": {
+      "group": "entities",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 38,
+        "top20": [
+          [
+            "mom",
+            186
+          ],
+          [
+            "girl",
+            145
+          ],
+          [
+            "friends",
+            110
+          ],
+          [
+            "boy",
+            94
+          ],
+          [
+            "man",
+            46
+          ],
+          [
+            "friend",
+            45
+          ],
+          [
+            "dad",
+            43
+          ],
+          [
+            "daddy",
+            17
+          ],
+          [
+            "person",
+            13
+          ],
+          [
+            "brother",
+            13
+          ],
+          [
+            "people",
+            13
+          ],
+          [
+            "grandma",
+            11
+          ],
+          [
+            "children",
+            9
+          ],
+          [
+            "kids",
+            9
+          ],
+          [
+            "lady",
+            9
+          ],
+          [
+            "parents",
+            8
+          ],
+          [
+            "mother",
+            8
+          ],
+          [
+            "daughter",
+            7
+          ],
+          [
+            "sister",
+            7
+          ],
+          [
+            "child",
+            7
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 82,
+        "top20": [
+          [
+            "park",
+            58
+          ],
+          [
+            "home",
+            57
+          ],
+          [
+            "dog",
+            47
+          ],
+          [
+            "room",
+            39
+          ],
+          [
+            "bird",
+            34
+          ],
+          [
+            "house",
+            33
+          ],
+          [
+            "box",
+            32
+          ],
+          [
+            "car",
+            32
+          ],
+          [
+            "bear",
+            31
+          ],
+          [
+            "rabbit",
+            22
+          ],
+          [
+            "cat",
+            21
+          ],
+          [
+            "garden",
+            20
+          ],
+          [
+            "door",
+            19
+          ],
+          [
+            "fish",
+            17
+          ],
+          [
+            "bunny",
+            15
+          ],
+          [
+            "puppy",
+            14
+          ],
+          [
+            "butterfly",
+            13
+          ],
+          [
+            "hole",
+            12
+          ],
+          [
+            "pond",
+            12
+          ],
+          [
+            "boat",
+            11
+          ]
+        ]
+      },
+      "unique_positive_train": 36,
+      "unique_positive_test": 31,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [
+          "boyfriend",
+          "women"
+        ],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "animal": {
+      "group": "entities",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 29,
+        "top20": [
+          [
+            "bird",
+            161
+          ],
+          [
+            "dog",
+            148
+          ],
+          [
+            "cat",
+            67
+          ],
+          [
+            "rabbit",
+            55
+          ],
+          [
+            "fish",
+            50
+          ],
+          [
+            "birds",
+            40
+          ],
+          [
+            "bunny",
+            37
+          ],
+          [
+            "squirrel",
+            33
+          ],
+          [
+            "mouse",
+            30
+          ],
+          [
+            "butterfly",
+            29
+          ],
+          [
+            "frog",
+            26
+          ],
+          [
+            "duck",
+            23
+          ],
+          [
+            "puppy",
+            21
+          ],
+          [
+            "lion",
+            20
+          ],
+          [
+            "owl",
+            17
+          ],
+          [
+            "elephant",
+            14
+          ],
+          [
+            "bee",
+            13
+          ],
+          [
+            "cow",
+            10
+          ],
+          [
+            "horse",
+            9
+          ],
+          [
+            "pig",
+            8
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 82,
+        "top20": [
+          [
+            "park",
+            61
+          ],
+          [
+            "home",
+            60
+          ],
+          [
+            "toys",
+            56
+          ],
+          [
+            "ball",
+            38
+          ],
+          [
+            "car",
+            31
+          ],
+          [
+            "toy",
+            31
+          ],
+          [
+            "box",
+            29
+          ],
+          [
+            "house",
+            29
+          ],
+          [
+            "room",
+            29
+          ],
+          [
+            "garden",
+            28
+          ],
+          [
+            "forest",
+            25
+          ],
+          [
+            "bed",
+            18
+          ],
+          [
+            "food",
+            16
+          ],
+          [
+            "rock",
+            15
+          ],
+          [
+            "cake",
+            15
+          ],
+          [
+            "store",
+            14
+          ],
+          [
+            "doll",
+            12
+          ],
+          [
+            "kitchen",
+            12
+          ],
+          [
+            "candy",
+            12
+          ],
+          [
+            "cookies",
+            11
+          ]
+        ]
+      },
+      "unique_positive_train": 29,
+      "unique_positive_test": 25,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [
+          "bear"
+        ],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "family_relation": {
+      "group": "entities",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 13,
+        "top20": [
+          [
+            "mom",
+            544
+          ],
+          [
+            "dad",
+            112
+          ],
+          [
+            "daddy",
+            45
+          ],
+          [
+            "brother",
+            34
+          ],
+          [
+            "parents",
+            22
+          ],
+          [
+            "mother",
+            21
+          ],
+          [
+            "grandma",
+            21
+          ],
+          [
+            "daughter",
+            18
+          ],
+          [
+            "sister",
+            14
+          ],
+          [
+            "aunt",
+            8
+          ],
+          [
+            "son",
+            6
+          ],
+          [
+            "uncle",
+            3
+          ],
+          [
+            "father",
+            2
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 24,
+        "top20": [
+          [
+            "girl",
+            223
+          ],
+          [
+            "friends",
+            156
+          ],
+          [
+            "boy",
+            118
+          ],
+          [
+            "friend",
+            91
+          ],
+          [
+            "man",
+            77
+          ],
+          [
+            "people",
+            42
+          ],
+          [
+            "baby",
+            19
+          ],
+          [
+            "kids",
+            18
+          ],
+          [
+            "lady",
+            16
+          ],
+          [
+            "princess",
+            11
+          ],
+          [
+            "child",
+            11
+          ],
+          [
+            "children",
+            11
+          ],
+          [
+            "farmer",
+            10
+          ],
+          [
+            "woman",
+            7
+          ],
+          [
+            "queen",
+            7
+          ],
+          [
+            "doctor",
+            6
+          ],
+          [
+            "person",
+            6
+          ],
+          [
+            "king",
+            6
+          ],
+          [
+            "neighbor",
+            4
+          ],
+          [
+            "boys",
+            3
+          ]
+        ]
+      },
+      "unique_positive_train": 13,
+      "unique_positive_test": 11,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": [
+          "boyfriend",
+          "women"
+        ]
+      }
+    },
+    "place_location": {
+      "group": "entities",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 23,
+        "top20": [
+          [
+            "park",
+            160
+          ],
+          [
+            "home",
+            152
+          ],
+          [
+            "house",
+            97
+          ],
+          [
+            "garden",
+            71
+          ],
+          [
+            "room",
+            69
+          ],
+          [
+            "forest",
+            50
+          ],
+          [
+            "store",
+            29
+          ],
+          [
+            "kitchen",
+            29
+          ],
+          [
+            "pond",
+            26
+          ],
+          [
+            "hill",
+            23
+          ],
+          [
+            "school",
+            20
+          ],
+          [
+            "town",
+            19
+          ],
+          [
+            "beach",
+            18
+          ],
+          [
+            "castle",
+            18
+          ],
+          [
+            "cave",
+            12
+          ],
+          [
+            "yard",
+            11
+          ],
+          [
+            "shop",
+            10
+          ],
+          [
+            "zoo",
+            9
+          ],
+          [
+            "farm",
+            7
+          ],
+          [
+            "playground",
+            7
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 63,
+        "top20": [
+          [
+            "toys",
+            67
+          ],
+          [
+            "toy",
+            63
+          ],
+          [
+            "ball",
+            58
+          ],
+          [
+            "box",
+            42
+          ],
+          [
+            "car",
+            39
+          ],
+          [
+            "bear",
+            37
+          ],
+          [
+            "food",
+            29
+          ],
+          [
+            "truck",
+            25
+          ],
+          [
+            "bed",
+            24
+          ],
+          [
+            "hole",
+            24
+          ],
+          [
+            "blocks",
+            23
+          ],
+          [
+            "cake",
+            22
+          ],
+          [
+            "boat",
+            21
+          ],
+          [
+            "stick",
+            18
+          ],
+          [
+            "book",
+            15
+          ],
+          [
+            "table",
+            15
+          ],
+          [
+            "cookies",
+            15
+          ],
+          [
+            "game",
+            15
+          ],
+          [
+            "door",
+            14
+          ],
+          [
+            "rock",
+            14
+          ]
+        ]
+      },
+      "unique_positive_train": 23,
+      "unique_positive_test": 23,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "food_drink": {
+      "group": "entities",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 20,
+        "top20": [
+          [
+            "food",
+            165
+          ],
+          [
+            "cake",
+            97
+          ],
+          [
+            "cookies",
+            81
+          ],
+          [
+            "candy",
+            45
+          ],
+          [
+            "soup",
+            43
+          ],
+          [
+            "juice",
+            42
+          ],
+          [
+            "honey",
+            40
+          ],
+          [
+            "apples",
+            39
+          ],
+          [
+            "snack",
+            36
+          ],
+          [
+            "milk",
+            34
+          ],
+          [
+            "carrot",
+            32
+          ],
+          [
+            "cheese",
+            32
+          ],
+          [
+            "apple",
+            30
+          ],
+          [
+            "bread",
+            27
+          ],
+          [
+            "sandwich",
+            24
+          ],
+          [
+            "cookie",
+            24
+          ],
+          [
+            "berries",
+            24
+          ],
+          [
+            "banana",
+            17
+          ],
+          [
+            "pizza",
+            10
+          ],
+          [
+            "pie",
+            8
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 63,
+        "top20": [
+          [
+            "back",
+            119
+          ],
+          [
+            "toy",
+            56
+          ],
+          [
+            "ball",
+            53
+          ],
+          [
+            "toys",
+            49
+          ],
+          [
+            "car",
+            38
+          ],
+          [
+            "eyes",
+            33
+          ],
+          [
+            "bear",
+            32
+          ],
+          [
+            "box",
+            31
+          ],
+          [
+            "door",
+            24
+          ],
+          [
+            "truck",
+            23
+          ],
+          [
+            "hand",
+            23
+          ],
+          [
+            "bed",
+            20
+          ],
+          [
+            "face",
+            20
+          ],
+          [
+            "hands",
+            20
+          ],
+          [
+            "rock",
+            18
+          ],
+          [
+            "boat",
+            16
+          ],
+          [
+            "stick",
+            15
+          ],
+          [
+            "game",
+            14
+          ],
+          [
+            "hole",
+            13
+          ],
+          [
+            "blocks",
+            12
+          ]
+        ]
+      },
+      "unique_positive_train": 20,
+      "unique_positive_test": 20,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "toy_play_object": {
+      "group": "entities",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 13,
+        "top20": [
+          [
+            "toys",
+            178
+          ],
+          [
+            "toy",
+            164
+          ],
+          [
+            "ball",
+            137
+          ],
+          [
+            "bear",
+            116
+          ],
+          [
+            "truck",
+            55
+          ],
+          [
+            "game",
+            48
+          ],
+          [
+            "blocks",
+            38
+          ],
+          [
+            "doll",
+            38
+          ],
+          [
+            "games",
+            21
+          ],
+          [
+            "balloon",
+            20
+          ],
+          [
+            "teddy",
+            15
+          ],
+          [
+            "bike",
+            12
+          ],
+          [
+            "puzzle",
+            8
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 70,
+        "top20": [
+          [
+            "back",
+            136
+          ],
+          [
+            "box",
+            49
+          ],
+          [
+            "car",
+            44
+          ],
+          [
+            "food",
+            32
+          ],
+          [
+            "eyes",
+            28
+          ],
+          [
+            "head",
+            28
+          ],
+          [
+            "door",
+            26
+          ],
+          [
+            "face",
+            25
+          ],
+          [
+            "bed",
+            23
+          ],
+          [
+            "rock",
+            21
+          ],
+          [
+            "hands",
+            21
+          ],
+          [
+            "cookies",
+            20
+          ],
+          [
+            "blanket",
+            17
+          ],
+          [
+            "floor",
+            17
+          ],
+          [
+            "hole",
+            17
+          ],
+          [
+            "paper",
+            17
+          ],
+          [
+            "boat",
+            17
+          ],
+          [
+            "bag",
+            15
+          ],
+          [
+            "table",
+            15
+          ],
+          [
+            "hand",
+            14
+          ]
+        ]
+      },
+      "unique_positive_train": 13,
+      "unique_positive_test": 12,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "nature_weather": {
+      "group": "entities",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 21,
+        "top20": [
+          [
+            "tree",
+            155
+          ],
+          [
+            "water",
+            128
+          ],
+          [
+            "sky",
+            91
+          ],
+          [
+            "sun",
+            53
+          ],
+          [
+            "rain",
+            49
+          ],
+          [
+            "flowers",
+            48
+          ],
+          [
+            "grass",
+            47
+          ],
+          [
+            "trees",
+            42
+          ],
+          [
+            "flower",
+            41
+          ],
+          [
+            "wind",
+            28
+          ],
+          [
+            "leaves",
+            26
+          ],
+          [
+            "river",
+            25
+          ],
+          [
+            "star",
+            22
+          ],
+          [
+            "snow",
+            18
+          ],
+          [
+            "rainbow",
+            15
+          ],
+          [
+            "cloud",
+            13
+          ],
+          [
+            "stars",
+            11
+          ],
+          [
+            "leaf",
+            11
+          ],
+          [
+            "clouds",
+            10
+          ],
+          [
+            "ocean",
+            10
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 59,
+        "top20": [
+          [
+            "back",
+            125
+          ],
+          [
+            "toys",
+            44
+          ],
+          [
+            "toy",
+            44
+          ],
+          [
+            "car",
+            39
+          ],
+          [
+            "bear",
+            37
+          ],
+          [
+            "box",
+            35
+          ],
+          [
+            "ball",
+            31
+          ],
+          [
+            "boat",
+            25
+          ],
+          [
+            "door",
+            22
+          ],
+          [
+            "hands",
+            20
+          ],
+          [
+            "bed",
+            19
+          ],
+          [
+            "face",
+            18
+          ],
+          [
+            "hole",
+            18
+          ],
+          [
+            "hand",
+            18
+          ],
+          [
+            "rock",
+            17
+          ],
+          [
+            "head",
+            16
+          ],
+          [
+            "eyes",
+            16
+          ],
+          [
+            "window",
+            14
+          ],
+          [
+            "truck",
+            14
+          ],
+          [
+            "game",
+            14
+          ]
+        ]
+      },
+      "unique_positive_train": 21,
+      "unique_positive_test": 21,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "body_part": {
+      "group": "entities",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 20,
+        "top20": [
+          [
+            "back",
+            346
+          ],
+          [
+            "face",
+            67
+          ],
+          [
+            "eyes",
+            66
+          ],
+          [
+            "hands",
+            63
+          ],
+          [
+            "hand",
+            62
+          ],
+          [
+            "head",
+            53
+          ],
+          [
+            "hair",
+            34
+          ],
+          [
+            "mouth",
+            26
+          ],
+          [
+            "nose",
+            18
+          ],
+          [
+            "arms",
+            16
+          ],
+          [
+            "arm",
+            15
+          ],
+          [
+            "feet",
+            15
+          ],
+          [
+            "foot",
+            13
+          ],
+          [
+            "legs",
+            11
+          ],
+          [
+            "finger",
+            10
+          ],
+          [
+            "ears",
+            10
+          ],
+          [
+            "eye",
+            7
+          ],
+          [
+            "fingers",
+            6
+          ],
+          [
+            "ear",
+            6
+          ],
+          [
+            "leg",
+            6
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 63,
+        "top20": [
+          [
+            "toys",
+            65
+          ],
+          [
+            "toy",
+            62
+          ],
+          [
+            "car",
+            61
+          ],
+          [
+            "bear",
+            50
+          ],
+          [
+            "box",
+            40
+          ],
+          [
+            "ball",
+            34
+          ],
+          [
+            "food",
+            27
+          ],
+          [
+            "door",
+            26
+          ],
+          [
+            "bed",
+            24
+          ],
+          [
+            "boat",
+            21
+          ],
+          [
+            "cake",
+            21
+          ],
+          [
+            "truck",
+            21
+          ],
+          [
+            "cookies",
+            18
+          ],
+          [
+            "rock",
+            17
+          ],
+          [
+            "hole",
+            16
+          ],
+          [
+            "doll",
+            16
+          ],
+          [
+            "blanket",
+            14
+          ],
+          [
+            "book",
+            14
+          ],
+          [
+            "bike",
+            13
+          ],
+          [
+            "window",
+            13
+          ]
+        ]
+      },
+      "unique_positive_train": 20,
+      "unique_positive_test": 19,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "color": {
+      "group": "attributes",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 12,
+        "top20": [
+          [
+            "red",
+            186
+          ],
+          [
+            "blue",
+            136
+          ],
+          [
+            "yellow",
+            90
+          ],
+          [
+            "pink",
+            83
+          ],
+          [
+            "green",
+            75
+          ],
+          [
+            "white",
+            61
+          ],
+          [
+            "brown",
+            51
+          ],
+          [
+            "black",
+            46
+          ],
+          [
+            "orange",
+            45
+          ],
+          [
+            "purple",
+            42
+          ],
+          [
+            "gray",
+            26
+          ],
+          [
+            "grey",
+            9
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 40,
+        "top20": [
+          [
+            "little",
+            146
+          ],
+          [
+            "big",
+            146
+          ],
+          [
+            "new",
+            52
+          ],
+          [
+            "good",
+            38
+          ],
+          [
+            "special",
+            32
+          ],
+          [
+            "small",
+            31
+          ],
+          [
+            "old",
+            31
+          ],
+          [
+            "safe",
+            29
+          ],
+          [
+            "nice",
+            27
+          ],
+          [
+            "long",
+            27
+          ],
+          [
+            "brave",
+            21
+          ],
+          [
+            "pretty",
+            19
+          ],
+          [
+            "shiny",
+            19
+          ],
+          [
+            "clean",
+            16
+          ],
+          [
+            "strong",
+            16
+          ],
+          [
+            "loud",
+            15
+          ],
+          [
+            "fast",
+            14
+          ],
+          [
+            "kind",
+            14
+          ],
+          [
+            "curious",
+            14
+          ],
+          [
+            "hard",
+            13
+          ]
+        ]
+      },
+      "unique_positive_train": 12,
+      "unique_positive_test": 12,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "size": {
+      "group": "attributes",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 10,
+        "top20": [
+          [
+            "little",
+            357
+          ],
+          [
+            "big",
+            351
+          ],
+          [
+            "long",
+            52
+          ],
+          [
+            "small",
+            50
+          ],
+          [
+            "tall",
+            17
+          ],
+          [
+            "giant",
+            12
+          ],
+          [
+            "wide",
+            4
+          ],
+          [
+            "tiny",
+            4
+          ],
+          [
+            "huge",
+            2
+          ],
+          [
+            "thin",
+            1
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 40,
+        "top20": [
+          [
+            "new",
+            83
+          ],
+          [
+            "good",
+            57
+          ],
+          [
+            "special",
+            56
+          ],
+          [
+            "old",
+            54
+          ],
+          [
+            "brave",
+            39
+          ],
+          [
+            "nice",
+            37
+          ],
+          [
+            "red",
+            35
+          ],
+          [
+            "kind",
+            31
+          ],
+          [
+            "clean",
+            29
+          ],
+          [
+            "hard",
+            27
+          ],
+          [
+            "loud",
+            27
+          ],
+          [
+            "fast",
+            27
+          ],
+          [
+            "pretty",
+            23
+          ],
+          [
+            "bright",
+            22
+          ],
+          [
+            "bad",
+            22
+          ],
+          [
+            "safe",
+            22
+          ],
+          [
+            "strong",
+            22
+          ],
+          [
+            "pink",
+            21
+          ],
+          [
+            "blue",
+            21
+          ],
+          [
+            "warm",
+            18
+          ]
+        ]
+      },
+      "unique_positive_train": 10,
+      "unique_positive_test": 8,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "positive_emotion": {
+      "group": "attributes",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 14,
+        "top20": [
+          [
+            "happy",
+            268
+          ],
+          [
+            "loved",
+            175
+          ],
+          [
+            "smiled",
+            131
+          ],
+          [
+            "excited",
+            100
+          ],
+          [
+            "proud",
+            56
+          ],
+          [
+            "laughed",
+            41
+          ],
+          [
+            "smile",
+            36
+          ],
+          [
+            "laugh",
+            12
+          ],
+          [
+            "glad",
+            10
+          ],
+          [
+            "laughing",
+            9
+          ],
+          [
+            "delighted",
+            6
+          ],
+          [
+            "cheerful",
+            4
+          ],
+          [
+            "joyful",
+            1
+          ],
+          [
+            "smiling",
+            1
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 44,
+        "top20": [
+          [
+            "new",
+            78
+          ],
+          [
+            "sad",
+            78
+          ],
+          [
+            "scared",
+            58
+          ],
+          [
+            "good",
+            44
+          ],
+          [
+            "old",
+            35
+          ],
+          [
+            "special",
+            33
+          ],
+          [
+            "sorry",
+            32
+          ],
+          [
+            "brave",
+            30
+          ],
+          [
+            "safe",
+            29
+          ],
+          [
+            "kind",
+            27
+          ],
+          [
+            "nice",
+            26
+          ],
+          [
+            "loud",
+            24
+          ],
+          [
+            "bad",
+            22
+          ],
+          [
+            "fast",
+            22
+          ],
+          [
+            "hard",
+            21
+          ],
+          [
+            "shiny",
+            20
+          ],
+          [
+            "pretty",
+            20
+          ],
+          [
+            "angry",
+            19
+          ],
+          [
+            "bright",
+            17
+          ],
+          [
+            "funny",
+            16
+          ]
+        ]
+      },
+      "unique_positive_train": 14,
+      "unique_positive_test": 10,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "negative_emotion": {
+      "group": "attributes",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 15,
+        "top20": [
+          [
+            "sad",
+            232
+          ],
+          [
+            "scared",
+            190
+          ],
+          [
+            "sorry",
+            99
+          ],
+          [
+            "hurt",
+            78
+          ],
+          [
+            "angry",
+            55
+          ],
+          [
+            "cry",
+            41
+          ],
+          [
+            "worried",
+            27
+          ],
+          [
+            "cried",
+            27
+          ],
+          [
+            "lonely",
+            20
+          ],
+          [
+            "crying",
+            20
+          ],
+          [
+            "afraid",
+            18
+          ],
+          [
+            "upset",
+            17
+          ],
+          [
+            "mad",
+            14
+          ],
+          [
+            "nervous",
+            7
+          ],
+          [
+            "frightened",
+            5
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 42,
+        "top20": [
+          [
+            "happy",
+            142
+          ],
+          [
+            "loved",
+            81
+          ],
+          [
+            "smiled",
+            68
+          ],
+          [
+            "new",
+            53
+          ],
+          [
+            "excited",
+            48
+          ],
+          [
+            "good",
+            34
+          ],
+          [
+            "special",
+            30
+          ],
+          [
+            "safe",
+            28
+          ],
+          [
+            "proud",
+            28
+          ],
+          [
+            "old",
+            26
+          ],
+          [
+            "hard",
+            22
+          ],
+          [
+            "laughed",
+            21
+          ],
+          [
+            "nice",
+            20
+          ],
+          [
+            "smile",
+            20
+          ],
+          [
+            "bad",
+            17
+          ],
+          [
+            "fast",
+            15
+          ],
+          [
+            "shiny",
+            13
+          ],
+          [
+            "curious",
+            13
+          ],
+          [
+            "brave",
+            13
+          ],
+          [
+            "loud",
+            13
+          ]
+        ]
+      },
+      "unique_positive_train": 15,
+      "unique_positive_test": 15,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "motion": {
+      "group": "verbs",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 20,
+        "top20": [
+          [
+            "went",
+            198
+          ],
+          [
+            "go",
+            160
+          ],
+          [
+            "ran",
+            94
+          ],
+          [
+            "came",
+            77
+          ],
+          [
+            "come",
+            50
+          ],
+          [
+            "walked",
+            44
+          ],
+          [
+            "flew",
+            42
+          ],
+          [
+            "run",
+            35
+          ],
+          [
+            "fly",
+            29
+          ],
+          [
+            "walk",
+            21
+          ],
+          [
+            "jumped",
+            18
+          ],
+          [
+            "climbed",
+            17
+          ],
+          [
+            "jump",
+            14
+          ],
+          [
+            "climb",
+            13
+          ],
+          [
+            "ride",
+            12
+          ],
+          [
+            "swim",
+            9
+          ],
+          [
+            "goes",
+            9
+          ],
+          [
+            "chased",
+            4
+          ],
+          [
+            "chase",
+            3
+          ],
+          [
+            "rode",
+            1
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 73,
+        "top20": [
+          [
+            "said",
+            110
+          ],
+          [
+            "saw",
+            65
+          ],
+          [
+            "play",
+            55
+          ],
+          [
+            "asked",
+            35
+          ],
+          [
+            "felt",
+            31
+          ],
+          [
+            "looked",
+            29
+          ],
+          [
+            "put",
+            28
+          ],
+          [
+            "see",
+            28
+          ],
+          [
+            "got",
+            24
+          ],
+          [
+            "knew",
+            23
+          ],
+          [
+            "started",
+            22
+          ],
+          [
+            "make",
+            21
+          ],
+          [
+            "find",
+            19
+          ],
+          [
+            "made",
+            17
+          ],
+          [
+            "says",
+            16
+          ],
+          [
+            "played",
+            16
+          ],
+          [
+            "found",
+            16
+          ],
+          [
+            "took",
+            16
+          ],
+          [
+            "get",
+            15
+          ],
+          [
+            "told",
+            13
+          ]
+        ]
+      },
+      "unique_positive_train": 19,
+      "unique_positive_test": 16,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "speech": {
+      "group": "verbs",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 18,
+        "top20": [
+          [
+            "said",
+            483
+          ],
+          [
+            "asked",
+            124
+          ],
+          [
+            "says",
+            72
+          ],
+          [
+            "told",
+            39
+          ],
+          [
+            "called",
+            26
+          ],
+          [
+            "replied",
+            20
+          ],
+          [
+            "say",
+            18
+          ],
+          [
+            "ask",
+            13
+          ],
+          [
+            "shouted",
+            13
+          ],
+          [
+            "tell",
+            12
+          ],
+          [
+            "talk",
+            6
+          ],
+          [
+            "explained",
+            6
+          ],
+          [
+            "talked",
+            5
+          ],
+          [
+            "answered",
+            4
+          ],
+          [
+            "call",
+            3
+          ],
+          [
+            "answer",
+            3
+          ],
+          [
+            "explain",
+            2
+          ],
+          [
+            "shout",
+            1
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 74,
+        "top20": [
+          [
+            "saw",
+            61
+          ],
+          [
+            "play",
+            51
+          ],
+          [
+            "went",
+            43
+          ],
+          [
+            "go",
+            35
+          ],
+          [
+            "felt",
+            34
+          ],
+          [
+            "started",
+            33
+          ],
+          [
+            "found",
+            32
+          ],
+          [
+            "put",
+            29
+          ],
+          [
+            "looked",
+            29
+          ],
+          [
+            "make",
+            29
+          ],
+          [
+            "got",
+            27
+          ],
+          [
+            "see",
+            23
+          ],
+          [
+            "look",
+            23
+          ],
+          [
+            "ran",
+            22
+          ],
+          [
+            "take",
+            21
+          ],
+          [
+            "find",
+            20
+          ],
+          [
+            "made",
+            18
+          ],
+          [
+            "know",
+            16
+          ],
+          [
+            "get",
+            14
+          ],
+          [
+            "thought",
+            14
+          ]
+        ]
+      },
+      "unique_positive_train": 18,
+      "unique_positive_test": 16,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "perception": {
+      "group": "verbs",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 16,
+        "top20": [
+          [
+            "saw",
+            253
+          ],
+          [
+            "felt",
+            127
+          ],
+          [
+            "looked",
+            100
+          ],
+          [
+            "see",
+            89
+          ],
+          [
+            "look",
+            82
+          ],
+          [
+            "heard",
+            45
+          ],
+          [
+            "feel",
+            37
+          ],
+          [
+            "listen",
+            22
+          ],
+          [
+            "watched",
+            22
+          ],
+          [
+            "watch",
+            20
+          ],
+          [
+            "noticed",
+            17
+          ],
+          [
+            "hear",
+            12
+          ],
+          [
+            "smelled",
+            8
+          ],
+          [
+            "listened",
+            7
+          ],
+          [
+            "notice",
+            5
+          ],
+          [
+            "smell",
+            4
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 77,
+        "top20": [
+          [
+            "said",
+            117
+          ],
+          [
+            "play",
+            53
+          ],
+          [
+            "went",
+            38
+          ],
+          [
+            "asked",
+            35
+          ],
+          [
+            "go",
+            34
+          ],
+          [
+            "found",
+            27
+          ],
+          [
+            "ran",
+            26
+          ],
+          [
+            "made",
+            22
+          ],
+          [
+            "get",
+            21
+          ],
+          [
+            "started",
+            21
+          ],
+          [
+            "find",
+            20
+          ],
+          [
+            "make",
+            20
+          ],
+          [
+            "took",
+            19
+          ],
+          [
+            "come",
+            19
+          ],
+          [
+            "says",
+            19
+          ],
+          [
+            "got",
+            18
+          ],
+          [
+            "came",
+            17
+          ],
+          [
+            "put",
+            17
+          ],
+          [
+            "take",
+            16
+          ],
+          [
+            "told",
+            15
+          ]
+        ]
+      },
+      "unique_positive_train": 16,
+      "unique_positive_test": 15,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "cognition": {
+      "group": "verbs",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 16,
+        "top20": [
+          [
+            "knew",
+            181
+          ],
+          [
+            "thought",
+            160
+          ],
+          [
+            "know",
+            118
+          ],
+          [
+            "learned",
+            107
+          ],
+          [
+            "realized",
+            53
+          ],
+          [
+            "remembered",
+            42
+          ],
+          [
+            "learn",
+            33
+          ],
+          [
+            "think",
+            30
+          ],
+          [
+            "forgot",
+            26
+          ],
+          [
+            "remember",
+            26
+          ],
+          [
+            "wondered",
+            20
+          ],
+          [
+            "understand",
+            17
+          ],
+          [
+            "forget",
+            15
+          ],
+          [
+            "understood",
+            12
+          ],
+          [
+            "wonder",
+            6
+          ],
+          [
+            "realize",
+            4
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 75,
+        "top20": [
+          [
+            "said",
+            89
+          ],
+          [
+            "play",
+            54
+          ],
+          [
+            "saw",
+            49
+          ],
+          [
+            "went",
+            44
+          ],
+          [
+            "go",
+            35
+          ],
+          [
+            "felt",
+            31
+          ],
+          [
+            "looked",
+            29
+          ],
+          [
+            "asked",
+            27
+          ],
+          [
+            "see",
+            24
+          ],
+          [
+            "put",
+            24
+          ],
+          [
+            "started",
+            23
+          ],
+          [
+            "took",
+            23
+          ],
+          [
+            "came",
+            21
+          ],
+          [
+            "got",
+            21
+          ],
+          [
+            "find",
+            20
+          ],
+          [
+            "found",
+            17
+          ],
+          [
+            "make",
+            17
+          ],
+          [
+            "look",
+            17
+          ],
+          [
+            "take",
+            17
+          ],
+          [
+            "played",
+            14
+          ]
+        ]
+      },
+      "unique_positive_train": 16,
+      "unique_positive_test": 16,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "desire_intention": {
+      "group": "verbs",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 12,
+        "top20": [
+          [
+            "wanted",
+            321
+          ],
+          [
+            "want",
+            142
+          ],
+          [
+            "decided",
+            132
+          ],
+          [
+            "tried",
+            96
+          ],
+          [
+            "need",
+            40
+          ],
+          [
+            "try",
+            38
+          ],
+          [
+            "wished",
+            25
+          ],
+          [
+            "needed",
+            20
+          ],
+          [
+            "hoped",
+            11
+          ],
+          [
+            "decide",
+            10
+          ],
+          [
+            "wish",
+            10
+          ],
+          [
+            "hope",
+            5
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 79,
+        "top20": [
+          [
+            "said",
+            87
+          ],
+          [
+            "play",
+            50
+          ],
+          [
+            "saw",
+            45
+          ],
+          [
+            "went",
+            38
+          ],
+          [
+            "made",
+            34
+          ],
+          [
+            "go",
+            30
+          ],
+          [
+            "felt",
+            25
+          ],
+          [
+            "found",
+            25
+          ],
+          [
+            "asked",
+            24
+          ],
+          [
+            "started",
+            23
+          ],
+          [
+            "got",
+            22
+          ],
+          [
+            "put",
+            21
+          ],
+          [
+            "see",
+            19
+          ],
+          [
+            "ran",
+            18
+          ],
+          [
+            "looked",
+            18
+          ],
+          [
+            "take",
+            18
+          ],
+          [
+            "make",
+            18
+          ],
+          [
+            "get",
+            18
+          ],
+          [
+            "came",
+            17
+          ],
+          [
+            "come",
+            15
+          ]
+        ]
+      },
+      "unique_positive_train": 12,
+      "unique_positive_test": 12,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "helping_prosocial": {
+      "group": "verbs",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 14,
+        "top20": [
+          [
+            "help",
+            243
+          ],
+          [
+            "gave",
+            119
+          ],
+          [
+            "hugged",
+            84
+          ],
+          [
+            "thank",
+            77
+          ],
+          [
+            "thanked",
+            68
+          ],
+          [
+            "share",
+            60
+          ],
+          [
+            "give",
+            51
+          ],
+          [
+            "hug",
+            50
+          ],
+          [
+            "helped",
+            42
+          ],
+          [
+            "care",
+            24
+          ],
+          [
+            "shared",
+            16
+          ],
+          [
+            "saved",
+            7
+          ],
+          [
+            "save",
+            6
+          ],
+          [
+            "cared",
+            3
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 74,
+        "top20": [
+          [
+            "said",
+            119
+          ],
+          [
+            "play",
+            45
+          ],
+          [
+            "went",
+            39
+          ],
+          [
+            "go",
+            35
+          ],
+          [
+            "got",
+            30
+          ],
+          [
+            "make",
+            28
+          ],
+          [
+            "asked",
+            27
+          ],
+          [
+            "ran",
+            25
+          ],
+          [
+            "started",
+            24
+          ],
+          [
+            "found",
+            22
+          ],
+          [
+            "made",
+            21
+          ],
+          [
+            "put",
+            20
+          ],
+          [
+            "take",
+            19
+          ],
+          [
+            "find",
+            19
+          ],
+          [
+            "played",
+            19
+          ],
+          [
+            "came",
+            17
+          ],
+          [
+            "thought",
+            17
+          ],
+          [
+            "knew",
+            17
+          ],
+          [
+            "get",
+            16
+          ],
+          [
+            "says",
+            15
+          ]
+        ]
+      },
+      "unique_positive_train": 14,
+      "unique_positive_test": 14,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "eating_drinking": {
+      "group": "verbs",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 10,
+        "top20": [
+          [
+            "eat",
+            331
+          ],
+          [
+            "ate",
+            147
+          ],
+          [
+            "bit",
+            129
+          ],
+          [
+            "bite",
+            56
+          ],
+          [
+            "drink",
+            55
+          ],
+          [
+            "tasted",
+            44
+          ],
+          [
+            "taste",
+            41
+          ],
+          [
+            "drank",
+            27
+          ],
+          [
+            "chew",
+            15
+          ],
+          [
+            "eats",
+            5
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 80,
+        "top20": [
+          [
+            "said",
+            113
+          ],
+          [
+            "went",
+            46
+          ],
+          [
+            "go",
+            44
+          ],
+          [
+            "play",
+            41
+          ],
+          [
+            "make",
+            29
+          ],
+          [
+            "started",
+            26
+          ],
+          [
+            "made",
+            26
+          ],
+          [
+            "found",
+            25
+          ],
+          [
+            "asked",
+            24
+          ],
+          [
+            "put",
+            24
+          ],
+          [
+            "take",
+            24
+          ],
+          [
+            "thought",
+            19
+          ],
+          [
+            "says",
+            19
+          ],
+          [
+            "get",
+            18
+          ],
+          [
+            "took",
+            18
+          ],
+          [
+            "ran",
+            18
+          ],
+          [
+            "told",
+            18
+          ],
+          [
+            "knew",
+            17
+          ],
+          [
+            "came",
+            17
+          ],
+          [
+            "got",
+            15
+          ]
+        ]
+      },
+      "unique_positive_train": 10,
+      "unique_positive_test": 10,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "male_pronoun": {
+      "group": "grammar",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 3,
+        "top20": [
+          [
+            "he",
+            528
+          ],
+          [
+            "his",
+            224
+          ],
+          [
+            "him",
+            98
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 16,
+        "top20": [
+          [
+            "she",
+            202
+          ],
+          [
+            "they",
+            161
+          ],
+          [
+            "it",
+            150
+          ],
+          [
+            "her",
+            116
+          ],
+          [
+            "you",
+            62
+          ],
+          [
+            "their",
+            36
+          ],
+          [
+            "i",
+            35
+          ],
+          [
+            "them",
+            25
+          ],
+          [
+            "my",
+            16
+          ],
+          [
+            "your",
+            14
+          ],
+          [
+            "we",
+            11
+          ],
+          [
+            "me",
+            8
+          ],
+          [
+            "us",
+            6
+          ],
+          [
+            "its",
+            5
+          ],
+          [
+            "mine",
+            2
+          ],
+          [
+            "our",
+            1
+          ]
+        ]
+      },
+      "unique_positive_train": 3,
+      "unique_positive_test": 3,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": true,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "female_pronoun": {
+      "group": "grammar",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 2,
+        "top20": [
+          [
+            "she",
+            537
+          ],
+          [
+            "her",
+            313
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 18,
+        "top20": [
+          [
+            "he",
+            204
+          ],
+          [
+            "it",
+            199
+          ],
+          [
+            "they",
+            122
+          ],
+          [
+            "his",
+            74
+          ],
+          [
+            "you",
+            63
+          ],
+          [
+            "i",
+            38
+          ],
+          [
+            "him",
+            32
+          ],
+          [
+            "their",
+            30
+          ],
+          [
+            "them",
+            26
+          ],
+          [
+            "we",
+            20
+          ],
+          [
+            "its",
+            13
+          ],
+          [
+            "your",
+            8
+          ],
+          [
+            "my",
+            7
+          ],
+          [
+            "me",
+            5
+          ],
+          [
+            "us",
+            5
+          ],
+          [
+            "yours",
+            2
+          ],
+          [
+            "our",
+            1
+          ],
+          [
+            "mine",
+            1
+          ]
+        ]
+      },
+      "unique_positive_train": 2,
+      "unique_positive_test": 2,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": true,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "first_person_pronoun": {
+      "group": "grammar",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 8,
+        "top20": [
+          [
+            "i",
+            349
+          ],
+          [
+            "we",
+            217
+          ],
+          [
+            "me",
+            106
+          ],
+          [
+            "my",
+            106
+          ],
+          [
+            "us",
+            28
+          ],
+          [
+            "our",
+            28
+          ],
+          [
+            "mine",
+            15
+          ],
+          [
+            "ours",
+            1
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 13,
+        "top20": [
+          [
+            "he",
+            158
+          ],
+          [
+            "she",
+            156
+          ],
+          [
+            "it",
+            148
+          ],
+          [
+            "they",
+            116
+          ],
+          [
+            "her",
+            99
+          ],
+          [
+            "his",
+            62
+          ],
+          [
+            "you",
+            33
+          ],
+          [
+            "their",
+            28
+          ],
+          [
+            "him",
+            21
+          ],
+          [
+            "them",
+            14
+          ],
+          [
+            "your",
+            8
+          ],
+          [
+            "its",
+            6
+          ],
+          [
+            "yours",
+            1
+          ]
+        ]
+      },
+      "unique_positive_train": 8,
+      "unique_positive_test": 7,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": true,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "negation": {
+      "group": "grammar",
+      "kind": "lexical",
+      "positive": {
+        "n": 850,
+        "unique_words": 5,
+        "top20": [
+          [
+            "not",
+            500
+          ],
+          [
+            "no",
+            186
+          ],
+          [
+            "never",
+            144
+          ],
+          [
+            "nothing",
+            13
+          ],
+          [
+            "nobody",
+            7
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 15,
+        "top20": [
+          [
+            "there",
+            222
+          ],
+          [
+            "very",
+            192
+          ],
+          [
+            "too",
+            85
+          ],
+          [
+            "then",
+            79
+          ],
+          [
+            "again",
+            51
+          ],
+          [
+            "always",
+            41
+          ],
+          [
+            "just",
+            37
+          ],
+          [
+            "now",
+            32
+          ],
+          [
+            "even",
+            25
+          ],
+          [
+            "soon",
+            21
+          ],
+          [
+            "really",
+            17
+          ],
+          [
+            "still",
+            14
+          ],
+          [
+            "also",
+            13
+          ],
+          [
+            "here",
+            12
+          ],
+          [
+            "only",
+            9
+          ]
+        ]
+      },
+      "unique_positive_train": 5,
+      "unique_positive_test": 5,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "lexical",
+        "ambiguous_dropped": [],
+        "absent_from_corpus_positive": [],
+        "absent_from_corpus_negative": []
+      }
+    },
+    "inside_dialogue": {
+      "group": "grammar",
+      "kind": "contextual",
+      "positive": {
+        "n": 850,
+        "unique_words": 394,
+        "top20": [
+          [
+            "the",
+            48
+          ],
+          [
+            "and",
+            33
+          ],
+          [
+            "for",
+            16
+          ],
+          [
+            "have",
+            16
+          ],
+          [
+            "with",
+            15
+          ],
+          [
+            "are",
+            12
+          ],
+          [
+            "like",
+            11
+          ],
+          [
+            "lily",
+            10
+          ],
+          [
+            "want",
+            10
+          ],
+          [
+            "what",
+            10
+          ],
+          [
+            "too",
+            10
+          ],
+          [
+            "get",
+            9
+          ],
+          [
+            "play",
+            9
+          ],
+          [
+            "make",
+            9
+          ],
+          [
+            "you",
+            8
+          ],
+          [
+            "very",
+            8
+          ],
+          [
+            "help",
+            7
+          ],
+          [
+            "that",
+            7
+          ],
+          [
+            "this",
+            7
+          ],
+          [
+            "can",
+            7
+          ]
+        ]
+      },
+      "negative": {
+        "n": 850,
+        "unique_words": 399,
+        "top20": [
+          [
+            "the",
+            53
+          ],
+          [
+            "and",
+            33
+          ],
+          [
+            "are",
+            18
+          ],
+          [
+            "play",
+            14
+          ],
+          [
+            "but",
+            13
+          ],
+          [
+            "want",
+            12
+          ],
+          [
+            "that",
+            11
+          ],
+          [
+            "was",
+            10
+          ],
+          [
+            "like",
+            10
+          ],
+          [
+            "now",
+            9
+          ],
+          [
+            "have",
+            9
+          ],
+          [
+            "with",
+            8
+          ],
+          [
+            "mom",
+            8
+          ],
+          [
+            "this",
+            7
+          ],
+          [
+            "look",
+            7
+          ],
+          [
+            "very",
+            7
+          ],
+          [
+            "good",
+            6
+          ],
+          [
+            "for",
+            6
+          ],
+          [
+            "ben",
+            6
+          ],
+          [
+            "not",
+            6
+          ]
+        ]
+      },
+      "unique_positive_train": 267,
+      "unique_positive_test": 171,
+      "single_token_fraction": 1.0,
+      "diversity_ok": true,
+      "diversity_exempt": false,
+      "per_split": {
+        "train": 500,
+        "validation": 100,
+        "test": 250
+      },
+      "meets_minimum": true,
+      "core": true,
+      "vocabulary": {
+        "kind": "contextual"
+      }
+    }
+  }
+}
