@@ -9,12 +9,24 @@
 # backup uses `rclone copy`, which never mirrors a local delete, so the remote
 # copy survives -- but a file that never made it up there is kept locally.
 #
-# Usage: clean_checkpoints.sh <runs_dir> <remote:path> [--dry-run]
+# --keep-latest-only drops EVERY numbered checkpoint, keeping just latest.pt.
+# Intended for finished runs whose checkpoints are already on the remote: it
+# gives up mid-run restart points in exchange for roughly halving the footprint
+# again.  A run still training keeps its rolling window unless you pass it.
+#
+# Usage: clean_checkpoints.sh <runs_dir> <remote:path> [--dry-run] [--keep-latest-only]
 set -uo pipefail
 
-SRC="${1:?usage: clean_checkpoints.sh <runs_dir> <remote:path> [--dry-run]}"
+SRC="${1:?usage: clean_checkpoints.sh <runs_dir> <remote:path> [--dry-run] [--keep-latest-only]}"
 DST="${2:?missing remote}"
-DRY=0; [ "${3:-}" = "--dry-run" ] && DRY=1
+DRY=0; LATEST_ONLY=0
+for arg in "${@:3}"; do
+  case "$arg" in
+    --dry-run) DRY=1 ;;
+    --keep-latest-only) LATEST_ONLY=1 ;;
+    *) echo "unknown flag: $arg" >&2; exit 2 ;;
+  esac
+done
 
 MANIFEST=$(mktemp)
 trap 'rm -f "$MANIFEST"' EXIT
@@ -34,11 +46,20 @@ for d in "$SRC"/*/; do
   )
   total=$(ls "$d"*.pt 2>/dev/null | wc -l)
   n=${#numbered[@]}
-  (( n < 2 )) && { printf '%-30s %s\n' "$run" "only $n numbered ckpt, skipping"; continue; }
 
-  # candidates = every numbered ckpt except the newest; budget = half of all .pt
-  budget=$(( total / 2 ))
-  (( budget > n - 1 )) && budget=$(( n - 1 ))
+  if (( LATEST_ONLY )); then
+    # only safe if latest.pt is actually there to fall back on
+    if [ ! -f "$d/latest.pt" ]; then
+      printf '%-30s %s\n' "$run" "no latest.pt, leaving its $n checkpoint(s) alone"
+      continue
+    fi
+    budget=$n
+  else
+    (( n < 2 )) && { printf '%-30s %s\n' "$run" "only $n numbered ckpt, skipping"; continue; }
+    # candidates = every numbered ckpt except the newest; budget = half of all .pt
+    budget=$(( total / 2 ))
+    (( budget > n - 1 )) && budget=$(( n - 1 ))
+  fi
   printf '%-30s %d .pt -> dropping %d\n' "$run" "$total" "$budget"
 
   for (( i = 0; i < budget; i++ )); do
