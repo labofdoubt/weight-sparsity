@@ -115,6 +115,37 @@ def test_tied_lm_head_keeps_embedding_std():
     assert abs(model.tok_emb.weight.std().item() - expected) < 0.05 * expected
 
 
+def test_tied_logits_match_untied_scale():
+    """logit_scale='auto' cancels the (large) tied embedding std in the logits."""
+    kw = dict(d_model=256, vocab_size=1024, max_seq_len=64, n_layers=2)
+    expected = 0.02 / (1.0 / math.sqrt(2.0))  # init_std / init_std_embedding
+    torch.manual_seed(0)
+    tied = build_model(tiny_cfg(tie_embeddings=True, **kw)).eval()
+    assert abs(tied.logit_mult - expected) < 1e-6
+    torch.manual_seed(0)
+    untied = build_model(tiny_cfg(tie_embeddings=False, **kw)).eval()
+
+    x = torch.randint(0, 1024, (2, 64))
+    with torch.no_grad():
+        tied_logits, _ = tied(x)
+        untied_logits, _ = untied(x)
+    # the tied head lands within 25% of the untied head's logit std ...
+    ratio = tied_logits.std().item() / untied_logits.std().item()
+    assert 0.75 < ratio < 1.25, ratio
+    # ... and the real (shifted) LM loss starts near ln(vocab)
+    with torch.no_grad():
+        loss = nn.functional.cross_entropy(
+            tied_logits[:, :-1].reshape(-1, 1024).float(), x[:, 1:].reshape(-1)
+        )
+    assert abs(loss.item() - math.log(1024)) < 1.0, loss.item()
+
+
+def test_logit_scale_none_and_untied_are_unscaled():
+    assert build_model(tiny_cfg(logit_scale="none", tie_embeddings=True)).logit_mult == 1.0
+    # an untied head has its own linear-scale init, so "auto" leaves it alone
+    assert build_model(tiny_cfg(tie_embeddings=False)).logit_mult == 1.0
+
+
 def test_fan_in_init():
     model = build_model(
         tiny_cfg(init_scheme="fan_in", init_gain=1.0, d_model=128, init_scale_residual=False)

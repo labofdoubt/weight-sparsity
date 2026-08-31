@@ -10,7 +10,34 @@ import torch.nn.functional as F
 
 from .gate import AdaptiveLapSumTopKGate
 
-INIT_MODES = ("default", "unit_scale_output", "unit_norm_dictionary")
+INIT_MODES = (
+    "default",
+    "sqrt_k",
+    "sqrt_k_selection_corrected",
+    "unit_norm_dictionary",
+)
+#: renamed options, mapped so an old config fails with a useful message
+_RENAMED_INIT_MODES = {"unit_scale_output": "sqrt_k"}
+
+
+def selection_gain(k: int, n_features: int) -> float:
+    """``E[|z| | z survives TopK]`` for standard-normal pre-activations.
+
+    TopK keeps the ``k`` largest of ``n`` by magnitude, so the survivors are
+    tail order statistics, not typical draws: at k=32 of 2048 their mean
+    magnitude is ~2.75, against ~0.80 for an unselected coefficient.  Any
+    decoder scale derived from ``k`` alone therefore overshoots by this factor.
+
+    Closed form via the inverse Mills ratio, ``phi(t) / (1 - Phi(t))`` at the
+    threshold ``t`` with ``P(|Z| > t) = k/n``.  Checked against simulation to
+    within 0.2% for k/n between 1/64 and 1/2, so no sampling is needed.
+    """
+    p = min(1.0, max(1e-12, k / max(1, n_features)))
+    # t = Phi^-1(1 - p/2), written through erfinv to avoid a scipy dependency
+    t = math.sqrt(2.0) * float(
+        torch.erfinv(torch.tensor(1.0 - p, dtype=torch.float64))
+    )
+    return 2.0 * math.exp(-0.5 * t * t) / (math.sqrt(2.0 * math.pi) * p)
 
 
 class TiedDecoder(nn.Module):
@@ -83,6 +110,11 @@ class SparseTopKBottleneck(nn.Module):
             hard_inference=cfg.hard_inference,
         )
         self.init_mode = getattr(cfg, "init_mode", "default")
+        if self.init_mode in _RENAMED_INIT_MODES:
+            raise ValueError(
+                f"init_mode={self.init_mode!r} was renamed to "
+                f"{_RENAMED_INIT_MODES[self.init_mode]!r}"
+            )
         if self.init_mode not in INIT_MODES:
             raise ValueError(
                 f"unknown bottleneck init_mode: {self.init_mode!r} ({' | '.join(INIT_MODES)})"
@@ -112,11 +144,16 @@ class SparseTopKBottleneck(nn.Module):
     def _init_projections(self, k: int) -> None:
         """Re-initialise the projections; ``default`` leaves PyTorch's alone.
 
-        ``unit_scale_output``   encoder std 1/sqrt(d_model), decoder std 1/sqrt(k).
+        ``sqrt_k``  encoder std 1/sqrt(d_model), decoder std 1/sqrt(k).
             The decoder's fan-in is ``n_features``, but only ``k`` of those
             coefficients are ever non-zero, so scaling by ``n_features`` -- as
             PyTorch's default does -- under-scales the output by sqrt(n/k).
-            Using ``k`` makes the block's output unit-scale at init instead.
+            Correcting the fan-in to ``k`` overshoots in the other direction,
+            because the surviving coefficients are the largest ones.
+
+        ``sqrt_k_selection_corrected``  the same, divided by the mean magnitude
+            of a surviving coefficient (see ``selection_gain``).  This is the
+            one that actually lands at unit output scale.
 
         ``unit_norm_dictionary``  both std 1/sqrt(d_model), so every decoder
             column has expected unit norm: a dictionary of unit atoms, which is
@@ -135,11 +172,14 @@ class SparseTopKBottleneck(nn.Module):
                 if proj.bias is not None:
                     nn.init.zeros_(proj.bias)
         if not self.tied:
-            dec_std = (
-                1.0 / math.sqrt(max(1, k))
-                if self.init_mode == "unit_scale_output"
-                else enc_std
-            )
+            if self.init_mode == "sqrt_k":
+                dec_std = 1.0 / math.sqrt(max(1, k))
+            elif self.init_mode == "sqrt_k_selection_corrected":
+                dec_std = 1.0 / (
+                    math.sqrt(max(1, k)) * selection_gain(k, self.n_features)
+                )
+            else:  # unit_norm_dictionary
+                dec_std = enc_std
             nn.init.normal_(self.out_proj.weight, mean=0.0, std=dec_std)
         if self.out_proj.bias is not None:
             nn.init.zeros_(self.out_proj.bias)

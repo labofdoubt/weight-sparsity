@@ -141,6 +141,16 @@ class TransformerLM(nn.Module):
         if cfg.tie_embeddings:
             self.lm_head.weight = self.tok_emb.weight
 
+        # A tied head inherits the embedding std, which is chosen for the
+        # residual stream and is far too large for logits; rescale to the std an
+        # untied head would have had.  A constant, so it stays out of the
+        # state_dict and checkpoints from either setting load unchanged.
+        self.logit_mult = 1.0
+        if cfg.logit_scale == "auto" and cfg.tie_embeddings:
+            self.logit_mult = self._linear_std(self.lm_head.weight) / self._embedding_std(
+                self.tok_emb
+            )
+
         self.apply(self._init_weights)
         if cfg.init_scale_residual:
             scale = 1.0 / math.sqrt(2 * cfg.n_layers)
@@ -227,6 +237,8 @@ class TransformerLM(nn.Module):
             x = block(x)
         x = self.norm_f(x)
         logits = self.lm_head(x)
+        if self.logit_mult != 1.0:
+            logits = logits * self.logit_mult
         loss = None
         if targets is not None:
             loss = F.cross_entropy(

@@ -66,6 +66,20 @@ class ModelConfig:
     # scale the init of every residual-output projection by 1/sqrt(2 * n_layers)
     init_scale_residual: bool = True
 
+    # ---- output scaling -------------------------------------------------- #
+    # Tying makes lm_head.weight the token embedding, whose std is set for the
+    # residual stream (DEFAULT_STD_EMBEDDING), not for the logits: unscaled, the
+    # init logits would land at std ~ std_embedding * sqrt(d_model) (~20 at
+    # d_model=768) and the softmax would start near one-hot.  "auto" rescales the
+    # logits by linear_std / std_embedding -- only when embeddings are tied,
+    # since an untied head already carries its own init -- so a tied head starts
+    # at exactly the logit scale an untied one would.  Note the target is *not*
+    # unit-std logits: a tied head reads the current token out of the residual
+    # stream, so sharp init logits confidently predict position t at position t
+    # and push the next-token loss above ln(vocab).
+    # "none" leaves the logits as lm_head produces them.
+    logit_scale: str = "auto"  # auto | none
+
     def __post_init__(self) -> None:
         if self.d_model % self.n_heads != 0:
             raise ValueError(f"d_model={self.d_model} must be divisible by n_heads={self.n_heads}")
@@ -73,6 +87,8 @@ class ModelConfig:
             raise ValueError(f"unknown mlp_activation: {self.mlp_activation}")
         if self.init_scheme not in ("fixed_std", "fan_in"):
             raise ValueError(f"unknown init_scheme: {self.init_scheme}")
+        if self.logit_scale not in ("auto", "none"):
+            raise ValueError(f"unknown logit_scale: {self.logit_scale}")
 
     @property
     def head_dim(self) -> int:
@@ -453,14 +469,21 @@ class ActivationBottleneckConfig:
     # after the model's _init_weights pass, so "default" means PyTorch's
     # nn.Linear defaults -- U(+-1/sqrt(fan_in)) with random biases -- which is
     # what every run before this option used.
-    #   unit_scale_output    encoder std 1/sqrt(d_model), decoder std 1/sqrt(k).
+    #   sqrt_k               encoder std 1/sqrt(d_model), decoder std 1/sqrt(k).
     #                        The decoder's fan-in is n_features but only k
     #                        coefficients are non-zero, so scaling by n_features
-    #                        under-scales the output by sqrt(n/k).
+    #                        under-scales the output by sqrt(n/k).  Correcting
+    #                        to k overshoots, since the survivors are the
+    #                        largest coefficients rather than typical ones.
+    #   sqrt_k_selection_corrected
+    #                        sqrt_k divided by E[|z| | selected], the mean
+    #                        magnitude of a surviving coefficient.  Lands at
+    #                        unit output scale.
     #   unit_norm_dictionary both std 1/sqrt(d_model): decoder columns have
     #                        expected unit norm, the usual sparse-coding
     #                        convention.
-    init_mode: str = "default"  # default | unit_scale_output | unit_norm_dictionary
+    # default | sqrt_k | sqrt_k_selection_corrected | unit_norm_dictionary
+    init_mode: str = "default"
     # Share one matrix between encoder and decoder (decoder = encoder^T).  Only
     # meaningful when both sides have the same scale, so it requires
     # unit_norm_dictionary.  Halves the bottleneck's parameters.
@@ -520,8 +543,13 @@ class ActivationBottleneckConfig:
 
         parse_placements(self.placement)  # raises on an unknown or empty name
 
-        from .bottleneck.module import INIT_MODES
+        from .bottleneck.module import _RENAMED_INIT_MODES, INIT_MODES
 
+        if self.init_mode in _RENAMED_INIT_MODES:
+            raise ValueError(
+                f"init_mode={self.init_mode!r} was renamed to "
+                f"{_RENAMED_INIT_MODES[self.init_mode]!r}"
+            )
         if self.init_mode not in INIT_MODES:
             raise ValueError(
                 f"unknown bottleneck init_mode: {self.init_mode!r} "
@@ -773,4 +801,19 @@ def load_config(path: Optional[str] = None, overrides: Sequence[str] = ()) -> Co
 
 
 def config_from_dict(tree: Dict[str, Any]) -> Config:
-    return _from_dict(Config, copy.deepcopy(tree))
+    tree = copy.deepcopy(tree)
+    _migrate_legacy(tree)
+    return _from_dict(Config, tree)
+
+
+def _migrate_legacy(tree: Dict[str, Any]) -> None:
+    """Pin pre-``logit_scale`` checkpoints to the behaviour they were trained with.
+
+    A checkpoint saved before ``logit_scale`` existed was trained with a tied head
+    whose logits were *not* rescaled, so letting it pick up the "auto" default
+    would shrink its logits by ``init_std / init_std_embedding`` (~35x) and turn
+    sampled generations to noise.  Absence of the key dates the payload.
+    """
+    model = tree.get("model")
+    if isinstance(model, dict) and "logit_scale" not in model:
+        model["logit_scale"] = "none"

@@ -2067,8 +2067,8 @@ def init_module(mode, k=32, n_features=2048, d_model=640, **kw):
     return SparseTopKBottleneck(d_model, cfg)
 
 
-def test_unit_scale_output_uses_k_not_n_for_the_decoder():
-    m = init_module("unit_scale_output", k=32, n_features=2048, d_model=640)
+def test_sqrt_k_uses_k_not_n_for_the_decoder():
+    m = init_module("sqrt_k", k=32, n_features=2048, d_model=640)
     assert float(m.in_proj.weight.std()) == pytest.approx(1 / math.sqrt(640), rel=0.05)
     assert float(m.out_proj.weight.std()) == pytest.approx(1 / math.sqrt(32), rel=0.05)
 
@@ -2092,7 +2092,7 @@ def test_default_mode_leaves_pytorch_init_untouched():
 
 
 def test_new_modes_zero_the_biases_and_default_does_not():
-    assert float(init_module("unit_scale_output").in_proj.bias.abs().max()) == 0.0
+    assert float(init_module("sqrt_k").in_proj.bias.abs().max()) == 0.0
     assert float(init_module("unit_norm_dictionary").out_proj.bias.abs().max()) == 0.0
     assert float(init_module("default").in_proj.bias.abs().max()) > 0.0
 
@@ -2101,32 +2101,57 @@ def test_new_modes_give_unit_variance_pre_activations():
     """The encoder half of both modes, which is exact."""
     torch.manual_seed(0)
     x = torch.randn(16, 32, 640)
-    for mode in ("unit_scale_output", "unit_norm_dictionary"):
+    for mode in ("sqrt_k", "sqrt_k_selection_corrected", "unit_norm_dictionary"):
         m = init_module(mode).eval()
         with torch.no_grad():
             h = m.in_proj(x)
         assert float(h.std()) == pytest.approx(1.0, abs=0.05), (mode, float(h.std()))
 
 
-def test_unit_scale_output_fixes_the_decoder_fan_in_mismatch():
-    """Not literally unit output -- TopK keeps the *largest* k of n, whose mean
-    magnitude is ~2.7 sigma at k=32/n=2048, so scaling the decoder by 1/sqrt(k)
-    over-shoots by roughly that factor.  What it does fix is PyTorch's default,
-    which scales by n and under-shoots by ~8x.  Both are O(1)-correctable by
-    calibrate_output; neither is, at n/k = 64.
-    """
+def test_output_scale_ordering_across_init_modes():
+    """default under-shoots ~8x, sqrt_k over-shoots, the corrected one lands."""
     torch.manual_seed(0)
     x = torch.randn(16, 32, 640)
     ratio = {}
-    for mode in ("default", "unit_scale_output", "unit_norm_dictionary"):
+    for mode in ("default", "sqrt_k", "sqrt_k_selection_corrected",
+                 "unit_norm_dictionary"):
         m = init_module(mode, k=32).eval()
         with torch.no_grad():
             ratio[mode] = float(m(x).std() / x.std())
-    assert ratio["default"] < 0.2, ratio                     # ~0.12, badly small
-    assert 0.4 < ratio["unit_norm_dictionary"] < 1.5, ratio  # ~0.62
-    assert 1.5 < ratio["unit_scale_output"] < 5.0, ratio     # ~2.8
-    # the ordering is the point: default is furthest from unit scale
-    assert abs(math.log(ratio["default"])) > abs(math.log(ratio["unit_scale_output"]))
+    assert ratio["default"] < 0.2, ratio
+    assert 1.5 < ratio["sqrt_k"] < 5.0, ratio
+    assert ratio["sqrt_k_selection_corrected"] == pytest.approx(1.0, abs=0.25), ratio
+    assert 0.4 < ratio["unit_norm_dictionary"] < 1.5, ratio
+
+
+@pytest.mark.parametrize("k,n", [(32, 2048), (128, 2048), (512, 2048), (32, 512)])
+def test_selection_gain_matches_the_empirical_top_k_magnitude(k, n):
+    """Closed form vs the thing it models: mean |value| of the top k of n."""
+    from wsparse.bottleneck.module import selection_gain
+
+    torch.manual_seed(0)
+    sample = torch.randn(4000, n).abs().topk(k, dim=-1).values.mean()
+    assert selection_gain(k, n) == pytest.approx(float(sample), rel=0.02)
+
+
+def test_selection_gain_degenerates_to_the_half_normal_mean():
+    """k == n: nothing is selected away, so the gain is just E|Z|."""
+    from wsparse.bottleneck.module import selection_gain
+
+    assert selection_gain(2048, 2048) == pytest.approx(math.sqrt(2 / math.pi), rel=0.02)
+
+
+def test_selection_corrected_decoder_std_is_sqrt_k_over_the_gain():
+    from wsparse.bottleneck.module import selection_gain
+
+    m = init_module("sqrt_k_selection_corrected", k=32, n_features=2048, d_model=640)
+    expected = 1.0 / (math.sqrt(32) * selection_gain(32, 2048))
+    assert float(m.out_proj.weight.std()) == pytest.approx(expected, rel=0.05)
+
+
+def test_renamed_init_mode_reports_its_new_name():
+    with pytest.raises(ValueError, match="renamed to 'sqrt_k'"):
+        ActivationBottleneckConfig(enabled=True, init_mode="unit_scale_output")
 
 
 def test_tied_decoder_is_the_encoder_transposed_and_shares_gradient():

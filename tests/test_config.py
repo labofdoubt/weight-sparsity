@@ -1,3 +1,4 @@
+import copy
 import os
 
 import pytest
@@ -111,3 +112,17 @@ def test_grad_accum():
     assert cfg.train.grad_accum_steps == 4
     with pytest.raises(ValueError):
         load_config(None, ["train.batch_size=10", "train.micro_batch_size=4"])
+
+
+def test_legacy_checkpoint_config_pins_logit_scale():
+    """Pre-``logit_scale`` checkpoints must not pick up the "auto" default."""
+    from wsparse.config import config_from_dict, load_config
+
+    fresh = load_config().to_dict()
+    assert fresh["model"]["logit_scale"] == "auto"  # yaml/default path is untouched
+
+    legacy = copy.deepcopy(fresh)
+    del legacy["model"]["logit_scale"]
+    assert config_from_dict(legacy).model.logit_scale == "none"
+    # a checkpoint that does carry the key keeps it
+    assert config_from_dict(fresh).model.logit_scale == "auto"
