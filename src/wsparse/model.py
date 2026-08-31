@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .config import ModelConfig
+from .config import DEFAULT_STD_EMBEDDING, ModelConfig
 
 
 class RMSNorm(nn.Module):
@@ -156,17 +156,30 @@ class TransformerLM(nn.Module):
             return cfg.init_gain / math.sqrt(fan_in)
         return cfg.init_std
 
+    def _embedding_std(self, module: nn.Module) -> float:
+        cfg = self.cfg
+        std = (
+            cfg.init_std_embedding
+            if cfg.init_std_embedding is not None
+            else DEFAULT_STD_EMBEDDING
+        )
+        if module is getattr(self, "pos_emb", None) and cfg.init_std_pos is not None:
+            std = cfg.init_std_pos
+        return std
+
     def _init_weights(self, module: nn.Module) -> None:
         cfg = self.cfg
         if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, mean=0.0, std=self._linear_std(module.weight))
+            # With tied embeddings lm_head.weight *is* tok_emb.weight; leave it to
+            # the nn.Embedding branch, which otherwise gets silently overwritten
+            # with the linear std (`apply` visits lm_head after tok_emb).
+            tied = cfg.tie_embeddings and module.weight is self.tok_emb.weight
+            if not tied:
+                nn.init.normal_(module.weight, mean=0.0, std=self._linear_std(module.weight))
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            std = cfg.init_std_embedding if cfg.init_std_embedding is not None else cfg.init_std
-            if module is getattr(self, "pos_emb", None) and cfg.init_std_pos is not None:
-                std = cfg.init_std_pos
-            nn.init.normal_(module.weight, mean=0.0, std=std)
+            nn.init.normal_(module.weight, mean=0.0, std=self._embedding_std(module))
 
     # ---- bookkeeping ------------------------------------------------------ #
     def _mask_parameter_ids(self) -> set:

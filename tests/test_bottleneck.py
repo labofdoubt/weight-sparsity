@@ -2053,3 +2053,116 @@ def test_reconstruction_gradient_reaches_both_projections():
     for name in ("in_proj", "out_proj"):
         g = getattr(mod, name).weight.grad
         assert g is not None and torch.isfinite(g).all() and g.abs().sum() > 0
+
+
+# --------------------------------------------------------------------------- #
+# bottleneck initialisation modes
+# --------------------------------------------------------------------------- #
+
+
+def init_module(mode, k=32, n_features=2048, d_model=640, **kw):
+    torch.manual_seed(0)
+    cfg = bottleneck_cfg(n_features=n_features, k=k, j=64, n_eff=32.0,
+                         init_mode=mode, **kw)
+    return SparseTopKBottleneck(d_model, cfg)
+
+
+def test_unit_scale_output_uses_k_not_n_for_the_decoder():
+    m = init_module("unit_scale_output", k=32, n_features=2048, d_model=640)
+    assert float(m.in_proj.weight.std()) == pytest.approx(1 / math.sqrt(640), rel=0.05)
+    assert float(m.out_proj.weight.std()) == pytest.approx(1 / math.sqrt(32), rel=0.05)
+
+
+def test_unit_norm_dictionary_gives_unit_norm_decoder_columns():
+    m = init_module("unit_norm_dictionary", n_features=2048, d_model=640)
+    assert float(m.in_proj.weight.std()) == pytest.approx(1 / math.sqrt(640), rel=0.05)
+    assert float(m.out_proj.weight.norm(dim=0).mean()) == pytest.approx(1.0, rel=0.05)
+
+
+def test_default_mode_leaves_pytorch_init_untouched():
+    """Every run before this option existed used PyTorch's uniform default."""
+    m = init_module("default", n_features=2048, d_model=640)
+    # U(+-1/sqrt(fan_in)) has std 1/(sqrt(3) * sqrt(fan_in))
+    assert float(m.in_proj.weight.std()) == pytest.approx(
+        1 / math.sqrt(3 * 640), rel=0.05
+    )
+    assert float(m.out_proj.weight.std()) == pytest.approx(
+        1 / math.sqrt(3 * 2048), rel=0.05
+    )
+
+
+def test_new_modes_zero_the_biases_and_default_does_not():
+    assert float(init_module("unit_scale_output").in_proj.bias.abs().max()) == 0.0
+    assert float(init_module("unit_norm_dictionary").out_proj.bias.abs().max()) == 0.0
+    assert float(init_module("default").in_proj.bias.abs().max()) > 0.0
+
+
+def test_new_modes_give_unit_variance_pre_activations():
+    """The encoder half of both modes, which is exact."""
+    torch.manual_seed(0)
+    x = torch.randn(16, 32, 640)
+    for mode in ("unit_scale_output", "unit_norm_dictionary"):
+        m = init_module(mode).eval()
+        with torch.no_grad():
+            h = m.in_proj(x)
+        assert float(h.std()) == pytest.approx(1.0, abs=0.05), (mode, float(h.std()))
+
+
+def test_unit_scale_output_fixes_the_decoder_fan_in_mismatch():
+    """Not literally unit output -- TopK keeps the *largest* k of n, whose mean
+    magnitude is ~2.7 sigma at k=32/n=2048, so scaling the decoder by 1/sqrt(k)
+    over-shoots by roughly that factor.  What it does fix is PyTorch's default,
+    which scales by n and under-shoots by ~8x.  Both are O(1)-correctable by
+    calibrate_output; neither is, at n/k = 64.
+    """
+    torch.manual_seed(0)
+    x = torch.randn(16, 32, 640)
+    ratio = {}
+    for mode in ("default", "unit_scale_output", "unit_norm_dictionary"):
+        m = init_module(mode, k=32).eval()
+        with torch.no_grad():
+            ratio[mode] = float(m(x).std() / x.std())
+    assert ratio["default"] < 0.2, ratio                     # ~0.12, badly small
+    assert 0.4 < ratio["unit_norm_dictionary"] < 1.5, ratio  # ~0.62
+    assert 1.5 < ratio["unit_scale_output"] < 5.0, ratio     # ~2.8
+    # the ordering is the point: default is furthest from unit scale
+    assert abs(math.log(ratio["default"])) > abs(math.log(ratio["unit_scale_output"]))
+
+
+def test_tied_decoder_is_the_encoder_transposed_and_shares_gradient():
+    m = init_module("unit_norm_dictionary", tie_encoder_decoder=True).train()
+    assert torch.equal(m.out_proj.weight, m.in_proj.weight.t())
+    m(torch.randn(2, 4, 640)).pow(2).sum().backward()
+    assert m.in_proj.weight.grad is not None            # one matrix, one gradient
+    assert torch.isfinite(m.in_proj.weight.grad).all()
+
+
+def test_tying_halves_the_bottleneck_parameters():
+    untied = init_module("unit_norm_dictionary")
+    tied = init_module("unit_norm_dictionary", tie_encoder_decoder=True)
+    n_untied = sum(p.numel() for p in untied.parameters())
+    n_tied = sum(p.numel() for p in tied.parameters())
+    assert n_tied == pytest.approx(n_untied / 2, rel=0.01), (n_tied, n_untied)
+
+
+def test_tied_decoder_survives_a_state_dict_round_trip():
+    a = init_module("unit_norm_dictionary", tie_encoder_decoder=True)
+    b = init_module("unit_norm_dictionary", tie_encoder_decoder=True)
+    assert not any("out_proj.weight" in k for k in a.state_dict())  # not stored twice
+    b.load_state_dict(a.state_dict())
+    torch.testing.assert_close(b.out_proj.weight, a.out_proj.weight)
+
+
+def test_tying_requires_the_dictionary_init_and_rejects_gated():
+    with pytest.raises(ValueError, match="unit_norm_dictionary"):
+        ActivationBottleneckConfig(enabled=True, tie_encoder_decoder=True)
+    with pytest.raises(ValueError, match="gated_topk"):
+        ActivationBottleneckConfig(
+            enabled=True, init_mode="unit_norm_dictionary",
+            tie_encoder_decoder=True, selection_mode="gated_topk",
+        )
+
+
+def test_unknown_init_mode_is_rejected():
+    with pytest.raises(ValueError, match="init_mode"):
+        ActivationBottleneckConfig(enabled=True, init_mode="xavier")

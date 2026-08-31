@@ -13,11 +13,17 @@ from __future__ import annotations
 import ast
 import copy
 import dataclasses
+import math
 import os
 from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple, get_type_hints
 
 import yaml
+
+
+# Embedding tables are initialised at this std unless overridden, so that
+# tok_emb + pos_emb has unit variance per element at init: 2 * (1/sqrt(2))**2 = 1.
+DEFAULT_STD_EMBEDDING: float = 1.0 / math.sqrt(2.0)
 
 # --------------------------------------------------------------------------- #
 # model
@@ -53,7 +59,9 @@ class ModelConfig:
     init_scheme: str = "fixed_std"
     init_std: float = 0.02
     init_gain: float = 1.0
-    init_std_embedding: Optional[float] = None  # defaults to init_std
+    # embeddings ignore init_scheme; they use these stds, which default to
+    # DEFAULT_STD_EMBEDDING (1/sqrt(2)) rather than to init_std
+    init_std_embedding: Optional[float] = None  # defaults to DEFAULT_STD_EMBEDDING
     init_std_pos: Optional[float] = None  # defaults to init_std_embedding
     # scale the init of every residual-output projection by 1/sqrt(2 * n_layers)
     init_scale_residual: bool = True
@@ -441,6 +449,23 @@ class ActivationBottleneckConfig:
     # variance matches its input's at init.  The block projects into a K-sparse
     # code and back, so its output variance need not resemble its input's --
     # and it sits in front of an MLP initialised expecting the latter.
+    # How the bottleneck's own projections are initialised.  They are spliced in
+    # after the model's _init_weights pass, so "default" means PyTorch's
+    # nn.Linear defaults -- U(+-1/sqrt(fan_in)) with random biases -- which is
+    # what every run before this option used.
+    #   unit_scale_output    encoder std 1/sqrt(d_model), decoder std 1/sqrt(k).
+    #                        The decoder's fan-in is n_features but only k
+    #                        coefficients are non-zero, so scaling by n_features
+    #                        under-scales the output by sqrt(n/k).
+    #   unit_norm_dictionary both std 1/sqrt(d_model): decoder columns have
+    #                        expected unit norm, the usual sparse-coding
+    #                        convention.
+    init_mode: str = "default"  # default | unit_scale_output | unit_norm_dictionary
+    # Share one matrix between encoder and decoder (decoder = encoder^T).  Only
+    # meaningful when both sides have the same scale, so it requires
+    # unit_norm_dictionary.  Halves the bottleneck's parameters.
+    tie_encoder_decoder: bool = False
+
     # Pull the bottleneck output back towards its input.  Without it these
     # bottlenecks are not autoencoders at all -- the output is a learned
     # transform of the input, measured cos(x, x_hat) ~ 0 -- which is fine for
@@ -494,6 +519,24 @@ class ActivationBottleneckConfig:
         from .bottleneck.controller import parse_placements
 
         parse_placements(self.placement)  # raises on an unknown or empty name
+
+        from .bottleneck.module import INIT_MODES
+
+        if self.init_mode not in INIT_MODES:
+            raise ValueError(
+                f"unknown bottleneck init_mode: {self.init_mode!r} "
+                f"({' | '.join(INIT_MODES)})"
+            )
+        if self.tie_encoder_decoder and self.init_mode != "unit_norm_dictionary":
+            raise ValueError(
+                "tie_encoder_decoder requires init_mode='unit_norm_dictionary', "
+                f"got init_mode={self.init_mode!r}"
+            )
+        if self.tie_encoder_decoder and self.selection_mode == "gated_topk":
+            raise ValueError(
+                "tie_encoder_decoder is incompatible with selection_mode="
+                "'gated_topk': the value and score branches are separate matrices"
+            )
         if self.selection_mode not in ("topk", "abs_topk", "gated_topk"):
             raise ValueError(
                 f"unknown selection_mode: {self.selection_mode} "

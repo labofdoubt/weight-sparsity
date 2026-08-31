@@ -83,6 +83,38 @@ def test_init_std_is_respected():
     assert 0.04 < std < 0.06
 
 
+def test_embedding_init_defaults_to_unit_variance_sum():
+    torch.manual_seed(0)
+    cfg = tiny_cfg(d_model=256, vocab_size=2048, max_seq_len=256, tie_embeddings=True)
+    model = build_model(cfg)
+    expected = 1.0 / math.sqrt(2.0)
+    for emb in (model.tok_emb, model.pos_emb):
+        assert abs(emb.weight.std().item() - expected) < 0.05 * expected
+    # tok_emb + pos_emb is ~unit variance per element (averaged over the table,
+    # so the sample variance is tight enough to assert on)
+    total = (model.tok_emb.weight[: cfg.max_seq_len] + model.pos_emb.weight).var().item()
+    assert abs(total - 1.0) < 0.05
+
+
+def test_embedding_std_overrides():
+    model = build_model(tiny_cfg(d_model=256, init_std_embedding=0.05, init_std_pos=0.2))
+    assert abs(model.tok_emb.weight.std().item() - 0.05) < 0.005
+    assert abs(model.pos_emb.weight.std().item() - 0.2) < 0.02
+    # init_std_pos falls back to init_std_embedding, not to the 1/sqrt(2) default
+    model = build_model(tiny_cfg(d_model=256, init_std_embedding=0.05))
+    assert abs(model.pos_emb.weight.std().item() - 0.05) < 0.005
+
+
+def test_tied_lm_head_keeps_embedding_std():
+    """lm_head must not overwrite the tied token embedding with the linear std."""
+    model = build_model(
+        tiny_cfg(d_model=256, tie_embeddings=True, init_scheme="fan_in", init_gain=1.0)
+    )
+    assert model.lm_head.weight is model.tok_emb.weight
+    expected = 1.0 / math.sqrt(2.0)
+    assert abs(model.tok_emb.weight.std().item() - expected) < 0.05 * expected
+
+
 def test_fan_in_init():
     model = build_model(
         tiny_cfg(init_scheme="fan_in", init_gain=1.0, d_model=128, init_scale_residual=False)
