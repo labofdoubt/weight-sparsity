@@ -61,23 +61,30 @@ class ModelConfig:
     init_gain: float = 1.0
     # embeddings ignore init_scheme; they use these stds, which default to
     # DEFAULT_STD_EMBEDDING (1/sqrt(2)) rather than to init_std
+    # The embedding (encoder) std.  Under tie_embeddings this is the single
+    # shared matrix, so it sets the unembedding too.
     init_std_embedding: Optional[float] = None  # defaults to DEFAULT_STD_EMBEDDING
     init_std_pos: Optional[float] = None  # defaults to init_std_embedding
+    # The unembedding (decoder) std, used only when the two are untied -- tied,
+    # there is one matrix and init_std_embedding sets it.  Deliberately
+    # independent of init_scheme/init_std/init_gain: lm_head maps a unit-RMS
+    # residual to logits rather than feeding another layer, so it is scaled from
+    # that requirement, not from the linear-layer convention.  Defaults to
+    # 1/sqrt(d_model), which puts the init logits at unit std.
+    init_std_unembedding: Optional[float] = None
     # scale the init of every residual-output projection by 1/sqrt(2 * n_layers)
     init_scale_residual: bool = True
 
     # ---- output scaling -------------------------------------------------- #
-    # Tying makes lm_head.weight the token embedding, whose std is set for the
-    # residual stream (DEFAULT_STD_EMBEDDING), not for the logits: unscaled, the
-    # init logits would land at std ~ std_embedding * sqrt(d_model) (~20 at
-    # d_model=768) and the softmax would start near one-hot.  "auto" rescales the
-    # logits by linear_std / std_embedding -- only when embeddings are tied,
-    # since an untied head already carries its own init -- so a tied head starts
-    # at exactly the logit scale an untied one would.  Note the target is *not*
-    # unit-std logits: a tied head reads the current token out of the residual
-    # stream, so sharp init logits confidently predict position t at position t
-    # and push the next-token loss above ln(vocab).
-    # "none" leaves the logits as lm_head produces them.
+    # The head reads a unit-RMS residual, so the init logits land at std
+    # unemb_std * sqrt(d_model).  "auto" divides that out, normalising them to
+    # ~unit std whatever the head's own scale is; at the default
+    # init_std_unembedding it is already 1, so the factor is a no-op and only a
+    # deliberately-scaled head (tied, or an explicit init_std_unembedding) is
+    # actually rescaled.  "none" leaves the logits as lm_head produces them.
+    # Caveat for tied heads: the head is the token embedding, which the residual
+    # stream still carries, so unit-std logits sharpen a readout of the *current*
+    # token and start the next-token loss above ln(vocab).
     logit_scale: str = "auto"  # auto | none
 
     def __post_init__(self) -> None:
@@ -89,6 +96,11 @@ class ModelConfig:
             raise ValueError(f"unknown init_scheme: {self.init_scheme}")
         if self.logit_scale not in ("auto", "none"):
             raise ValueError(f"unknown logit_scale: {self.logit_scale}")
+        if self.tie_embeddings and self.init_std_unembedding is not None:
+            raise ValueError(
+                "init_std_unembedding is meaningless with tie_embeddings=True: "
+                "there is one matrix, set init_std_embedding instead"
+            )
 
     @property
     def head_dim(self) -> int:

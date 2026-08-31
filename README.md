@@ -149,8 +149,10 @@ actually trained.
 | `tie_embeddings` | `true` | shares `lm_head` with the token embedding |
 | `init_scheme` | `fixed_std` | `fixed_std`: `w ~ N(0, init_std²)`; `fan_in`: `w ~ N(0, init_gain²/fan_in)` |
 | `init_std`, `init_gain` | 0.02, 1.0 | weight standard deviation / fan-in gain |
-| `init_std_embedding`, `init_std_pos` | `null` | default to `init_std` |
+| `init_std_embedding`, `init_std_pos` | `null` | embedding stds; default to `1/√2` each, so `tok_emb + pos_emb` has unit variance per element at init. `init_std_pos` falls back to `init_std_embedding` when that is set. Never affected by `init_scheme` |
+| `init_std_unembedding` | `null` | the unembedding (`lm_head`) std, untied only — tied, there is one matrix and `init_std_embedding` sets it (setting both raises). Defaults to `1/√d_model`, putting the init logits at unit std. Independent of `init_scheme` / `init_std` / `init_gain`, which never reach the head |
 | `init_scale_residual` | `true` | scales every residual output projection by `1/√(2·n_layers)` |
+| `logit_scale` | `auto` | `auto`: divide the logits by `unemb_std · √d_model`, normalising them to ~unit std. A no-op at the untied default (already 1); it matters for a tied head, whose `1/√2` std would otherwise put init logits at std ≈ 20. `none`: no rescaling |
 | `dropout`, `attn_dropout` | 0.0 | |
 
 Sizes: `configs/model/{tiny,small,medium,large}.yaml` →

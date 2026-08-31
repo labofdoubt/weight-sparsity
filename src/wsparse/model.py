@@ -141,15 +141,12 @@ class TransformerLM(nn.Module):
         if cfg.tie_embeddings:
             self.lm_head.weight = self.tok_emb.weight
 
-        # A tied head inherits the embedding std, which is chosen for the
-        # residual stream and is far too large for logits; rescale to the std an
-        # untied head would have had.  A constant, so it stays out of the
-        # state_dict and checkpoints from either setting load unchanged.
+        # norm_f gives the head a unit-RMS input, so the init logits land at std
+        # head_std * sqrt(d_model); divide that out to normalise them to ~1.  A
+        # constant, so it stays out of the state_dict and checkpoints load.
         self.logit_mult = 1.0
-        if cfg.logit_scale == "auto" and cfg.tie_embeddings:
-            self.logit_mult = self._linear_std(self.lm_head.weight) / self._embedding_std(
-                self.tok_emb
-            )
+        if cfg.logit_scale == "auto":
+            self.logit_mult = 1.0 / (self._head_std() * math.sqrt(cfg.d_model))
 
         self.apply(self._init_weights)
         if cfg.init_scale_residual:
@@ -168,14 +165,25 @@ class TransformerLM(nn.Module):
 
     def _embedding_std(self, module: nn.Module) -> float:
         cfg = self.cfg
-        std = (
-            cfg.init_std_embedding
-            if cfg.init_std_embedding is not None
-            else DEFAULT_STD_EMBEDDING
-        )
         if module is getattr(self, "pos_emb", None) and cfg.init_std_pos is not None:
-            std = cfg.init_std_pos
-        return std
+            return cfg.init_std_pos
+        if cfg.init_std_embedding is not None:
+            return cfg.init_std_embedding
+        return DEFAULT_STD_EMBEDDING
+
+    def _head_std(self) -> float:
+        """The std ``lm_head.weight`` is initialised with.
+
+        Never routed through ``_linear_std``: the unembedding is scaled from what
+        the logits need, not from the linear-layer convention, so ``init_scheme``
+        / ``init_std`` / ``init_gain`` do not reach it.
+        """
+        cfg = self.cfg
+        if cfg.tie_embeddings:
+            return self._embedding_std(self.tok_emb)  # it *is* the token embedding
+        if cfg.init_std_unembedding is not None:
+            return cfg.init_std_unembedding
+        return 1.0 / math.sqrt(cfg.d_model)  # => init logits at unit std
 
     def _init_weights(self, module: nn.Module) -> None:
         cfg = self.cfg
@@ -185,7 +193,12 @@ class TransformerLM(nn.Module):
             # with the linear std (`apply` visits lm_head after tok_emb).
             tied = cfg.tie_embeddings and module.weight is self.tok_emb.weight
             if not tied:
-                nn.init.normal_(module.weight, mean=0.0, std=self._linear_std(module.weight))
+                std = (
+                    self._head_std()
+                    if module is self.lm_head
+                    else self._linear_std(module.weight)
+                )
+                nn.init.normal_(module.weight, mean=0.0, std=std)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
