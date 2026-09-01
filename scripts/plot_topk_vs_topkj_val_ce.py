@@ -77,9 +77,10 @@ def main() -> None:
     ap.add_argument("--soft-cmap", default="Blues")
     ap.add_argument("--title", default="Residual-stream bottleneck: hard TopK vs Top-(K+J)")
     ap.add_argument("--ymax", type=float, default=None)
+    ap.add_argument("--legend-size", type=float, default=12.0)
     args = ap.parse_args()
 
-    fig, ax = plt.subplots(figsize=(9.5, 6))
+    fig, ax = plt.subplots(figsize=(11, 6.8))
     hard, miss_h = family(
         ax, args.runs_dir, args.hard_pattern,
         [v.strip() for v in args.hard_values.split(",") if v.strip()],
@@ -91,15 +92,18 @@ def main() -> None:
         args.soft_cmap, "-", args.soft_label,
     )
 
-    ax.set_xlabel("step")
-    ax.set_ylabel("validation cross-entropy")
-    ax.set_title(args.title)
+    ax.set_xlabel("step", fontsize=12)
+    ax.set_ylabel("validation cross-entropy", fontsize=12)
+    ax.set_title(args.title, fontsize=13)
+    ax.tick_params(labelsize=11)
     if args.ymax:
         ax.set_ylim(top=args.ymax)
     ax.grid(alpha=0.25, lw=0.6)
     ax.spines[["top", "right"]].set_visible(False)
-    ax.legend(fontsize=8, frameon=False, ncol=1, loc="upper right",
-              title="dashed = hard TopK   solid = Top(K+J)", title_fontsize=8)
+    ax.legend(fontsize=args.legend_size, frameon=False, ncol=1, loc="upper right",
+              title="dashed = hard TopK    solid = Top(K+J)",
+              title_fontsize=args.legend_size + 1, labelspacing=0.5,
+              handlelength=2.6)
     fig.tight_layout()
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     fig.savefig(args.out, dpi=160)
