@@ -30,6 +30,23 @@ done
 [ -n "$JOBS" ] && [ -n "$OUT" ] || { echo "need --jobs and --out" >&2; exit 2; }
 [ -f "$JOBS" ] || { echo "no such job file: $JOBS" >&2; exit 2; }
 
+# The workers run in subshells, so a venv activated only in the caller's shell
+# does not reach them.  Resolve the interpreter once, here, and fail loudly:
+# without this every job dies with "python: command not found" written to its
+# own log, which looks like four separate failures rather than one setup slip.
+PYTHON="${PYTHON:-}"
+if [ -z "$PYTHON" ]; then
+  if command -v python >/dev/null 2>&1; then PYTHON=$(command -v python)
+  elif [ -x /venv/main/bin/python ]; then PYTHON=/venv/main/bin/python
+  elif command -v python3 >/dev/null 2>&1; then PYTHON=$(command -v python3)
+  else echo "no python found; set PYTHON=/path/to/python" >&2; exit 2; fi
+fi
+"$PYTHON" -c "import wsparse" 2>/dev/null || {
+  echo "$PYTHON cannot import wsparse -- wrong interpreter or package not installed" >&2
+  exit 2
+}
+echo "[queue] interpreter: $PYTHON"
+
 IFS=, read -ra CARDS <<< "$GPUS"
 # torch spawns one compute thread per *host* core, but a container is capped by
 # a cgroup quota it cannot see; oversubscribing costs more than it buys.
@@ -56,7 +73,7 @@ worker () {
     [ -z "$job" ] && { echo "[gpu$gpu] queue empty $(date -Is)"; return 0; }
     NAME="${job%%|*}"; REST="${job#*|}"; CONF="${REST%%|*}"; EXTRA="${REST#*|}"
     echo "[gpu$gpu] START $NAME  $(date -Is)"
-    CUDA_VISIBLE_DEVICES=$gpu python -m wsparse.train --config "$CONF" \
+    CUDA_VISIBLE_DEVICES=$gpu "$PYTHON" -m wsparse.train --config "$CONF" \
         $SHARED $EXTRA --train.run_name="$NAME" > "$OUT/$NAME.log" 2>&1
     rc=$?
     echo "[gpu$gpu] DONE  $NAME rc=$rc  $(date -Is)"
@@ -77,5 +94,5 @@ echo "######## queue drained $(date -Is) ########"
 for f in "$OUT"/*/summary.json; do
   [ -f "$f" ] || continue
   printf "  %-34s %s\n" "$(basename "$(dirname "$f")")" \
-    "$(python -c "import json;print(round(json.load(open('$f'))['best_val_ce'],4))" 2>/dev/null)"
+    "$("$PYTHON" -c "import json;print(round(json.load(open('$f'))['best_val_ce'],4))" 2>/dev/null)"
 done
