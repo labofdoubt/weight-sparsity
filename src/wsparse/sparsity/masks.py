@@ -1,6 +1,6 @@
 """Soft-masked linear layers.
 
-Two masking parameterisations of the form ``v = w * m`` with
+Two masking parameterizations of the form ``v = w * m`` with
 ``m = sigmoid(beta * z)``:
 
 ``LTPLinear``  (Learned Threshold Pruning, arXiv:2003.00075)
@@ -112,7 +112,7 @@ class SparseLinear(nn.Module):
         self.weight.mul_(self.hard_mask_tensor().to(self.weight.dtype))
 
     def to_linear(self) -> nn.Linear:
-        """Materialise a dense ``nn.Linear`` holding the hard-pruned weights."""
+        """Materialize a dense ``nn.Linear`` holding the hard-pruned weights."""
         linear = nn.Linear(self.in_features, self.out_features, bias=self.bias is not None)
         with torch.no_grad():
             linear.weight.copy_(self.weight * self.hard_mask_tensor().to(self.weight.dtype))

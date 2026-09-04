@@ -215,12 +215,12 @@ def test_model_still_runs_after_masking():
 # --------------------------------------------------------------------------- #
 
 
-def test_l0_penalty_normalisation():
+def test_l0_penalty_normalization():
     model = tiny_model()
     cfg = SparsityConfig(enabled=True, method="cs", l0_coef=1.0, l0_normalize=True, s_init=0.0)
     ctrl = apply_sparsity(model, cfg, max_steps=10)
     penalty, logs = ctrl.penalty()
-    # s = 0 everywhere -> every mask is exactly 0.5 -> normalised L0 = 0.5
+    # s = 0 everywhere -> every mask is exactly 0.5 -> normalized L0 = 0.5
     assert penalty.item() == pytest.approx(0.5, rel=1e-5)
     assert logs["sparsity/density_soft"] == pytest.approx(0.5, rel=1e-5)
 
@@ -354,7 +354,7 @@ def test_transition_fraction_collapses_as_beta_grows():
 
 
 # --------------------------------------------------------------------------- #
-# optimiser wiring
+# optimizer wiring
 # --------------------------------------------------------------------------- #
 
 
@@ -427,7 +427,7 @@ def test_sparsity_requires_matching_layers():
 
 
 def test_training_step_reduces_density_with_target_objective():
-    """A short optimisation run should move density towards the target."""
+    """A short optimization run should move density towards the target."""
     torch.manual_seed(0)
     model = tiny_model()
     cfg = SparsityConfig(

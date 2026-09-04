@@ -157,7 +157,7 @@ def test_tied_uses_one_std_for_both():
     assert abs(model.pos_emb.weight.std().item() - 0.1) < 0.01
 
 
-def test_auto_logit_scale_normalises_logits_to_unit_std():
+def test_auto_logit_scale_normalizes_logits_to_unit_std():
     """alpha = 1 / (head_std * sqrt(d)) in every configuration."""
     torch.manual_seed(0)
     d, V = 256, 1024
@@ -232,3 +232,75 @@ def test_parameter_count_matches_hand_computation():
     per_block = 4 * 64 * 64 + 2 * 64 * 256 + 2 * 64  # attn + mlp + two RMSNorm gains
     expected = 1000 * 64 + 64 * 64 + 3 * per_block + 64  # emb + pos + blocks + final norm
     assert model.num_parameters() == expected
+
+
+# --------------------------------------------------------------------------- #
+# rotary position embeddings
+# --------------------------------------------------------------------------- #
+
+
+def test_rope_model_has_no_position_table():
+    torch.manual_seed(0)
+    model = build_model(tiny_cfg(pos_encoding="rope"))
+    assert model.pos_emb is None
+    assert all("pos_emb" not in n for n, _ in model.named_parameters())
+    # the cos/sin cache is a non-persistent buffer: state_dicts stay identical
+    # to the learned layout minus pos_emb, so nothing about checkpoint loading
+    # changes shape
+    assert all("rope" not in n for n in model.state_dict())
+    x = torch.randint(0, 97, (3, 16))
+    logits, loss = model(x, x)
+    assert logits.shape == (3, 16, 97) and torch.isfinite(loss)
+    loss.backward()
+    assert all(p.grad is None or torch.isfinite(p.grad).all()
+               for p in model.parameters())
+    # the parameter count drops by exactly the table it no longer has
+    learned = build_model(tiny_cfg())
+    assert learned.num_parameters() - model.num_parameters() == 32 * 32
+    assert (learned.num_parameters(non_embedding=True)
+            == model.num_parameters(non_embedding=True))
+
+
+def test_rope_is_a_rotation_and_depends_only_on_relative_position():
+    from wsparse.model import apply_rope
+
+    torch.manual_seed(0)
+    model = build_model(tiny_cfg(pos_encoding="rope"))
+    attn = model.blocks[0].attn
+    T, hd = 32, attn.head_dim
+    cos, sin = attn.rope_cos[..., :T, :], attn.rope_sin[..., :T, :]
+
+    # a rotation preserves norms exactly
+    q = torch.randn(2, 4, T, hd)
+    r = apply_rope(q, cos, sin)
+    assert torch.allclose(r.norm(dim=-1), q.norm(dim=-1), atol=1e-5)
+
+    # q_i . k_j depends on (i, j) only through i - j: put the *same* vector at
+    # every position and compare dot products at equal offsets
+    qv, kv = torch.randn(hd), torch.randn(hd)
+    rq = apply_rope(qv.expand(1, 1, T, hd).clone(), cos, sin)[0, 0]
+    rk = apply_rope(kv.expand(1, 1, T, hd).clone(), cos, sin)[0, 0]
+
+    def dot(i, j):
+        return float((rq[i] * rk[j]).sum())
+
+    assert abs(dot(2, 5) - dot(9, 12)) < 1e-4       # same offset -> same score
+    assert abs(dot(5, 2) - dot(12, 9)) < 1e-4
+    assert abs(dot(2, 2) - dot(30, 30)) < 1e-4      # offset 0 anywhere
+    assert abs(dot(2, 5) - dot(2, 9)) > 1e-3        # different offset -> different
+
+
+def test_rope_rejects_odd_head_dim():
+    with pytest.raises(ValueError):
+        tiny_cfg(d_model=20, n_heads=4, pos_encoding="rope")   # head_dim 5
+
+
+def test_pos_encoding_defaults_to_learned_for_old_configs():
+    # checkpoints saved before the field existed carry no pos_encoding key;
+    # config_from_dict must fill the learned default so they load unchanged
+    from wsparse.config import config_from_dict
+
+    cfg = config_from_dict({"model": {"vocab_size": 97, "max_seq_len": 32,
+                                      "n_layers": 1, "d_model": 32, "n_heads": 4}})
+    assert cfg.model.pos_encoding == "learned"
+    assert build_model(cfg.model).pos_emb is not None

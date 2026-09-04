@@ -17,7 +17,7 @@ All schedules move a value from ``start`` to ``end``:
   (slow at both ends, fast in the middle).
 
 ``p`` is the annealing progress: the value is held at ``beta_start`` for
-``warmup_steps`` optimiser steps, then annealed over ``anneal_steps`` steps and
+``warmup_steps`` optimizer steps, then annealed over ``anneal_steps`` steps and
 held at ``beta_end`` afterwards.
 """
 

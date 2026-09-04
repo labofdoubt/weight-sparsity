@@ -13,7 +13,7 @@ contributes no gradient at all.  The backward does still account for
 ``b = b(r; t)`` through ``sum_i p_i = K``, which is what the LapSum VJP encodes.
 This is a deliberate experimental choice, not an implementation artefact.
 
-Two definitions of "effective size", over a normalised weight vector ``q``:
+Two definitions of "effective size", over a normalized weight vector ``q``:
 
     ESS       N_eff = 1 / sum_i q_i^2       (ignores a long tail of small weights)
     entropy   N_eff = exp(-sum_i q_i log q_i)  (counts the tail more)
@@ -25,7 +25,7 @@ and three ways to choose the weights that get calibrated:
     decoupled **approximation**: ``q`` does not involve the barrier at all, so
     ``t`` and ``b`` solve independently -- a scalar root-find over ``J`` scores,
     then one closed-form barrier solve, no barrier inside the loop.  It equals
-    the normalised LapSum gradient weights only when every outside candidate
+    the normalized LapSum gradient weights only when every outside candidate
     lies below the barrier (``r_{K+1} < b``); at finite temperature the
     budget-preserving barrier can move above ``r_{K+1}`` and then it does not.
 
@@ -69,7 +69,7 @@ STATUS_NAMES = {
 
 
 def effective_count(q: torch.Tensor, metric: str) -> torch.Tensor:
-    """``N_eff`` of a normalised weight vector."""
+    """``N_eff`` of a normalized weight vector."""
     if metric == "ess":
         return 1.0 / (q * q).sum(-1).clamp_min(torch.finfo(q.dtype).tiny)
     if metric == "entropy":
@@ -94,7 +94,7 @@ def _count_and_coeff(logits: torch.Tensor, metric: str) -> Tuple[torch.Tensor, t
 
 
 # --------------------------------------------------------------------------- #
-# realised effective counts (diagnostics + reference checks)
+# realized effective counts (diagnostics + reference checks)
 # --------------------------------------------------------------------------- #
 
 
@@ -146,7 +146,7 @@ def solve_score_softmax_temperature(
     """Solve ``N_eff(softmax(r/t)) = n_eff_target`` over the ``J`` inactive scores.
 
     The barrier does not appear, so this needs no barrier solve at all.  It is
-    the cheap approximation, and it is also the initialiser for the exact
+    the cheap approximation, and it is also the initializer for the exact
     solvers below.
 
     Solved in ``tau = log t``, which guarantees ``t > 0`` and makes the
@@ -253,7 +253,7 @@ def solve_joint_temperature(
         slice(0, k + j)  -- two-sided (every candidate)
 
     ``F1`` always runs over the whole pool.  The Jacobian is the same in both
-    cases; only the ``coeff``-dependent entries are restricted.  Initialised
+    cases; only the ``coeff``-dependent entries are restricted.  Initialized
     from the cheap ``score_softmax`` ``t0`` and its closed-form barrier ``b0``,
     which is normally already close.  Each iteration is elementwise work plus
     reductions over ``M`` and a 2x2 solve per row -- no large Jacobians.

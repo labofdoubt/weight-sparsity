@@ -240,7 +240,7 @@ def collect_dialogue(stories, split_of, rng, min_len=3):
     """Positives inside quotes, negatives the *same words* outside them.
 
     Matching on lexical identity is the whole point: without it the task
-    degenerates into recognising words that happen to occur in speech.
+    degenerates into recognizing words that happen to occur in speech.
     """
     by_word = defaultdict(lambda: defaultdict(list))
     for st in stories:

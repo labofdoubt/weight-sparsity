@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, get_type_hints
 import yaml
 
 
-# Embedding tables are initialised at this std unless overridden, so that
+# Embedding tables are initialized at this std unless overridden, so that
 # tok_emb + pos_emb has unit variance per element at init: 2 * (1/sqrt(2))**2 = 1.
 DEFAULT_STD_EMBEDDING: float = 1.0 / math.sqrt(2.0)
 
@@ -35,7 +35,8 @@ class ModelConfig:
     """Decoder-only transformer.
 
     Defaults: no biases anywhere, RMSNorm, learnable (absolute) positional
-    embeddings, pre-norm residual blocks.
+    embeddings (``pos_encoding="rope"`` switches to rotary), pre-norm residual
+    blocks.
     """
 
     vocab_size: int = 50257  # overwritten by the tokenizer at build time
@@ -53,7 +54,38 @@ class ModelConfig:
     norm_eps: float = 1e-6
     tie_embeddings: bool = True
 
-    # ---- initialisation -------------------------------------------------- #
+    # ---- positional encoding ---------------------------------------------- #
+    # "learned": an absolute nn.Embedding(max_seq_len, d_model) added to the
+    #     token embedding.  The historical default -- every checkpoint saved
+    #     before this field existed used it, and config_from_dict fills the
+    #     default in for them, so they keep loading unchanged.
+    # "rope": rotary position embeddings applied to q and k inside every
+    #     attention layer (NeoX/Llama rotate-half convention).  No position
+    #     table exists at all: init_std_pos is unused, the parameter count drops
+    #     by max_seq_len * d_model, and block 0's input is the token embedding
+    #     alone -- so the "tok + pos has unit variance" reasoning behind
+    #     DEFAULT_STD_EMBEDDING does not apply to this mode.
+    pos_encoding: str = "learned"  # learned | rope
+    rope_theta: float = 10000.0  # base of the rotary frequency geometric series
+
+    # ---- magnitude-direction decoupling (arXiv:2606.25971) ----------------- #
+    # When true, weights are optimized as a fixed-Frobenius-norm *direction*
+    # times learnable per-row/per-column softplus gains, embeddings and the LM
+    # head are held at unit L2 row norm, and the input embedding is upscaled by
+    # a fixed sqrt(d_model) in the forward.  The model still stores ordinary
+    # fused weight tensors -- the split lives inside the optimizer step -- so
+    # checkpoints stay plain.  This OVERRIDES every other init field
+    # (init_scheme / init_std / init_gain / init_std_embedding /
+    # init_scale_residual, and the bottleneck's init_mode), disables weight
+    # decay for all norm-constrained parameters, and requires pos_encoding=
+    # "rope" (the method defines no treatment for a learned position table).
+    decouple: bool = False
+    # "row_col": every matrix gets both gains (the paper's default, best in
+    # their ablation).  "up_down": one-sided -- d_out >= d_in gets the row gain,
+    # d_out < d_in the column gain (nGPT-style alternation).
+    decouple_gains: str = "row_col"  # row_col | up_down
+
+    # ---- initialization -------------------------------------------------- #
     # "fixed_std": every weight ~ N(0, init_std**2)
     # "fan_in":    every weight ~ N(0, (init_gain**2) / fan_in)
     init_scheme: str = "fixed_std"
@@ -77,7 +109,7 @@ class ModelConfig:
 
     # ---- output scaling -------------------------------------------------- #
     # The head reads a unit-RMS residual, so the init logits land at std
-    # unemb_std * sqrt(d_model).  "auto" divides that out, normalising them to
+    # unemb_std * sqrt(d_model).  "auto" divides that out, normalizing them to
     # ~unit std whatever the head's own scale is; at the default
     # init_std_unembedding it is already 1, so the factor is a no-op and only a
     # deliberately-scaled head (tied, or an explicit init_std_unembedding) is
@@ -96,6 +128,26 @@ class ModelConfig:
             raise ValueError(f"unknown init_scheme: {self.init_scheme}")
         if self.logit_scale not in ("auto", "none"):
             raise ValueError(f"unknown logit_scale: {self.logit_scale}")
+        if self.decouple_gains not in ("row_col", "up_down"):
+            raise ValueError(
+                f"unknown decouple_gains: {self.decouple_gains!r} (row_col | up_down)")
+        if self.decouple and self.pos_encoding != "rope":
+            raise ValueError(
+                "decouple=True requires pos_encoding='rope': magnitude-direction "
+                "decoupling defines no treatment for a learned position table "
+                "(the paper trains with rope)")
+        if self.decouple and self.logit_scale == "auto":
+            raise ValueError(
+                "decouple=True needs logit_scale='none': the 'auto' multiplier is "
+                "derived from init fields that decoupling overrides, and unit-norm "
+                "head rows reading a unit-RMS stream give unit-scale logits already")
+        if self.pos_encoding not in ("learned", "rope"):
+            raise ValueError(f"unknown pos_encoding: {self.pos_encoding!r} (learned | rope)")
+        if self.pos_encoding == "rope" and self.head_dim % 2 != 0:
+            raise ValueError(
+                f"rope rotates pairs of head dimensions, so head_dim must be even; "
+                f"got d_model={self.d_model} / n_heads={self.n_heads} = {self.head_dim}"
+            )
         if self.tie_embeddings and self.init_std_unembedding is not None:
             raise ValueError(
                 "init_std_unembedding is meaningless with tie_embeddings=True: "
@@ -142,7 +194,7 @@ class DataConfig:
 
 @dataclass
 class TrainConfig:
-    # ---- optimiser ------------------------------------------------------- #
+    # ---- optimizer ------------------------------------------------------- #
     optimizer: str = "adamw"
     lr: float = 6e-4
     betas: Tuple[float, float] = (0.9, 0.95)
@@ -158,7 +210,7 @@ class TrainConfig:
     min_lr_ratio: float = 0.1  # final lr = min_lr_ratio * lr
 
     # ---- batching -------------------------------------------------------- #
-    batch_size: int = 32  # sequences per optimiser step (per device, after accumulation)
+    batch_size: int = 32  # sequences per optimizer step (per device, after accumulation)
     micro_batch_size: Optional[int] = None  # None -> == batch_size (no accumulation)
 
     # ---- length / cadence ------------------------------------------------ #
@@ -273,7 +325,7 @@ class SparsityConfig:
     mask_grad_clip: Optional[float] = None
     threshold_init: float = 0.0  # ltp: initial tau
     s_init: float = 0.05  # cs: value of every s element; topk: init scale
-    # topk only: how s is initialised.  "magnitude" (the default) puts the
+    # topk only: how s is initialized.  "magnitude" (the default) puts the
     # initial TopK on the top-k weights by |w| and centres s on the selection
     # boundary, so s > 0 holds on exactly the TopK support at step 0.
     s_init_mode: str = "constant"  # constant | uniform | normal | magnitude
@@ -302,7 +354,7 @@ class SparsityConfig:
 
     # soft L0 over the Top-(k+j) support only:
     #   lambda_topk * sum_{A} p  +  lambda_explore * sum_{B\A} p
-    # Unlike l0_coef below this is *not* normalised -- the lambdas are
+    # Unlike l0_coef below this is *not* normalized -- the lambdas are
     # per-weight coefficients, so they live on the l0_coef / total_maskable
     # scale.  It creates soft sparsity *within* the TopK budget: a selected
     # gate can go to ~0 while still costing a TopK slot.
@@ -452,9 +504,9 @@ class ActivationBottleneckConfig:
     # Only consulted for boundary_mode: outside_only.
     #   score_softmax  cheap decoupled approximation: q = softmax(r/t) over the
     #                  inactive candidates.  b cancels, so t solves without any
-    #                  barrier solve.  Equals the normalised LapSum gradient
+    #                  barrier solve.  Equals the normalized LapSum gradient
     #                  weights only while r_{K+1} < b.
-    #   true_gradient  the actual normalised kappa weights over the inactive
+    #   true_gradient  the actual normalized kappa weights over the inactive
     #                  candidates.  Exact, but depends on b, so (b, log t) are
     #                  solved jointly.
     one_sided_weight_mode: str = "score_softmax"
@@ -476,8 +528,8 @@ class ActivationBottleneckConfig:
     # Fit a fixed, non-trainable scalar after out_proj so each block's output
     # variance matches its input's at init.  The block projects into a K-sparse
     # code and back, so its output variance need not resemble its input's --
-    # and it sits in front of an MLP initialised expecting the latter.
-    # How the bottleneck's own projections are initialised.  They are spliced in
+    # and it sits in front of an MLP initialized expecting the latter.
+    # How the bottleneck's own projections are initialized.  They are spliced in
     # after the model's _init_weights pass, so "default" means PyTorch's
     # nn.Linear defaults -- U(+-1/sqrt(fan_in)) with random biases -- which is
     # what every run before this option used.
@@ -507,7 +559,7 @@ class ActivationBottleneckConfig:
     # language modelling but makes "did the concept survive the bottleneck"
     # unanswerable in the input's coordinates.
     reconstruction_coef: float = 0.0
-    # normalised: ||x_hat - x||^2 / ||x||^2, so the coefficient means the same
+    # normalized: ||x_hat - x||^2 / ||x||^2, so the coefficient means the same
     # thing at any activation scale and at any placement
     reconstruction_normalize: bool = True
 

@@ -11,7 +11,7 @@ import json
 import math
 import os
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 
@@ -105,7 +105,12 @@ def load_for_inference(path: str, device: str = "cpu") -> Tuple[torch.nn.Module,
 # --------------------------------------------------------------------------- #
 
 
-def train(cfg: Config) -> Dict[str, float]:
+def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[str, float]:
+    """Train ``cfg``.  ``on_step(step, model, bottleneck, optimizer)``, when given,
+    is called at the top of every optimizer step -- before the gradients for that
+    step are accumulated -- so a caller can measure the model mid-training without
+    holding checkpoints.  See ``interpretability/probe_early_training.py``.
+    """
     set_seed(cfg.train.seed)
     device = resolve_device(cfg.train.device)
     dtype = resolve_dtype(cfg.train.dtype, device)
@@ -123,9 +128,39 @@ def train(cfg: Config) -> Dict[str, float]:
     )
     model.to(device)  # sparsity / bottleneck parameters created on cpu -> move again
 
-    optimizer = build_optimizer(
-        model, cfg.train, cfg.sparsity, mask_param_ids=controller.mask_parameter_ids()
-    )
+    if cfg.model.decouple:
+        # Magnitude-direction decoupling (arXiv:2606.25971): re-initialize the
+        # finished model (bottlenecks included) onto the spheres the optimizer
+        # will hold, then build the decoupled optimizer.  Overrides every other
+        # init field, and no norm-constrained parameter gets weight decay.
+        from .decouple import build_decoupled_optimizer, md_init_
+
+        if cfg.sparsity.enabled:
+            raise ValueError("decouple=True is not supported with sparsity.enabled")
+        if dtype is torch.float16:
+            raise ValueError(
+                "decouple=True with float16 GradScaler is untested; use bfloat16")
+        counts = md_init_(model, cfg.model.decouple_gains)
+        print(f"[train] magnitude-direction decoupling: gains="
+              f"{cfg.model.decouple_gains}, re-initialized {counts['matrix']} "
+              f"matrices to their c_F spheres and {counts['embed']} embedding "
+              f"tables to unit rows")
+        if cfg.train.weight_decay:
+            # Not an error: the sphere replaces decay under this method, so a
+            # configured value is ignored rather than rejected -- but say so,
+            # because the dumped config.yaml will still show the configured
+            # number, which is not what the run applied.
+            print(f"[train] decouple=True IGNORES train.weight_decay="
+                  f"{cfg.train.weight_decay}: no parameter receives weight "
+                  f"decay (the norm constraint is the regularizer)")
+        optimizer = build_decoupled_optimizer(
+            model, cfg.train, gain_mode=cfg.model.decouple_gains,
+            mask_param_ids=controller.mask_parameter_ids() or None,
+        )
+    else:
+        optimizer = build_optimizer(
+            model, cfg.train, cfg.sparsity, mask_param_ids=controller.mask_parameter_ids()
+        )
     # Sparsity parameters are clipped separately: dL/dtau sums over every weight
     # in the layer, so a shared global norm would let it squash the weight
     # gradients (LTP section 4.1 makes the same point about its magnitude).
@@ -230,6 +265,14 @@ def train(cfg: Config) -> Dict[str, float]:
         controller.set_step(step)
         bottleneck.set_step(step)
 
+        if on_step is not None:
+            # Deliberately before zero_grad: a probe that runs a backward of its
+            # own leaves gradients in .grad, and the zero_grad below is then what
+            # guarantees they can never reach the optimizer.  Called with the
+            # schedules already set for `step`, and at step == start_step the
+            # weights are still exactly at initialization.
+            on_step(step, model, bottleneck, optimizer)
+
         optimizer.zero_grad(set_to_none=True)
         ce_sum = 0.0
         recon_sum, recon_logs = 0.0, {}
@@ -251,7 +294,7 @@ def train(cfg: Config) -> Dict[str, float]:
                     micro = micro + recon_coef * recon
             scaler.scale(micro / accum).backward()
 
-        # sparsity penalty: added once per optimiser step (it does not depend on
+        # sparsity penalty: added once per optimizer step (it does not depend on
         # the batch), so its gradient is not divided by the accumulation count.
         penalty, penalty_logs = controller.penalty()
         if penalty.requires_grad:
@@ -402,9 +445,9 @@ def train(cfg: Config) -> Dict[str, float]:
 
 
 def usage_figure(usage: Dict[str, "torch.Tensor"], k: int, n_features: int):
-    """Rank-frequency curve of feature usage: the shape of the utilisation.
+    """Rank-frequency curve of feature usage: the shape of the utilization.
 
-    Sorted descending and normalised by the uniform rate ``k/n``, on log-log
+    Sorted descending and normalized by the uniform rate ``k/n``, on log-log
     axes, one line per bottlenecked layer.  A flat line at 1.0 would be perfectly
     even usage; the real curves are steeply Zipfian, and what matters is how far
     the tail falls -- features below ~1e-2 receive essentially no gradient and

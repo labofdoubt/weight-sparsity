@@ -142,7 +142,7 @@ class SparseTopKBottleneck(nn.Module):
         self._reconstruction = None
 
     def _init_projections(self, k: int) -> None:
-        """Re-initialise the projections; ``default`` leaves PyTorch's alone.
+        """Re-initialize the projections; ``default`` leaves PyTorch's alone.
 
         ``sqrt_k``  encoder std 1/sqrt(d_model), decoder std 1/sqrt(k).
             The decoder's fan-in is ``n_features``, but only ``k`` of those

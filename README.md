@@ -44,7 +44,7 @@ pip install -e .[data]          # torch, numpy, pyyaml, datasets, transformers, 
 ## Quick start
 
 ```bash
-# 1. download + tokenise TinyStories into data/tinystories/{train,val}.bin
+# 1. download + tokenize TinyStories into data/tinystories/{train,val}.bin
 python -m wsparse.data --config configs/dense.yaml
 
 # 2. train
@@ -152,7 +152,7 @@ actually trained.
 | `init_std_embedding`, `init_std_pos` | `null` | embedding stds; default to `1/√2` each, so `tok_emb + pos_emb` has unit variance per element at init. `init_std_pos` falls back to `init_std_embedding` when that is set. Never affected by `init_scheme` |
 | `init_std_unembedding` | `null` | the unembedding (`lm_head`) std, untied only — tied, there is one matrix and `init_std_embedding` sets it (setting both raises). Defaults to `1/√d_model`, putting the init logits at unit std. Independent of `init_scheme` / `init_std` / `init_gain`, which never reach the head |
 | `init_scale_residual` | `true` | scales every residual output projection by `1/√(2·n_layers)` |
-| `logit_scale` | `auto` | `auto`: divide the logits by `unemb_std · √d_model`, normalising them to ~unit std. A no-op at the untied default (already 1); it matters for a tied head, whose `1/√2` std would otherwise put init logits at std ≈ 20. `none`: no rescaling |
+| `logit_scale` | `auto` | `auto`: divide the logits by `unemb_std · √d_model`, normalizing them to ~unit std. A no-op at the untied default (already 1); it matters for a tied head, whose `1/√2` std would otherwise put init logits at std ≈ 20. `none`: no rescaling |
 | `dropout`, `attn_dropout` | 0.0 | |
 
 Sizes: `configs/model/{tiny,small,medium,large}.yaml` →
@@ -171,7 +171,7 @@ puts more of the parameter budget into the transformer body.
 
 `optimizer` (AdamW), `lr`, `betas`, `eps`, `weight_decay`, `grad_clip`,
 `lr_schedule` (`cosine`/`linear`/`constant`), `warmup_steps`, `min_lr_ratio`,
-`batch_size` (sequences per optimiser step), `micro_batch_size` (gradient
+`batch_size` (sequences per optimizer step), `micro_batch_size` (gradient
 accumulation = `batch_size / micro_batch_size`), `max_steps`,
 `log_every_steps`, `validate_every_steps`, `val_batches`,
 `checkpoint_every_steps`, `keep_last_checkpoints`, `sample_every_steps`,
@@ -207,7 +207,7 @@ sparsity parameters are excluded.
 | `w_grad_support` | TopK: `topk_j` gives `w` gradients on the whole Top-(k+j) support, `topk` restricts them to TopK (`s` always explores) |
 | `topk_track_turnover` | TopK: log how much of TopK changes per step; costs one extra bool tensor per masked layer |
 | `soft_l0_enabled`, `soft_l0_lambda_topk`, `soft_l0_lambda_explore` | TopK: soft-L0 penalty over the Top-(k+j) support, below |
-| `l0_coef`, `l0_normalize` | smooth-L0 penalty `l0_coef · Σ_l L0_l`, divided by the total maskable count when normalised (so `l0_coef` is O(1) instead of O(1e-8)) |
+| `l0_coef`, `l0_normalize` | smooth-L0 penalty `l0_coef · Σ_l L0_l`, divided by the total maskable count when normalized (so `l0_coef` is O(1) instead of O(1e-8)) |
 | `target_density`, `target_density_coef`, `target_density_overrides` | target-density objective, below. Rejected for `topk`, whose density is `k` by construction |
 | `eval_hard_mask` | also run validation with binary masks |
 
@@ -273,7 +273,7 @@ in the logs is how you check the exploration is actually doing something.
 
 `train.compile: true` is fine here: the selection itself is hidden from Dynamo
 (otherwise its cache key — the version counter of `s` — would force a recompile
-on every optimiser step), while the matmuls around it still compile, and the
+on every optimizer step), while the matmuls around it still compile, and the
 compiled gradients match eager exactly.
 
 `Λ` is the optional soft-L0 penalty, computed over `B` only and never over the
@@ -287,7 +287,7 @@ It does not change the fact that the forward pass uses exactly `k` positions;
 what it buys is *soft* sparsity **inside** the TopK support, since a selected
 gate can be driven towards 0 while still occupying a slot in the budget. Watch
 `density_soft` fall below `density_topk` for that. Unlike `l0_coef` these
-lambdas are **not** normalised — they are per-weight coefficients, so they live
+lambdas are **not** normalized — they are per-weight coefficients, so they live
 on the `l0_coef / maskable_count` scale (`~1e-7`, not `~0.05`).
 
 ```yaml
@@ -303,7 +303,7 @@ sparsity:
   soft_l0_lambda_topk: 1.0e-7
 ```
 
-`s_init_mode: magnitude` (the shipped default) initialises `s` from `|w|`,
+`s_init_mode: magnitude` (the shipped default) initializes `s` from `|w|`,
 scaled so that its per-group standard deviation is about `s_init` and centred
 on the selection boundary: the initial TopK is then the top-`k` weights by
 magnitude, and `s > 0` holds on exactly that set, so TopK, the hard mask and
@@ -314,7 +314,7 @@ order and is only useful for tests.
 
 `β` multiplies `z`, and the scale of `z` differs enormously between the two
 methods — the defaults reflect that, and it is the one thing to re-tune if you
-change the initialisation:
+change the initialization:
 
 * **LTP**: `z = w² − τ`. With `init_std = 0.02` a typical `w²` is ~4e-4, so `β`
   has to exceed ~2.5e3 before the mask stops being ~0.5 everywhere. Default:
@@ -325,7 +325,7 @@ change the initialisation:
   `mask_lr = 1e-6`.
 * **CS**: `z = s`, order 0.05–1. Default: exponential `1 → 200` and
   `mask_lr = 1e-3`, as in the paper.
-* **TopK**: `z = s` as for CS, but `s` is initialised with a per-group standard
+* **TopK**: `z = s` as for CS, but `s` is initialized with a per-group standard
   deviation of `s_init`. Default: `inverse_temperature: 4` annealed to 200,
   which starts with the gates spread across most of (0, 1). Note the trap in
   `∂L/∂s ∝ β·σ(β·s)·(1−σ(β·s))`: raising `β` sharpens the gate towards
@@ -446,12 +446,12 @@ root-find over `J` scores, then one closed-form `b`. No barrier solve inside the
 temperature loop. It asks *how many inactive features effectively compete to
 enter TopK*, defined from inactive score geometry.
 
-It is only *equal* to the normalised LapSum gradient weights when every outside
+It is only *equal* to the normalized LapSum gradient weights when every outside
 candidate lies below the barrier, i.e. `r_{K+1} < b`. At finite temperature the
 budget-preserving barrier can move above `r_{K+1}`, and then the two differ. The
 `true_gradient` and `both_sides` modes calibrate on the actual `κ` instead;
 since `κ` depends on `b`, they solve `(b, τ)` jointly by a batched damped Newton
-with a 2×2 Jacobian per row, initialised from the cheap `score_softmax` `t₀` and
+with a 2×2 Jacobian per row, initialized from the cheap `score_softmax` `t₀` and
 its closed-form `b₀`. The two exact modes share one solver and differ only in
 which indices enter the effective-count equation — a `calibration` slice.
 
@@ -478,9 +478,9 @@ All modes solve in `τ = log t`, which guarantees `t > 0` and makes the
 multiplicative temperature updates numerically convenient. Scale equivariance
 does **not** come from the log: it comes from the calibration equations
 depending only on score *differences* divided by `t`, together with
-scale-equivariant initialisation and bracketing (both are built from the
+scale-equivariant initialization and bracketing (both are built from the
 candidate span, never from an absolute temperature). The consequence is tested:
-`r → cr` gives `t → ct` and `b → cb` with `p`, the normalised calibration
+`r → cr` gives `t → ct` and `b → cb` with `p`, the normalized calibration
 weights and the realized `N_eff` unchanged.
 
 **`K`, `J` and `n_eff` are three independent knobs.** `K` is how many features
@@ -795,7 +795,7 @@ pip install pytest && pytest -q
 
 The suite covers the mask formulas, both LTP gradient paths (analytically,
 against hand-derived gradients), the β schedules, the penalty terms and
-per-layer density targets, optimiser grouping, and short end-to-end training
+per-layer density targets, optimizer grouping, and short end-to-end training
 runs including checkpoint round-trips — all on synthetic data, no downloads.
 
 `tests/test_bottleneck.py` covers the activation bottleneck: exact-K forward

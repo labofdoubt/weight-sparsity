@@ -98,7 +98,7 @@ def fit_l2(train_x, train_y, val_x, val_y, test_x, test_y, standardize=True):
     s = best.decision_function(te)
     out = metrics(test_y, (s > 0).astype(int), s)
     out["C"] = float(best_C)
-    # undo standardisation so w lives in residual-stream coordinates
+    # undo standardization so w lives in residual-stream coordinates
     w = best.coef_[0] / sd
     b = float(best.intercept_[0] - np.dot(best.coef_[0], mu / sd))
     return out, w, b

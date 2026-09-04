@@ -211,7 +211,7 @@ class _LapSumProbs(torch.autograd.Function):
     @staticmethod
     def forward(ctx, scores, b, t, k_active, sink, inactive_scale=1.0):  # type: ignore[override]
         z = (scores - b.unsqueeze(-1)) / t.unsqueeze(-1)
-        # |z| and t are saved rather than kappa itself: the normalised budget
+        # |z| and t are saved rather than kappa itself: the normalized budget
         # weights are a softmax of -|z| with the 1/2t prefactor cancelled, which
         # stays exact even when every kappa has underflowed (tiny t, wide gaps),
         # where kappa / sum(kappa) would be 0/0.

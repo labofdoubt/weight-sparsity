@@ -112,7 +112,7 @@ class TopKSoftGate(torch.autograd.Function):
     """``w_tilde = M_A * w * sigmoid(beta*s)`` with the backward support ``M_B``.
 
     The masks are passed in (rather than computed here) so that the module can
-    share one TopK per optimiser step between the forward pass, the soft-L0
+    share one TopK per optimizer step between the forward pass, the soft-L0
     penalty and the logged statistics.
     """
 
@@ -188,7 +188,7 @@ class TopKSoftGateLinear(SparseLinear):
         self.init_s_(float(s_init), s_init_mode)
 
         # TopK is recomputed whenever ``s`` changes (its version counter is
-        # bumped by the optimiser step), and reused by every micro-batch of a
+        # bumped by the optimizer step), and reused by every micro-batch of a
         # gradient-accumulation step, by the penalty and by the statistics.
         self._support: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
         self._support_version = -1
@@ -199,7 +199,7 @@ class TopKSoftGateLinear(SparseLinear):
         # so that updating it never forces a device sync.
         self.register_buffer("turnover", torch.zeros((), dtype=torch.float32), persistent=False)
 
-    # ---- initialisation --------------------------------------------------- #
+    # ---- initialization --------------------------------------------------- #
     @torch.no_grad()
     def init_s_(self, scale: float, mode: str) -> None:
         """``constant`` | ``uniform`` | ``normal`` | ``magnitude``.
@@ -241,7 +241,7 @@ class TopKSoftGateLinear(SparseLinear):
         Opaque to ``torch.compile``: the cache is keyed on the version counter
         of ``s``, which Dynamo can only treat as data-dependent -- it would
         graph-break on the comparison anyway and then recompile on every
-        optimiser step until it hit the recompile limit.  Selection is a topk
+        optimizer step until it hit the recompile limit.  Selection is a topk
         plus a scatter, so there is nothing here for the compiler to fuse; the
         matmuls around it still compile.
         """

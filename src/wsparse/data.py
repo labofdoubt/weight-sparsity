@@ -1,7 +1,7 @@
 """TinyStories data preparation and batching.
 
 ``python -m wsparse.data --config configs/base.yaml`` downloads TinyStories,
-tokenises it and writes flat ``uint16`` token streams::
+tokenizes it and writes flat ``uint16`` token streams::
 
     data/tinystories/train.bin
     data/tinystories/val.bin
@@ -32,7 +32,7 @@ META_NAME = "meta.json"
 
 
 def prepare(cfg: DataConfig, force: bool = False) -> Dict:
-    """Download + tokenise TinyStories into ``cfg.data_dir``."""
+    """Download + tokenize TinyStories into ``cfg.data_dir``."""
     os.makedirs(cfg.data_dir, exist_ok=True)
     meta_path = os.path.join(cfg.data_dir, META_NAME)
     if os.path.exists(meta_path) and not force:

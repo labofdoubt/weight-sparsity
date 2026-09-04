@@ -104,7 +104,7 @@ def test_validation_errors():
 
 def test_cs_forces_grad_through_mask():
     cfg = SparsityConfig(method="cs", grad_through_mask=False)
-    assert cfg.grad_through_mask is True  # no-op for CS, normalised away
+    assert cfg.grad_through_mask is True  # no-op for CS, normalized away
 
 
 def test_grad_accum():

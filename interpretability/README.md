@@ -122,3 +122,11 @@ results/<run>/    sparse_probe_per_concept.csv localization_per_concept.csv
 
 `selected_features.json` keeps the chosen feature id per concept (and the
 fitted residual direction), so the same feature can be inspected by hand later.
+
+---
+
+The **bottleneck score / gradient / weight-norm** pipeline and its streamlit
+viewer live in [`../analysis/`](../analysis/) with their own README. That is a
+separate line of work from the concept benchmark above: it looks at the gate's
+ranking scores, its gradients and the blocks' weight norms rather than at
+concepts.

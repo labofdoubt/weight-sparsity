@@ -32,6 +32,19 @@ class RMSNorm(nn.Module):
         return f"dim={tuple(self.weight.shape)}, eps={self.eps}"
 
 
+def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """Rotate ``(B, n_heads, T, head_dim)`` by position (rotate-half convention).
+
+    Each pair ``(x[d], x[d + head_dim/2])`` is treated as a complex number and
+    rotated by the position-dependent angle baked into ``cos``/``sin``, so
+    ``q_i . k_j`` afterwards depends on positions only through ``i - j``.  A
+    rotation, so norms are preserved exactly -- both properties are tested.
+    """
+    half = x.shape[-1] // 2
+    x1, x2 = x[..., :half], x[..., half:]
+    return x * cos + torch.cat((-x2, x1), dim=-1) * sin
+
+
 class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
@@ -41,6 +54,24 @@ class CausalSelfAttention(nn.Module):
         self.qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model, bias=cfg.bias)
         self.proj = nn.Linear(cfg.d_model, cfg.d_model, bias=cfg.bias)
         self.resid_dropout = nn.Dropout(cfg.dropout)
+        self.rope = cfg.pos_encoding == "rope"
+        if self.rope:
+            # The cos/sin cache for every position up to max_seq_len, shaped
+            # (1, 1, T, head_dim) with the half-table duplicated so apply_rope
+            # needs no reshuffling.  Computed in float32 and cast at use; a
+            # *non-persistent* buffer, so state_dicts are identical to the
+            # learned-embedding layout minus pos_emb and old checkpoints are
+            # unaffected.
+            half = self.head_dim // 2
+            inv_freq = cfg.rope_theta ** (
+                -torch.arange(0, half, dtype=torch.float32) / half
+            )
+            freqs = torch.outer(
+                torch.arange(cfg.max_seq_len, dtype=torch.float32), inv_freq
+            )
+            emb = torch.cat((freqs, freqs), dim=-1)
+            self.register_buffer("rope_cos", emb.cos()[None, None], persistent=False)
+            self.register_buffer("rope_sin", emb.sin()[None, None], persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, C = x.shape
@@ -48,6 +79,11 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
         k = k.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        if self.rope:
+            cos = self.rope_cos[..., :T, :].to(q.dtype)
+            sin = self.rope_sin[..., :T, :].to(q.dtype)
+            q = apply_rope(q, cos, sin)
+            k = apply_rope(k, cos, sin)
         y = F.scaled_dot_product_attention(
             q, k, v, is_causal=True, dropout_p=self.attn_dropout if self.training else 0.0
         )
@@ -133,7 +169,13 @@ class TransformerLM(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.tok_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
-        self.pos_emb = nn.Embedding(cfg.max_seq_len, cfg.d_model)  # learnable
+        # Under rope the position information lives in attention, so there is no
+        # table here at all -- None rather than an unused parameter, so it is
+        # neither trained, decayed, nor counted.
+        self.pos_emb = (
+            nn.Embedding(cfg.max_seq_len, cfg.d_model)  # learnable, absolute
+            if cfg.pos_encoding == "learned" else None
+        )
         self.emb_dropout = nn.Dropout(cfg.dropout)
         self.blocks = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layers)])
         self.norm_f = RMSNorm(cfg.d_model, cfg.norm_eps)
@@ -142,11 +184,15 @@ class TransformerLM(nn.Module):
             self.lm_head.weight = self.tok_emb.weight
 
         # norm_f gives the head a unit-RMS input, so the init logits land at std
-        # head_std * sqrt(d_model); divide that out to normalise them to ~1.  A
+        # head_std * sqrt(d_model); divide that out to normalize them to ~1.  A
         # constant, so it stays out of the state_dict and checkpoints load.
         self.logit_mult = 1.0
         if cfg.logit_scale == "auto":
             self.logit_mult = 1.0 / (self._head_std() * math.sqrt(cfg.d_model))
+        # Under magnitude-direction decoupling the embedding rows are unit-norm
+        # (component std 1/sqrt(d)), so a fixed sqrt(d) upscale puts the
+        # residual stream at unit RMS on entry.  A constant, not a parameter.
+        self.embed_scale = math.sqrt(cfg.d_model) if cfg.decouple else 1.0
 
         self.apply(self._init_weights)
         if cfg.init_scale_residual:
@@ -172,7 +218,7 @@ class TransformerLM(nn.Module):
         return DEFAULT_STD_EMBEDDING
 
     def _head_std(self) -> float:
-        """The std ``lm_head.weight`` is initialised with.
+        """The std ``lm_head.weight`` is initialized with.
 
         Never routed through ``_linear_std``: the unembedding is scaled from what
         the logits need, not from the linear-layer convention, so ``init_scheme``
@@ -232,7 +278,9 @@ class TransformerLM(nn.Module):
             seen.add(id(p))
             total += p.numel()
         if non_embedding:
-            total -= self.tok_emb.weight.numel() + self.pos_emb.weight.numel()
+            total -= self.tok_emb.weight.numel()
+            if self.pos_emb is not None:
+                total -= self.pos_emb.weight.numel()
             if self.cfg.tie_embeddings is False:
                 total -= self.lm_head.weight.numel()
         return total
@@ -244,8 +292,13 @@ class TransformerLM(nn.Module):
         B, T = idx.shape
         if T > self.cfg.max_seq_len:
             raise ValueError(f"sequence length {T} exceeds max_seq_len={self.cfg.max_seq_len}")
-        pos = torch.arange(T, device=idx.device)
-        x = self.emb_dropout(self.tok_emb(idx) + self.pos_emb(pos)[None])
+        x = self.tok_emb(idx)
+        if self.embed_scale != 1.0:
+            x = x * self.embed_scale
+        if self.pos_emb is not None:
+            pos = torch.arange(T, device=idx.device)
+            x = x + self.pos_emb(pos)[None]
+        x = self.emb_dropout(x)
         for block in self.blocks:
             x = block(x)
         x = self.norm_f(x)

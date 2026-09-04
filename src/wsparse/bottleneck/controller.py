@@ -64,7 +64,7 @@ def parse_placements(spec) -> List[str]:
 
     Several placements may be active at once; each installs its own bottleneck
     with its own parameters, so the parameter cost scales with how many are
-    named.  Order is normalised to the order they occur in a block's forward.
+    named.  Order is normalized to the order they occur in a block's forward.
     """
     if isinstance(spec, (list, tuple, set)):
         names = [str(t).strip() for t in spec if str(t).strip()]
@@ -116,7 +116,7 @@ class ActivationBottleneckController:
         return self._temperature
 
     def set_step(self, step: int) -> float:
-        """Update the prescribed temperature for this optimiser step.
+        """Update the prescribed temperature for this optimizer step.
 
         A no-op for the adaptive and hard modes, which never read it -- the
         adaptive solvers derive ``t`` from the score geometry instead.
@@ -156,7 +156,7 @@ class ActivationBottleneckController:
 
         Must be called after each forward and before the matching backward: the
         terms are activation-dependent, so unlike the weight-sparsity penalty
-        they cannot be recomputed once per optimiser step.
+        they cannot be recomputed once per optimizer step.
 
         Returns ``(None, {})`` when the loss is disabled, so the caller can skip
         it without building a graph.
@@ -187,7 +187,7 @@ class ActivationBottleneckController:
 
         The block is a projection into a K-sparse code and back, so its output
         variance need not resemble its input's -- and it is inserted in front of
-        an MLP that was initialised expecting the latter.  This measures both
+        an MLP that was initialized expecting the latter.  This measures both
         with forward hooks over a handful of batches and sets a fixed scalar
         ``sqrt(var_in / var_out)`` after ``out_proj``.
 

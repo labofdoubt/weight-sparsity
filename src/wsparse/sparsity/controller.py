@@ -90,7 +90,7 @@ class SparsityController:
         return self._beta
 
     def set_step(self, step: int) -> float:
-        """Update beta for the given optimiser step; returns the new beta."""
+        """Update beta for the given optimizer step; returns the new beta."""
         if not self.enabled:
             return 0.0
         self._beta = float(self.schedule(step))

@@ -36,7 +36,7 @@ def topk_curve(results: str, out: str) -> None:
     ax.set_title(
         "Sparse probe accuracy vs k\n"
         f"A1={macro[0]:.3f}  A16={macro[-1]:.3f}  "
-        f"({'localised' if macro[-1] - macro[0] < 0.05 else 'distributed'})"
+        f"({'localized' if macro[-1] - macro[0] < 0.05 else 'distributed'})"
     )
     ax.set_ylim(0.45, 1.0)
     ax.legend(frameon=False)
@@ -55,7 +55,7 @@ def localization(results: str, out: str) -> None:
         ("CanonicalMissRate", "#d62728", "canonical feature inactive\n(lower is better)"),
         ("ScatterRate", "#ff7f0e", "concept survives elsewhere\n(lower is better)"),
         ("MedianEffectiveContributorCount", "#1f77b4",
-         "effective contributing features\n(lower is more localised)"),
+         "effective contributing features\n(lower is more localized)"),
     ]
     for ax, (col, colour, title) in zip(axes, panels):
         ax.barh(list(y), df[col], color=colour, height=0.7)

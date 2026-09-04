@@ -1,5 +1,5 @@
 """TopK + soft gate: forward support, the hand-written backward, the soft-L0
-penalty and the wiring (config, controller, optimiser, one training step).
+penalty and the wiring (config, controller, optimizer, one training step).
 
 The gradient tests all compare against the boxed formulas by hand rather than
 against autograd, which is the point of the method: autograd through the hard
@@ -296,7 +296,7 @@ def test_penalty_pushes_the_gates_down():
 
 
 # --------------------------------------------------------------------------- #
-# initialisation of s
+# initialization of s
 # --------------------------------------------------------------------------- #
 
 
@@ -374,7 +374,7 @@ def test_support_is_recomputed_after_s_changes_and_reused_otherwise():
     assert layer.supports()[0] is not first[0]
 
 
-def test_support_follows_the_optimiser():
+def test_support_follows_the_optimizer():
     layer = make_layer(out_features=1, in_features=4, k=1, j=3)
     opt = torch.optim.SGD([layer.s], lr=1.0)
     with torch.no_grad():
@@ -515,7 +515,7 @@ def test_unknown_method_is_still_rejected():
 
 
 # --------------------------------------------------------------------------- #
-# controller / optimiser wiring
+# controller / optimizer wiring
 # --------------------------------------------------------------------------- #
 
 
@@ -657,7 +657,7 @@ def test_compiled_model_matches_eager():
 
     TopK selection is opaque to Dynamo (`supports` is `torch.compiler.disable`d)
     precisely so that the version-counter cache does not force a recompile on
-    every optimiser step.
+    every optimizer step.
     """
     def build():
         torch.manual_seed(0)

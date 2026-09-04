@@ -1914,7 +1914,7 @@ def test_combining_placements_doubles_the_parameter_cost():
      ("post_mlp,post_mlp", ["post_mlp"]),                    # deduplicated
      ("residual,pre_mlp", ["pre_mlp", "residual"])],
 )
-def test_parse_placements_normalises_to_forward_order(spec, expected):
+def test_parse_placements_normalizes_to_forward_order(spec, expected):
     assert parse_placements(spec) == expected
 
 
@@ -1990,8 +1990,8 @@ def test_reconstruction_term_is_absent_when_disabled_or_not_training():
     assert on.take_reconstruction() is None        # eval must not build a graph
 
 
-def test_normalised_reconstruction_is_scale_invariant():
-    """The point of normalising: one coefficient works at any activation scale."""
+def test_normalized_reconstruction_is_scale_invariant():
+    """The point of normalizing: one coefficient works at any activation scale."""
     torch.manual_seed(0)
     cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0,
                          reconstruction_coef=1.0, reconstruction_normalize=True)
@@ -2006,7 +2006,7 @@ def test_normalised_reconstruction_is_scale_invariant():
     assert abs(a - b) / a < 1e-3, (a, b)
 
 
-def test_unnormalised_reconstruction_is_not_scale_invariant():
+def test_unnormalized_reconstruction_is_not_scale_invariant():
     torch.manual_seed(0)
     cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0,
                          reconstruction_coef=1.0, reconstruction_normalize=False)
@@ -2056,7 +2056,7 @@ def test_reconstruction_gradient_reaches_both_projections():
 
 
 # --------------------------------------------------------------------------- #
-# bottleneck initialisation modes
+# bottleneck initialization modes
 # --------------------------------------------------------------------------- #
 
 

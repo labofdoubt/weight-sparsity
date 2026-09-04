@@ -1,4 +1,4 @@
-"""Optimiser construction and the learning-rate schedule.
+"""Optimizer construction and the learning-rate schedule.
 
 Three parameter groups:
 

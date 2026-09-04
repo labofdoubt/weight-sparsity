@@ -121,7 +121,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self.log_diagnostics = bool(log_diagnostics)
         self.hard_inference = bool(hard_inference)
 
-        # Set by the controller from the schedule each optimiser step; a
+        # Set by the controller from the schedule each optimizer step; a
         # buffer so it travels with .to(device), non-persistent because it is a
         # pure function of the step count.
         self.register_buffer(
@@ -130,7 +130,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
             persistent=False,
         )
         # EMA of how often each of the N features is selected, for the
-        # dead-feature diagnostics below.  Zero-initialised and bias-corrected
+        # dead-feature diagnostics below.  Zero-initialized and bias-corrected
         # on read (as in Adam): seeding it at the uniform rate instead would
         # take ~460 steps to decay past the dead threshold, so a fully collapsed
         # bottleneck would report 0% dead for the whole early phase.
@@ -220,7 +220,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
             return lapsum_barrier_sorted(candidates, self.k, t), t, diag
 
         # Every mode starts from the cheap decoupled solve: for score_softmax it
-        # is the answer, for the exact modes it is the Newton initialiser.
+        # is the answer, for the exact modes it is the Newton initializer.
         t, diag = solve_score_softmax_temperature(
             candidates[..., self.k :],
             self.n_eff,
@@ -290,7 +290,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         if self.trivial:
             # k == n_features: every feature is active, so the mask is all ones
             # and topk would be a full sort for nothing.  Kept as a control run
-            # rather than an optimisation of a real configuration.
+            # rather than an optimization of a real configuration.
             hard_mask = torch.ones_like(scores)
             if self.log_diagnostics and self.training:
                 self._record_usage(hard_mask)
