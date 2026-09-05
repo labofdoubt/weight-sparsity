@@ -21,9 +21,14 @@ INTERVAL=${3:-600}
 
 echo "[backup-analysis] every ${INTERVAL}s: $SRC -> $DST"
 while true; do
+  # --transfers 2 + 64M chunks, not 4 + 128M: four parallel chunked sessions of
+  # multi-GB .npy through the shared client_id made Drive fail every chunk at
+  # commit -- bytes flowed at 3.5 MB/s forever while accounted progress stayed
+  # frozen. --timeout aborts a black-holed socket instead of resending into it.
   rclone copy "$SRC" "$DST" \
     --filter "- **/*.tmp" --filter "- **/.~*" \
-    --min-age 2m --drive-chunk-size 128M --transfers 4 --stats-one-line -v \
+    --min-age 2m --drive-chunk-size 64M --transfers 2 --timeout 2m \
+    --stats-one-line --stats 60s -v \
     || echo "[backup-analysis] rclone failed, retrying next cycle"
   echo "[backup-analysis] cycle done  $(date -Is)"
   sleep "$INTERVAL"
