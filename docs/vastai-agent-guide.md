@@ -67,7 +67,7 @@ PYTHONPATH=src:/usr/lib/python3/dist-packages python -m pytest tests/ -q
 ```
 
 Expect **1 failure**: `test_topk.py::test_compiled_model_matches_eager`. It is
-pre-existing, it is not yours, and §10 explains what it means.
+pre-existing, it is not yours, and §11 explains what it means.
 
 ---
 
@@ -180,10 +180,20 @@ tmux new-session -d -s backup_tb \
   "bash scripts/backup_watch.sh /workspace/runs gdrive:weight-sparsity/runs_<name> 60"
 tmux new-session -d -s backup_ckpt \
   "bash scripts/backup_watch.sh /workspace/runs gdrive:weight-sparsity/runs_<name> 600 --all-checkpoints"
+tmux new-session -d -s backup_analysis \
+  "bash scripts/backup_analysis_watch.sh /workspace/analysis gdrive:weight-sparsity/analysis_<name> 600"
 ```
 
 * Use a **distinct remote prefix per machine**; mixing them makes provenance
   unrecoverable.
+* **The runs watchers do not cover `/workspace/analysis`.** `backup_runs.sh`'s
+  filter list admits logs/configs/events and nothing else, so the probe and
+  score datasets -- 15+ GB of `.npy` that take hours of GPU time to recompute --
+  need the third watcher (`backup_analysis_watch.sh`, a plain filtered
+  `rclone copy`). Restore on a fresh box with
+  `rclone copy gdrive:weight-sparsity/analysis_<name> /workspace/analysis
+  --drive-chunk-size 128M`; the streamlit viewer reads the restored files
+  unchanged (see `analysis/README.md`, "Surviving instance destruction").
 * It is `rclone copy`, never `sync`, so local deletions are not mirrored
   upward — that is what makes the checkpoint pruner safe.
 * The checkpoint interval must stay well inside the local retention window
@@ -207,7 +217,9 @@ Drive layout:
 | `runs_server1/`, `runs/` | the earliest machines (10x640 geometry) |
 | `runs_server3/` | sweden — 20 residual-placement runs, 8x768 |
 | `runs_taiwan/` | 4 init/dense-control runs, 8x768 |
-| `runs_dc/` | current machine |
+| `runs_dc/` | the `dc_*` 20k-step runs (8x768 soft j-sweep, hard k-sweep) |
+| `runs_lens_1/` | current machine — probe / gainsweep dynamics runs |
+| `analysis_lens_1/` | the analysis datasets for the streamlit viewer (§8) |
 | `benchmark_data/` | also in git |
 | `data/` | tokenized corpus |
 | `interpretability_results/`, `plots/` | analysis output |
@@ -279,7 +291,50 @@ hand-written backward. Things that will surprise you:
 
 ---
 
-## 8. Config traps worth knowing
+## 8. The analysis pipeline (probes -> streamlit -> Drive)
+
+`analysis/` is the project's second half: four scripts that produce datasets
+under `/workspace/analysis/{scores,probe,gain,wnorm}`, two inspection CLIs, and
+one streamlit viewer over them. `analysis/README.md` is the complete manual; the shape of it:
+
+* **Two ways to get data.** `extract_bottleneck_scores.py` walks *saved*
+  checkpoints (every 2000 steps). The three probes (`probe_early_training.py`,
+  `probe_gain_sweep.py`, `probe_weight_norms.py`) re-run training from a run's
+  own `config.json` with the same seed and measure every 10 steps through
+  `train()`'s `on_step` hook, saving no checkpoints -- steps 0..1000 exist
+  nowhere else. `--set a.b=c` overrides let them probe configs that never
+  existed as runs.
+* **The two probe invariants.** A probe must not perturb the run (the hook fires
+  before that step's `zero_grad`, so probe backwards are provably discarded, and
+  gate buffers / RNG are restored), and it must not touch `max_steps` --
+  schedules are defined over it (§9); stop early by raising `StopProbing`
+  instead. Gradient probes run in `train()` mode on purpose: `surrogate_active()`
+  is False in eval / `no_grad` (§7), so an eval-mode probe measures the hard
+  mask rather than the surrogate.
+* **The viewer** runs on the box as the `score_explorer` supervisor service on
+  `127.0.0.1:8501`; tunnel it like TensorBoard (`-L 8501:localhost:8501`). It
+  discovers datasets by listing its three directories with a 30 s cache, so a
+  new run appears ~30 s after its file lands -- no restart, no app change.
+  Adding a new *kind* of data means a new page: README §7 has the pattern.
+  Caveats baked into it deliberately: `j` is forced to 0 for hard-gate runs
+  (inert in training -- §7), and the LapSum barrier band is reconstructed
+  offline because `scheduled_temperature` is a non-persistent buffer absent
+  from checkpoints.
+* **`gain/` JSONs are not shown in the app** -- they feed TensorBoard
+  (`lens_1/gainsweep_*`, via `--tb-dir`) and ad-hoc comparison scripts.
+* **Drive sync**: the third backup watcher (§5) mirrors `/workspace/analysis`
+  -> `gdrive:weight-sparsity/analysis_<machine>` every 10 min. The runs
+  watchers do **not** cover it, and the datasets are 15+ GB that take hours of
+  GPU time to recompute. Standing the viewer up on a fresh box without
+  recomputing anything is one `rclone copy` plus two `cp` for the supervisor
+  service files kept in `scripts/` -- README §8 ("Surviving instance
+  destruction") has the exact commands. The viewer needs no corpus, no
+  checkpoints and no GPU: everything it reads travels inside the datasets and
+  their meta JSONs.
+
+---
+
+## 9. Config traps worth knowing
 
 * **`placement`** — `pre_mlp` / `post_attn` / `post_mlp` sit inside a residual
   branch (the skip routes around them). `residual` / `residual_out` replace the
@@ -469,7 +524,7 @@ gate never solves a barrier and never reads the temperature at all.
 
 ---
 
-## 9. Operational habits that were learned the hard way
+## 10. Operational habits that were learned the hard way
 
 * **Run anything long in `tmux` on the server.** Backgrounded commands driven
   from an agent session die when the task is reaped, mid-transfer, without an
@@ -496,7 +551,7 @@ gate never solves a barrier and never reads the temperature at all.
 
 ---
 
-## 10. The one test that always fails
+## 11. The one test that always fails
 
 Every fresh run of the suite ends with
 
