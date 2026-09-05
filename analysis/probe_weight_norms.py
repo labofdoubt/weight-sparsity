@@ -229,10 +229,15 @@ def main() -> None:
         setattr(obj, parts[-1], new)
         print(f"[wnorm] override {path}: {cur!r} -> {new!r}")
 
-    bn = cfg.activation_bottleneck
-    name = args.name or f"wnorm_{bn.surrogate_mode}_k{bn.k}_j{bn.j}"
+    # Default to the original run's identity, like probe_early_training does.
+    # A config-derived name (mode/k/j) loses the run name and its markers (md,
+    # selcorr, machine) and collides across sweeps -- learned the hard way when
+    # five uk_* datasets landed as "wnorm_hard_k32_j64"-style names.
+    original = cfg.train.run_name or os.path.basename(
+        os.path.dirname(os.path.abspath(args.config)))
+    name = args.name or f"wnorm_{original}"
     # max_steps untouched: lr and temperature schedules are defined over it.
-    cfg.train.run_name = f"wnorm_{name}"
+    cfg.train.run_name = name
     cfg.train.out_dir = os.path.join(args.out, "tb_runs")
     cfg.train.resume = ""
     cfg.train.sample_every_steps = 10 ** 9
