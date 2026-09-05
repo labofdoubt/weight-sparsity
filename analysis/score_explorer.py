@@ -1,6 +1,6 @@
 """Interactive explorer for bottleneck ranking scores across checkpoints.
 
-    streamlit run interpretability/score_explorer.py
+    streamlit run analysis/score_explorer.py
 
 Serves two kinds of dataset, chosen in the sidebar, both memory-mapped so only
 the drawn cell is ever read:

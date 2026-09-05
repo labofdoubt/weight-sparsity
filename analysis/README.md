@@ -22,13 +22,13 @@ memory-mapped, so the viewer only touches the cell it draws.
 # Bottleneck score explorer
 
 A second, separate pipeline from the concept benchmark above: it looks at the
-gate's *ranking scores* and its gradients rather than at concepts. Three scripts
+gate's *ranking scores* and its gradients rather than at concepts. Its scripts
 feed one streamlit viewer.
 
 ## 1. Scores from saved checkpoints
 
 ```bash
-python interpretability/extract_bottleneck_scores.py \
+python analysis/extract_bottleneck_scores.py \
     --ckpt-dir /workspace/ckpt/<run> \
     --data-dir /workspace/data/tinystories \
     --out-dir /workspace/analysis/scores \
@@ -52,7 +52,7 @@ never in the data.
 keeping 100 checkpoints would cost ~140 GB per run. Instead:
 
 ```bash
-python interpretability/probe_early_training.py \
+python analysis/probe_early_training.py \
     --config /workspace/ckpt/<run>/config.json \
     --data-dir /workspace/data/tinystories \
     --out-dir /workspace/analysis/probe \
@@ -89,10 +89,53 @@ It also runs in `train()` mode on purpose: `surrogate_active()` is False in eval
 and under `no_grad`, so a probe in eval mode would measure the *hard* mask's
 gradient rather than the surrogate's.
 
-## 3. Characterize before plotting
+## 3. Weight norms while training
 
 ```bash
-python interpretability/inspect_bottleneck_scores.py \
+python analysis/probe_weight_norms.py \
+    --config /workspace/ckpt/<run>/config.json \
+    --data-dir /workspace/data/tinystories \
+    --out /workspace/analysis/wnorm \
+    --steps 1000 --probe-every 10
+```
+
+Same `on_step` hook and the same non-perturbation guarantees as the early
+probe. Per probe step and per block it records, for `attn.qkv` / `attn.proj` /
+`mlp.fc1` / `mlp.fc2` and the bottleneck's `in_proj` / `out_proj`: `fro`,
+`spec` (largest singular value -- the honest "how much can this amplify"
+number), and max/median row and column norms, which is what distinguishes "the
+whole matrix grew" from "a few rows blew up", plus per-block activation context
+(`x_norm`, `gain`, `score_max`). Writes `wnorm/<name>.json`, which is what the
+viewer's **Weight norms** page reads. `--no-spectral` skips the SVDs;
+`--set a.b=c` (repeatable) applies config overrides, so a config that never
+existed as a run can be probed too. Under `model.decouple=true`, read Frobenius
+growth as *gain* growth -- the direction norm is pinned (guide §9).
+
+## 4. Gain / geometry scalars, cheap enough for sweeps
+
+```bash
+python analysis/probe_gain_sweep.py \
+    --config /workspace/ckpt/<run>/config.json \
+    --data-dir /workspace/data/tinystories \
+    --out /workspace/analysis/gain \
+    --tb-dir /workspace/runs/lens_1 --name gainsweep_<tag> \
+    --steps 1000 --probe-every 10
+```
+
+Records, per probe step and per bottleneck, `gain` / `enc` / `keep` / `cos` /
+`x_norm` / `w_in` / `w_out` plus held-out CE -- megabytes per config, so whole
+k/j (or rope/decouple) sweeps are cheap. Output is `gain/<name>.json` and, with
+`--tb-dir`, live TensorBoard curves under that directory: the
+`lens_1/gainsweep_*` runs come from exactly this. With the bottleneck disabled
+(`--set activation_bottleneck.enabled=false`) it records CE only, as
+`layer: -1` rows; `--init-only` measures step 0 and exits. These JSONs are
+**not** shown in the streamlit app -- they are for TensorBoard and ad-hoc
+comparison scripts.
+
+## 5. Characterize before plotting
+
+```bash
+python analysis/inspect_bottleneck_scores.py \
     --scores /workspace/analysis/scores/<run>.npy
 ```
 
@@ -102,11 +145,11 @@ size. This is what decided the viewer's format: the selection margin is
 0.002–0.008 of the TopK span, i.e. sub-pixel, so a bare number line cannot show
 the boundary at all.
 
-## 4. The viewer
+## 6. The viewer
 
 ```bash
 SCORES_DIR=/workspace/analysis/scores PROBE_DIR=/workspace/analysis/probe \
-  streamlit run interpretability/score_explorer.py
+  WNORM_DIR=/workspace/analysis/wnorm streamlit run analysis/score_explorer.py
 ```
 
 On the vast.ai box it runs as a supervisor service on `127.0.0.1:8501`
@@ -127,3 +170,57 @@ from checkpoints: `t = schedule(step) * std(top-(k+j) scores)` for
 `k+j` — via the project's own `lapsum_barrier_sorted`. Validated against the
 values training logged: 0.7% on `b` and 2.2% on `t` for `..._j64`, with the
 budget identity holding to 1e-5.
+
+## 7. Adding a new run, or a new page
+
+The viewer discovers data by listing its three directories -- `SCORES_DIR`,
+`PROBE_DIR`, `WNORM_DIR` at the top of `score_explorer.py`, defaulting to
+`/workspace/analysis/{scores,probe,wnorm}` -- and the listings are cached with
+`ttl=30`.
+
+* **New run of an existing kind**: point the producing script's `--out` at the
+  watched directory. It appears in the run selector within ~30 s (or press `R`
+  in the app to rerun sooner). No app change and no restart -- on the box the
+  viewer runs as the `score_explorer` supervisor service and just keeps
+  serving.
+* **New kind of data**: add a page, following the Weight-norms one as the
+  worked example: a `<something>_page()` function, one more entry in the
+  sidebar `st.radio("Page", ...)` at the bottom of the file, and `st.stop()`
+  after dispatching so pages never pay for each other (deliberately not
+  `st.tabs`, which executes every tab body on every rerun). Cache data loaders
+  with `@st.cache_data`, keep directory listings at `ttl=30` so new files show
+  up, and namespace widget keys per page; if a control must survive a dataset
+  switch, use the `_cuts` session-state pattern from the score page.
+* **Running the viewer off the box**: sync the data directories somewhere
+  local, set the three env vars to those paths, and
+  `streamlit run analysis/score_explorer.py`.
+
+## 8. Surviving instance destruction
+
+`/workspace` is wiped when the instance is destroyed (on this box it is not a
+volume), and the runs backup watchers do **not** cover `/workspace/analysis` --
+their filter list has no `*.npy`. The datasets get their own watcher (guide
+§5), which mirrors the whole tree to Drive every 10 minutes:
+
+```bash
+tmux new-session -d -s backup_analysis \
+  "bash scripts/backup_analysis_watch.sh /workspace/analysis gdrive:weight-sparsity/analysis_lens_1 600"
+```
+
+Standing everything up on a fresh box, with nothing recomputed:
+
+```bash
+# repo + deps + rclone.conf per the guide (sections 1-2), then:
+rclone copy gdrive:weight-sparsity/analysis_lens_1 /workspace/analysis \
+    --drive-chunk-size 128M
+cp scripts/score_explorer_service.sh /opt/supervisor-scripts/score_explorer.sh
+cp scripts/score_explorer.supervisor.conf /etc/supervisor/conf.d/score_explorer.conf
+supervisorctl reread && supervisorctl update      # serves on 127.0.0.1:8501
+```
+
+The viewer depends on nothing else: no corpus, no checkpoints, no GPU -- token
+strings, steps, k/j and the temperature-schedule config all travel inside the
+datasets' meta JSONs, and the barrier reconstruction only needs the repo's own
+`wsparse` on CPU. Restart the backup watcher on the new box afterwards so new
+results keep flowing to the same prefix (`rclone copy` never deletes remotely,
+so re-running it over an existing prefix is safe).

@@ -25,7 +25,7 @@ distinguishes "the whole matrix grew" from "a few rows blew up". A little
 activation context comes along per block (`x_norm`, `gain`, `score_max`) so the
 weights can be read against what they produce.
 
-    python interpretability/probe_weight_norms.py \\
+    python analysis/probe_weight_norms.py \\
         --config /workspace/ckpt/dc_rout_soft_k32_j64/config.json \\
         --data-dir /workspace/data/tinystories \\
         --out /workspace/analysis/wnorm --steps 1000 --probe-every 10

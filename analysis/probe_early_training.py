@@ -41,7 +41,7 @@ result:
   is therefore left at the original value and the run is stopped by raising
   :class:`StopProbing` from the hook.
 
-    python interpretability/probe_early_training.py \
+    python analysis/probe_early_training.py \
         --config /workspace/ckpt/dc_rout_soft_k32_j64/config.json \
         --data-dir /workspace/data/tinystories \
         --out-dir /workspace/analysis/probe \

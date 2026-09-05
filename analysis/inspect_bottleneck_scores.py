@@ -10,7 +10,7 @@ Answers the questions that decide the plot format:
 * do the TopK *identities* persist across neighbouring token positions and
   across checkpoints (the thing hover-for-index is meant to answer)?
 
-    python interpretability/inspect_bottleneck_scores.py \
+    python analysis/inspect_bottleneck_scores.py \
         --scores /workspace/analysis/scores/dc_rout_soft_k32_j32.npy
 """
 

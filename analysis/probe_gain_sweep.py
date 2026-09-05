@@ -21,7 +21,7 @@ batch:
 ``w_in`` / ``w_out``  Frobenius norms, to separate "the weights grew" from
                     "the selection geometry changed".
 
-    python interpretability/probe_gain_sweep.py \
+    python analysis/probe_gain_sweep.py \
         --config /workspace/ckpt/dc_rout_hard_k32_selcorr/config.json \
         --data-dir /workspace/data/tinystories --out /workspace/analysis/gain \
         --steps 300 --probe-every 10 --set activation_bottleneck.k=64

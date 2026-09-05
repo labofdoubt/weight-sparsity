@@ -20,7 +20,7 @@ Bands follow the gate: sorted by ``r`` descending, ranks ``[0, k)`` are the
 TopK that survive the forward, ``[k, k+j)`` are the J candidates that receive
 surrogate gradient, and the remainder get exactly zero gradient from the gate.
 
-    python interpretability/extract_bottleneck_scores.py \
+    python analysis/extract_bottleneck_scores.py \
         --ckpt-dir /workspace/ckpt/dc_rout_soft_k32_j32 \
         --data-dir /workspace/data/tinystories \
         --out-dir /workspace/analysis/scores
