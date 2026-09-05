@@ -229,6 +229,7 @@ def main() -> None:
         setattr(obj, parts[-1], new)
         print(f"[wnorm] override {path}: {cur!r} -> {new!r}")
 
+    bn = cfg.activation_bottleneck
     # Default to the original run's identity, like probe_early_training does.
     # A config-derived name (mode/k/j) loses the run name and its markers (md,
     # selcorr, machine) and collides across sweeps -- learned the hard way when
