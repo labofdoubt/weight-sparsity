@@ -640,8 +640,14 @@ with st.sidebar:
     steps = meta["steps"]
 
     step_word = "probe" if kind == "probe" else "checkpoint"
-    ci = st.select_slider(f"{step_word.capitalize()} (step)", options=list(range(C)),
-                          value=C - 1, format_func=lambda i: f"{steps[i]:,}")
+    if C > 1:
+        ci = st.select_slider(f"{step_word.capitalize()} (step)", options=list(range(C)),
+                              value=C - 1, format_func=lambda i: f"{steps[i]:,}")
+    else:
+        # a run that died early can leave a one-checkpoint ladder; a slider
+        # needs two options, so pin the index instead of crashing the page
+        ci = 0
+        st.caption(f"single {step_word} in this dataset (step {steps[0]:,})")
     li = st.slider("Bottleneck (block)", 0, L - 1, L // 2)
     bi = st.slider("Sequence in batch", 0, B - 1, 0)
     ti = st.slider("Token position", 0, T - 1, min(64, T - 1))
