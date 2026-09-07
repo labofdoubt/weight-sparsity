@@ -209,25 +209,50 @@ class _LapSumProbs(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, scores, b, t, k_active, sink, inactive_scale=1.0):  # type: ignore[override]
+    def forward(ctx, scores, b, t, k_active, sink, inactive_scale=1.0,
+                project_scale=False):  # type: ignore[override]
         z = (scores - b.unsqueeze(-1)) / t.unsqueeze(-1)
         # |z| and t are saved rather than kappa itself: the normalized budget
         # weights are a softmax of -|z| with the 1/2t prefactor cancelled, which
         # stays exact even when every kappa has underflowed (tiny t, wide gaps),
-        # where kappa / sum(kappa) would be 0/0.
-        ctx.save_for_backward(z.abs(), t)
+        # where kappa / sum(kappa) would be 0/0.  The scores are only kept when
+        # the projection needs them -- no copy either way, just a lifetime.
+        if project_scale:
+            ctx.save_for_backward(z.abs(), t, scores)
+        else:
+            ctx.save_for_backward(z.abs(), t)
         ctx.k_active = int(k_active)
         ctx.sink = sink
         ctx.inactive_scale = float(inactive_scale)
+        ctx.project_scale = bool(project_scale)
         return laplace_cdf(z)
 
     @staticmethod
     def backward(ctx, grad_p):  # type: ignore[override]
-        abs_z, t = ctx.saved_tensors
+        abs_z, t = ctx.saved_tensors[:2]
         kappa = 0.5 * torch.exp(-abs_z) / t.unsqueeze(-1)  # gradient magnitude
         q_budget = torch.softmax(-abs_z, dim=-1)           # db/dr, always finite
         shared = (q_budget * grad_p).sum(-1, keepdim=True)
         grad_scores = kappa * (grad_p - shared)
+        if ctx.project_scale:
+            # Under a score-relative temperature the soft mask is exactly
+            # invariant to a common rescaling of the row, so the fixed-(b, t)
+            # VJP's component along the score direction is a phantom the
+            # forward can never realize; left in, it compounds into activation
+            # inflation (docs/relative-temperature-divergence.md).  Applied
+            # BEFORE the inactive reweighting, where the VJP is still zero-sum,
+            # which also keeps the result zero-sum (sum(v) = 0).  The centred
+            # direction is used on both sides, so this stays the exact raw-score
+            # projection whether or not zero-sum holds.
+            scores = ctx.saved_tensors[2]
+            v = scores - scores.mean(-1, keepdim=True)
+            vv = (v * v).sum(-1, keepdim=True)
+            coef = (grad_scores * v).sum(-1, keepdim=True) / vv.clamp_min(
+                torch.finfo(v.dtype).tiny
+            )
+            grad_scores = grad_scores - torch.where(
+                vv > 0, coef, torch.zeros_like(coef)
+            ) * v
         if ctx.inactive_scale != 1.0:
             # Reweight only the J candidates outside the forward support.  Note
             # this deliberately breaks the zero-sum property: sum_i grad_i is 0
@@ -254,7 +279,7 @@ class _LapSumProbs(torch.autograd.Function):
                 sink["grad_by_rank"] = torch.stack(
                     [flat[:, edges[i] : edges[i + 1]].mean() for i in range(bins)]
                 ).detach()
-        return grad_scores, None, None, None, None, None
+        return grad_scores, None, None, None, None, None, None
 
 
 def lapsum_probs(
@@ -264,10 +289,16 @@ def lapsum_probs(
     k_active: int,
     sink: Optional[dict] = None,
     inactive_scale: float = 1.0,
+    project_scale: bool = False,
 ) -> torch.Tensor:
     """Differentiable LapSum probabilities at a **detached** ``(b, t)``.
 
     ``inactive_scale`` reweights the gradient reaching the ``J`` candidates
     outside the forward support (ranks ``k:``), leaving the active ones alone.
+    ``project_scale`` removes the VJP's component along the row's score
+    direction -- exact under a score-relative temperature, where the forward is
+    scale-invariant (see ``project_scale_gradient`` in the config).
     """
-    return _LapSumProbs.apply(candidate_scores, b, t, k_active, sink, inactive_scale)
+    return _LapSumProbs.apply(
+        candidate_scores, b, t, k_active, sink, inactive_scale, project_scale
+    )

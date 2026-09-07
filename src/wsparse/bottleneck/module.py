@@ -100,6 +100,7 @@ class SparseTopKBottleneck(nn.Module):
             surrogate_mode=cfg.surrogate_mode,
             surrogate_grad_scale=cfg.surrogate_grad_scale,
             inactive_grad_scale=cfg.inactive_grad_scale,
+            project_scale_gradient=cfg.project_scale_gradient,
             fixed_temperature=cfg.fixed_temperature,
             temperature_scale_mode=cfg.temperature_scale_mode,
             temperature_solver_tol=cfg.temperature_solver_tol,

@@ -545,6 +545,14 @@ gate never solves a barrier and never reads the temperature at all.
   failure.
 * **Verify sizes and digests after any transfer.** "It looked slow" and "it
   failed" are indistinguishable without a check.
+* **A cloned checkout is not isolated while the venv has an editable install.**
+  `wsparse` is installed with `pip install -e`, so `python -m wsparse.train`
+  run from a patched clone's directory imports the *main* repo's package -- a
+  patched-clone experiment once silently trained unpatched code for 2000 steps.
+  The `analysis/` scripts are immune (they prepend their own `../src`), plain
+  `python -m` is not.  Launch clone code with `PYTHONPATH=<clone>/src` and
+  verify with `python -c "import wsparse; print(wsparse.__file__)"` before
+  trusting the run.
 * `torch.multinomial` raises a **device-side assert** on non-finite logits, so a
   collapsed model crashes in the *sampling* callback rather than in training.
   Read that as a symptom, not the cause.

@@ -111,12 +111,15 @@ heals to dead_frac 0.0. Death is downstream damage.
 
 The scale projection is validated to step 1000; a full 20000-step validation
 run is training as `uk_rout_soft_k32_j480_md_scaleproj` (patched clone at
-`/workspace/exp/ws_scaleproj` on the uk box; patch inlined below). Options,
-deliberately not applied to `main` yet:
+`/workspace/exp/ws_scaleproj` on the uk box; patch inlined below). Options:
 
-1. **Adopt the projection** in `_LapSumProbs.backward`, gated on
-   `temperature_scale_mode == "relative"` (pass a flag from the gate). Under
-   absolute mode the scale component is genuine and must be kept.
+1. **Adopt the projection** -- now implemented on `main` as
+   `activation_bottleneck.project_scale_gradient` (default `false`; requires
+   `temperature_scale_mode="relative"`, and is rejected under absolute mode,
+   where the scale component is genuine and must be kept). The projection runs
+   inside `_LapSumProbs.backward`, before the `inactive_grad_scale`
+   reweighting, adds ~6 elementwise band passes and no allocations, and
+   measured +0.4% step time (within noise).
 2. **Prefer absolute mode** for soft runs (the `_abs` sweep shows it trains
    well at every j tried, including j=480 and k=64/j=448 which collapse under
    relative).
@@ -127,7 +130,7 @@ phantom (the dc `j128` late-training activation amplification studied in
 the tail 14.7× — is the same mechanism at a lower dose; this investigation
 supplies the causal root it lacked).
 
-The experiment patch (clone only):
+The core of the patch (shipped form is flag-gated with a guarded denominator):
 
 ```python
 # in _LapSumProbs.backward, after grad_scores = kappa * (grad_p - shared):
@@ -138,5 +141,16 @@ grad_scores = grad_scores - v * (grad_scores * v).sum(-1, keepdim=True)
 
 Reproductions of the unstable run vary in blow-up timing (nondeterministic
 kernels; same seed): the original probe hit 2.2e10 by step 1000, the phantom
-reproduction 3.4e13 by 650, the gain-probe arm 2.0e15 by 1000. Every relative
-reproduction diverges; both interventions and the absolute twin never do.
+reproduction 3.4e13 by 650, the gain-probe arm 2.0e15 by 1000 -- and a
+mislaunched full-length rerun became an accidental fourth: launched from the
+patched clone with `python -m wsparse.train`, it silently imported the
+editable-installed *main* package (unpatched) and went NaN by step 2000 right
+on schedule. Every relative reproduction diverges; both interventions and the
+absolute twin never do. The proper full-length validation trains from `main`
+with the shipped flag:
+
+```bash
+python -m wsparse.train --config /workspace/runs/uk_rout_soft_k32_j480_md/config.json \
+    activation_bottleneck.project_scale_gradient=true \
+    train.run_name=uk_rout_soft_k32_j480_md_scaleproj
+```

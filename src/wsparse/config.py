@@ -599,6 +599,13 @@ class ActivationBottleneckConfig:
     # an implicit gradient through t(r) is not implemented; the solved
     # temperature is a detached bandwidth choice (spec section 20)
     differentiate_temperature: bool = False
+    # Remove the surrogate VJP's component along the score direction.  Under
+    # temperature_scale_mode="relative" the soft mask is exactly invariant to a
+    # common rescaling of a row's scores, so that component is a phantom the
+    # forward can never realize -- descending along it inflates activations
+    # (docs/relative-temperature-divergence.md).  Requires relative mode: with
+    # an absolute temperature the component is a genuine gradient.
+    project_scale_gradient: bool = False
 
     def __post_init__(self) -> None:
         if not self.enabled:
@@ -677,6 +684,13 @@ class ActivationBottleneckConfig:
             raise ValueError(
                 "differentiate_temperature=true is not implemented: the adaptive "
                 "temperature is a detached bandwidth choice"
+            )
+        if self.project_scale_gradient and self.temperature_scale_mode != "relative":
+            raise ValueError(
+                "project_scale_gradient=true requires temperature_scale_mode="
+                "'relative': with an absolute temperature the soft mask is not "
+                "scale-invariant, so the score-direction gradient component is "
+                "genuine and must be kept"
             )
         # shape rules live with the gate so the module can be built standalone
         from .bottleneck.gate import validate_gate_shapes

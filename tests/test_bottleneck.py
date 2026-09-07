@@ -2191,3 +2191,77 @@ def test_tying_requires_the_dictionary_init_and_rejects_gated():
 def test_unknown_init_mode_is_rejected():
     with pytest.raises(ValueError, match="init_mode"):
         ActivationBottleneckConfig(enabled=True, init_mode="xavier")
+
+
+# --------------------------------------------------------------------------- #
+# project_scale_gradient: the relative-mode phantom removal
+# (docs/relative-temperature-divergence.md)
+# --------------------------------------------------------------------------- #
+
+
+def test_scale_projection_is_exactly_the_score_direction_projection():
+    torch.manual_seed(0)
+    r0 = torch.sort(torch.randn(5, 96, dtype=torch.float64), descending=True,
+                    dim=-1).values
+    t = r0.std(-1)
+    b = lapsum_barrier_sorted(r0, 8, t)
+    u = torch.randn(5, 96, dtype=torch.float64)
+    grads = {}
+    for proj in (False, True):
+        r = r0.clone().requires_grad_(True)
+        p = lapsum_probs(r, b, t, 8, project_scale=proj)
+        (p * u).sum().backward()
+        grads[proj] = r.grad
+    g0, g1 = grads[False], grads[True]
+    # still zero-sum, now also orthogonal to the scores
+    assert g1.sum(-1).abs().max() < 1e-12
+    cos = (g1 * r0).sum(-1).abs() / (g1.norm(dim=-1) * r0.norm(dim=-1))
+    assert cos.max() < 1e-12
+    # and it is exactly the projection of the unmodified VJP, nothing else
+    v = r0 - r0.mean(-1, keepdim=True)
+    v = v / v.norm(dim=-1, keepdim=True)
+    manual = g0 - v * (g0 * v).sum(-1, keepdim=True)
+    assert torch.allclose(g1, manual, atol=1e-12)
+
+
+def test_relative_scale_direction_true_derivative_is_zero():
+    """Rescaling a row rescales std-t and the barrier with it, so the soft mask
+    is invariant along the score direction: the true directional derivative is
+    0.  The projected VJP agrees; the fixed-t VJP carries the phantom."""
+    torch.manual_seed(1)
+    r = torch.sort(torch.randn(3, 64, dtype=torch.float64), descending=True,
+                   dim=-1).values
+    u = torch.randn(3, 64, dtype=torch.float64)
+
+    def p_of(rr):
+        tt = rr.std(-1)
+        return lapsum_probs_at(rr, lapsum_barrier_sorted(rr, 8, tt), tt)
+
+    eps = 1e-6
+    fd = ((p_of(r * (1 + eps)) - p_of(r * (1 - eps))) * u).sum() / (2 * eps)
+    assert fd.abs() < 1e-8
+
+    proj_dot = {}
+    for proj in (False, True):
+        rr = r.clone().requires_grad_(True)
+        t = rr.detach().std(-1)
+        b = lapsum_barrier_sorted(rr.detach(), 8, t)
+        p = lapsum_probs(rr, b, t, 8, project_scale=proj)
+        (p * u).sum().backward()
+        proj_dot[proj] = float((rr.grad * r).sum().abs())
+    assert proj_dot[True] < 1e-12
+    assert proj_dot[False] > 1e3 * max(proj_dot[True], 1e-300)
+
+
+def test_project_scale_gradient_config_and_plumbing():
+    with pytest.raises(ValueError):
+        bottleneck_cfg(project_scale_gradient=True, temperature_scale_mode="absolute")
+    model = tiny_model()
+    cfg = bottleneck_cfg(
+        project_scale_gradient=True, temperature_scale_mode="relative",
+        surrogate_mode="lapsum_scheduled", placement="residual_out",
+        boundary_mode="both_sides", one_sided_weight_mode="true_gradient",
+    )
+    apply_activation_bottleneck(model, cfg, max_steps=10)
+    gates = [blk.residual_out_bottleneck.gate for blk in model.blocks]
+    assert gates and all(g.project_scale_gradient for g in gates)

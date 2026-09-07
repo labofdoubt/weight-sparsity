@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls /usr/local/bin/python* /Applications/*.app 2>/dev/null | head; ls ~/Library/Python 2>/dev/null; find / -maxdepth 4 -name \"torch\" -type d -path \"*site-packages*\" 2>/dev/null | head -5)",
+      "Read(//usr/local/**)",
+      "Bash(find /Users/sergeyalekseev -maxdepth 6 -name torch -type d -path *site-packages*)",
+      "Bash(python3 -c \"import sys; print\\(sys.version\\)\")",
+      "Bash(python3 -c \"import yaml; print\\('yaml ok'\\)\")",
+      "Bash(python3 -m py_compile src/wsparse/*.py src/wsparse/sparsity/*.py)"
+    ]
+  }
+}

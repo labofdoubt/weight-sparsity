@@ -55,6 +55,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         surrogate_mode: str = "lapsum_adaptive",
         surrogate_grad_scale: float = 1.0,
         inactive_grad_scale: float = 1.0,
+        project_scale_gradient: bool = False,
         fixed_temperature: float = 1.0,
         temperature_scale_mode: str = "relative",
         temperature_solver_tol: float = 1e-5,
@@ -112,6 +113,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self.surrogate_mode = surrogate_mode
         self.surrogate_grad_scale = float(surrogate_grad_scale)
         self.inactive_grad_scale = float(inactive_grad_scale)
+        self.project_scale_gradient = bool(project_scale_gradient)
         self.fixed_temperature = float(fixed_temperature)
         self.temperature_scale_mode = temperature_scale_mode
         self.temperature_solver_tol = float(temperature_solver_tol)
@@ -328,6 +330,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         p = lapsum_probs(
             cand - centre, b - centre.squeeze(-1), t, self.k, sink,
             inactive_scale=self.inactive_grad_scale,
+            project_scale=self.project_scale_gradient,
         )
         p_full = (
             torch.zeros_like(scores, dtype=p.dtype)
