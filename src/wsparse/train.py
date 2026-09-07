@@ -367,9 +367,15 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
                 line += (
                     f" | t {bn['bottleneck/temperature']:.3g}"
                     f" | t/std {bn['bottleneck/temperature_rel']:.3g}"
-                    f" | neff {bn['bottleneck/n_eff_realized']:.1f}"
-                    f" | dK {bn['bottleneck/budget_residual']:.1e}"
                 )
+                # LapSum modes calibrate n_eff and solve a barrier; swap_gibbs
+                # has neither and reports the total swap probability instead.
+                if "bottleneck/n_eff_realized" in bn:
+                    line += f" | neff {bn['bottleneck/n_eff_realized']:.1f}"
+                if "bottleneck/budget_residual" in bn:
+                    line += f" | dK {bn['bottleneck/budget_residual']:.1e}"
+                if "bottleneck/swap_R" in bn:
+                    line += f" | R {bn['bottleneck/swap_R']:.3f}"
             elif "bottleneck/score_gap" in bn:  # the hard baseline runs no solver
                 line += f" | gap {bn['bottleneck/score_gap']:.3g}"
             elif bn:
