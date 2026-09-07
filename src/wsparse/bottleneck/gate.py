@@ -15,6 +15,11 @@ outside Top(K+J) gets exactly zero gradient from this module.
 One ``torch.topk`` per call supplies the sorted candidate pool that the hard
 mask, the temperature solve, the barrier solve, the probabilities, the backward
 and the diagnostics all share -- nothing is sorted twice.
+
+``surrogate_mode="swap_gibbs"`` swaps the LapSum relaxation for the local
+one-swap Gibbs model in :mod:`.swap` over the same Top(K+J) pool; it reads its
+effective temperature from the same prescribed path as the scheduled modes and
+touches none of the solvers.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ import torch
 import torch.nn as nn
 
 from .lapsum import lapsum_barrier_sorted, lapsum_budget, lapsum_probs
+from .swap import swap_gibbs_mask, swap_log_rho, swap_weights
 from .temperature import (
     STATUS_OK,
     gradient_count,
@@ -53,6 +59,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         boundary_mode: str = "outside_only",
         one_sided_weight_mode: str = "score_softmax",
         surrogate_mode: str = "lapsum_adaptive",
+        swap_lambda="default",
         surrogate_grad_scale: float = 1.0,
         inactive_grad_scale: float = 1.0,
         project_scale_gradient: bool = False,
@@ -85,11 +92,11 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 "(score_softmax | true_gradient)"
             )
         if surrogate_mode not in (
-            "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed", "hard"
+            "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed", "swap_gibbs", "hard"
         ):
             raise ValueError(
                 f"unknown surrogate_mode: {surrogate_mode!r} "
-                "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed | hard)"
+                "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed | swap_gibbs | hard)"
             )
         if temperature_scale_mode not in ("relative", "absolute"):
             raise ValueError(
@@ -111,6 +118,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self.boundary_mode = boundary_mode
         self.one_sided_weight_mode = one_sided_weight_mode
         self.surrogate_mode = surrogate_mode
+        self.swap_lambda = swap_lambda
+        # log rho for the swap_gibbs surrogate; validated here even when the
+        # mode is different so a bad value fails at construction, not mid-run
+        self.swap_log_rho = swap_log_rho(swap_lambda, max(self.k, 1), max(self.j, 1))
         self.surrogate_grad_scale = float(surrogate_grad_scale)
         self.inactive_grad_scale = float(inactive_grad_scale)
         self.project_scale_gradient = bool(project_scale_gradient)
@@ -316,9 +327,28 @@ class AdaptiveLapSumTopKGate(nn.Module):
 
         cand = cand_scores.to(self.solver_dtype)
         detached = cand.detach()
-        b, t, solver_diag = self.solve(detached)
-
         sink = self._grad_sink if self.log_diagnostics else None
+
+        if self.surrogate_mode == "swap_gibbs":
+            # The one-swap Gibbs surrogate.  No barrier and no solve: the
+            # effective temperature is the same prescribed value the scheduled
+            # LapSum modes use (controller schedule x temperature_scale_mode),
+            # resolved here and saved by the Function so backward reuses this
+            # exact T.  The pool mask is numerically the hard mask, so the
+            # composition below matches the LapSum path bit for bit in forward.
+            t = self.prescribed_temperature(detached)
+            m_pool = swap_gibbs_mask(cand, t, self.k, self.swap_log_rho, sink)
+            m_full = (
+                torch.zeros_like(scores, dtype=m_pool.dtype)
+                .scatter(-1, cand_idx, m_pool)
+                .to(value.dtype)
+            )
+            mask = hard_mask + self.surrogate_grad_scale * (m_full - m_full.detach())
+            if self.log_diagnostics:
+                self._record_swap(detached, t)
+            return value * mask
+
+        b, t, solver_diag = self.solve(detached)
         # Evaluate the probabilities about r_K.  Shifting by a detached constant
         # leaves dz/dr -- and so the whole VJP -- untouched.  Note this is inert
         # for *precision*: (s-c)-(b-c) loses the same mantissa as s-b, since the
@@ -395,6 +425,30 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self._grad_sink.clear()
 
     @torch.no_grad()
+    def _record_swap(self, cand, t) -> None:
+        """Forward diagnostics for the swap_gibbs surrogate.
+
+        ``alpha``/``beta`` are recomputed here under no_grad (O(K+J), only when
+        logging) rather than threaded out of the autograd Function.  ``swap_R``
+        is the total probability the surrogate puts off the current support --
+        the quantity ``swap_lambda`` bounds.
+        """
+        k = self.k
+        _, _, r = swap_weights(cand, t, k, self.swap_log_rho)
+        std = cand.std(-1).clamp_min(torch.finfo(cand.dtype).tiny)
+        d = {
+            "temperature": t.mean(),
+            "temperature_rel": (t / std).mean(),
+            "temperature_scheduled": self.scheduled_temperature,
+            "swap_R": r.mean(),
+            "swap_R_median": r.median(),
+            "swap_R_max": r.max(),
+            "score_gap": (cand[..., k - 1] - cand[..., k]).mean(),
+            "score_span": (cand[..., k - 1] - cand[..., -1]).mean(),
+        }
+        self._forward_diag = {key: value.detach() for key, value in d.items()}
+
+    @torch.no_grad()
     def _record(self, cand, b, t, p, solver_diag) -> None:
         k = self.k
         gap = cand[..., k - 1] - cand[..., k]
@@ -469,7 +523,12 @@ class AdaptiveLapSumTopKGate(nn.Module):
             f"surrogate={self.surrogate_mode}"
             + (
                 f", t_scale={self.temperature_scale_mode}"
-                if self.surrogate_mode in ("lapsum_scheduled", "lapsum_fixed")
+                if self.surrogate_mode in ("lapsum_scheduled", "lapsum_fixed", "swap_gibbs")
+                else ""
+            )
+            + (
+                f", swap_lambda={self.swap_lambda}"
+                if self.surrogate_mode == "swap_gibbs"
                 else ""
             )
         )
@@ -512,6 +571,10 @@ def validate_gate_shapes(
         raise ValueError(
             f"require k + j <= n_features, got k={k}, j={j}, n_features={n_features}"
         )
+    if surrogate_mode == "swap_gibbs":
+        # same pool geometry as the LapSum modes, but n_eff is inert: the swap
+        # surrogate has no effective-count calibration to aim it at
+        return
     if boundary_mode == "outside_only":
         if not 1.0 < n_eff < j:
             raise ValueError(

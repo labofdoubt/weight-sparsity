@@ -514,8 +514,21 @@ class ActivationBottleneckConfig:
     # lapsum_adaptive   -> solve t from n_eff every step (the experiment)
     # lapsum_scheduled  -> t follows temperature_schedule from _start to _end
     # lapsum_fixed      -> baseline: constant absolute fixed_temperature, no solve
+    # swap_gibbs        -> exact hard forward; backward models all K*J one-swap
+    #                      supports S - a_i + c_j between the K active features
+    #                      and the next J candidates, Gibbs-weighted by
+    #                      exp((s_cj - s_ai) / t).  t comes from the same
+    #                      prescribed path as lapsum_scheduled (schedule x
+    #                      temperature_scale_mode); n_eff and the LapSum solvers
+    #                      are not involved.  O(K+J) -- no K x J tensor exists.
     # hard              -> baseline: plain hard-mask backward, no surrogate
     surrogate_mode: str = "lapsum_adaptive"
+    # swap_gibbs only: prior mass allowed off the current support.  "default"
+    # is rho = 1, the original construction (equivalent to lambda = KJ/(KJ+1));
+    # a numerical 0 <= lambda < 1 bounds the total swap probability R <= lambda
+    # (lambda = 0 turns the surrogate gradient off entirely).  Typed Any so the
+    # sentinel string and a float both round-trip through YAML/CLI.
+    swap_lambda: Any = "default"
     surrogate_grad_scale: float = 1.0
     # Reweights only the gradient reaching the J candidates outside the forward
     # support.  1.0 leaves the exact VJP alone; anything else breaks its
@@ -568,7 +581,7 @@ class ActivationBottleneckConfig:
     calibration_iters: int = 3  # passes; layers are sequential, so rescaling
     #                             one changes what the next one sees  # lapsum_fixed only, always absolute
 
-    # ---- prescribed temperature (surrogate_mode: lapsum_scheduled) --------- #
+    # ---- prescribed temperature (surrogate_mode: lapsum_scheduled, swap_gibbs) #
     # t is held at temperature_start for temperature_warmup_steps, annealed to
     # temperature_end over temperature_anneal_steps, then held there.  Falling
     # (start > end) is the usual direction: a broad boundary gradient early, a
@@ -655,12 +668,28 @@ class ActivationBottleneckConfig:
                 "(score_softmax | true_gradient)"
             )
         if self.surrogate_mode not in (
-            "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed", "hard"
+            "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed", "swap_gibbs", "hard"
         ):
             raise ValueError(
                 f"unknown surrogate_mode: {self.surrogate_mode} "
-                "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed | hard)"
+                "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed | swap_gibbs | hard)"
             )
+        from .bottleneck.swap import swap_log_rho
+
+        # validates swap_lambda ("default" | [0, 1)) whatever the mode, so a
+        # typo fails here rather than lying dormant until the mode is switched
+        swap_log_rho(self.swap_lambda, max(self.k, 1), max(self.j, 1))
+        if self.surrogate_mode == "swap_gibbs":
+            if self.inactive_grad_scale != 1.0:
+                raise ValueError(
+                    "inactive_grad_scale is a LapSum-VJP knob and is not applied "
+                    "by surrogate_mode='swap_gibbs'; leave it at 1.0"
+                )
+            if self.project_scale_gradient:
+                raise ValueError(
+                    "project_scale_gradient is LapSum-specific and is not applied "
+                    "by surrogate_mode='swap_gibbs'"
+                )
         from .schedules import SCHEDULE_KINDS
 
         if self.temperature_schedule not in SCHEDULE_KINDS:
@@ -673,7 +702,8 @@ class ActivationBottleneckConfig:
                 f"unknown temperature_scale_mode: {self.temperature_scale_mode} "
                 "(relative | absolute)"
             )
-        if self.surrogate_mode == "lapsum_scheduled":
+        if self.surrogate_mode in ("lapsum_scheduled", "swap_gibbs"):
+            # both read the prescribed temperature schedule, so both need t > 0
             if self.temperature_start <= 0 or self.temperature_end <= 0:
                 raise ValueError("temperature_start and temperature_end must be positive")
         if self.surrogate_mode == "lapsum_fixed" and self.fixed_temperature <= 0:

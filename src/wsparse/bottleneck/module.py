@@ -98,6 +98,7 @@ class SparseTopKBottleneck(nn.Module):
             boundary_mode=cfg.boundary_mode,
             one_sided_weight_mode=cfg.one_sided_weight_mode,
             surrogate_mode=cfg.surrogate_mode,
+            swap_lambda=cfg.swap_lambda,
             surrogate_grad_scale=cfg.surrogate_grad_scale,
             inactive_grad_scale=cfg.inactive_grad_scale,
             project_scale_gradient=cfg.project_scale_gradient,

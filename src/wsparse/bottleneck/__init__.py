@@ -15,6 +15,7 @@ from .lapsum import (
     laplace_pdf,
 )
 from .module import SparseTopKBottleneck
+from .swap import swap_gibbs_mask, swap_log_rho, swap_probs, swap_weights
 from .temperature import (
     STATUS_ABOVE_RANGE,
     STATUS_BELOW_RANGE,
@@ -46,6 +47,10 @@ __all__ = [
     "lapsum_budget",
     "lapsum_barrier_sorted",
     "lapsum_barrier_bisect",
+    "swap_gibbs_mask",
+    "swap_log_rho",
+    "swap_probs",
+    "swap_weights",
     "effective_count",
     "score_softmax_count",
     "gradient_count",

@@ -267,7 +267,7 @@ class ActivationBottleneckController:
             out[f"bottleneck/{key}"] = sum(values) / len(values)
         if out:
             out["bottleneck/layers"] = float(len(self.layers))
-            if self.cfg.surrogate_mode in ("lapsum_scheduled", "lapsum_fixed"):
+            if self.cfg.surrogate_mode in ("lapsum_scheduled", "lapsum_fixed", "swap_gibbs"):
                 out["bottleneck/temperature_target"] = self._temperature
             out["bottleneck/density"] = self.cfg.k / self.cfg.n_features
             out["bottleneck/candidate_density"] = (
