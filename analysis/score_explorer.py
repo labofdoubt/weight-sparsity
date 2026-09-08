@@ -33,7 +33,9 @@ zero outside Top(K+J)).  Each reports the pool's sign agreement, which is the
 number that answers whether the surrogate drives the pool one way.
 
 Both score-axis views carry the LapSum **barrier** ``b`` and the ``b ± t`` window
-(see :func:`barrier_at`) -- the candidates inside it are the ones whose surrogate
+(for ``swap_gibbs`` there is no barrier: the line is the TopK boundary and
+``± T`` is the scale on which swaps happen -- see :func:`barrier_at`) -- the
+candidates inside it are the ones whose surrogate
 gradient is not saturated away.  It is drawn on whichever axis carries the score,
 so it runs horizontally on view 1 and vertically on view 2.
 
@@ -246,7 +248,14 @@ def run_range(run: str, norm: str, k: int) -> tuple:
 
 @st.cache_data(show_spinner=False)
 def barrier_at(run: str, ci: int, li: int, bi: int, ti: int, k: int, j: int):
-    """``(b, t)`` -- the LapSum barrier and temperature for one cell, or None.
+    """``(center, t, kind, extra)`` for one cell, or None.
+
+    ``kind="barrier"``: the LapSum barrier ``b`` (budget solve).
+    ``kind="boundary"``: swap_gibbs has no barrier -- the meaningful line is the
+    TopK boundary (midpoint of the k-th and (k+1)-th scores) and ``± T`` is the
+    scale on which one-swap Gibbs weights ``exp((s_c - s_a)/T)`` are O(1), i.e.
+    where swaps actually happen; ``extra["R"]`` is the cell's total swap
+    probability.
 
     Reconstructed rather than read back: the gate's ``scheduled_temperature``
     buffer is ``persistent=False``, so it is not in the checkpoint.  Follows
@@ -265,7 +274,8 @@ def barrier_at(run: str, ci: int, li: int, bi: int, ti: int, k: int, j: int):
     _, meta, _ = load_run(run)
     mode = str(meta.get("surrogate_mode", ""))
     tc = meta.get("temperature")
-    if j == 0 or tc is None or mode not in ("lapsum_scheduled", "lapsum_fixed"):
+    if j == 0 or tc is None or mode not in ("lapsum_scheduled", "lapsum_fixed",
+                                            "swap_gibbs"):
         return None
     import torch  # deferred: keeps app start-up off the torch import path
     from wsparse.bottleneck.lapsum import lapsum_barrier_sorted
@@ -286,8 +296,15 @@ def barrier_at(run: str, ci: int, li: int, bi: int, ti: int, k: int, j: int):
     # torch to match the gate bit-for-bit.
     scale = cand.std(-1) if tc["scale_mode"] == "relative" else torch.ones(1)
     t = t_sched * torch.where(scale > 0, scale, torch.ones_like(scale))
+    if mode == "swap_gibbs":
+        from wsparse.bottleneck.swap import swap_log_rho, swap_weights
+
+        centre = float(cand[0, k - 1] + cand[0, k]) / 2.0
+        log_rho = swap_log_rho(meta.get("swap_lambda", "default"), k, j)
+        _, _, r_swap = swap_weights(cand, t, k, log_rho)
+        return centre, float(t[0]), "boundary", {"R": float(r_swap[0])}
     b = lapsum_barrier_sorted(cand, k, t)
-    return float(b[0]), float(t[0])
+    return float(b[0]), float(t[0]), "barrier", None
 
 
 def min_cut_slider(label: str, key: str, lo: float, hi: float, log: bool) -> float:
@@ -904,8 +921,16 @@ if bt is not None:
     # otherwise leave the letter pinned to the bottom edge, pointing at nothing.
     if bt[0] / denom >= sr_min:
         fig.add_annotation(x=0.0, xref="x domain", y=bt[0] / denom, yanchor="bottom",
-                           xanchor="left", text="b", showarrow=False,
+                           xanchor="left",
+                           text="b" if bt[2] == "barrier" else "K|K+1",
+                           showarrow=False,
                            font=dict(size=11, color=BARRIER))
+    if bt[2] == "boundary":
+        st.caption(
+            f"swap window: TopK boundary ± T = {bt[1]:.3g} -- the score scale on "
+            f"which one-swap Gibbs weights are O(1); total swap probability "
+            f"R ≈ {bt[3]['R']:.3f} for this cell "
+            f"(λ = {load_run(run)[1].get('swap_lambda', 'default')})")
 st.plotly_chart(fig, width="stretch", theme=None)
 if bt is None and hard_gate:
     st.caption(

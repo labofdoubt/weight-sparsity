@@ -185,6 +185,7 @@ def main() -> None:
         selection_mode=sel,
         placement=cfg.activation_bottleneck.placement,
         surrogate_mode=cfg.activation_bottleneck.surrogate_mode,
+        swap_lambda=cfg.activation_bottleneck.swap_lambda,
         # Enough of the temperature configuration to reconstruct the LapSum
         # barrier offline.  The gate's own `scheduled_temperature` buffer is
         # registered persistent=False, so it is *not* in the checkpoint -- the
