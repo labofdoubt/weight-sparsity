@@ -77,6 +77,8 @@ def main() -> None:
     ap.add_argument("--soft-cmap", default="Blues")
     ap.add_argument("--title", default="Residual-stream bottleneck: hard TopK vs Top-(K+J)")
     ap.add_argument("--ymax", type=float, default=None)
+    ap.add_argument("--ymin", type=float, default=None)
+    ap.add_argument("--xmin", type=float, default=None)
     ap.add_argument("--legend-size", type=float, default=12.0)
     args = ap.parse_args()
 
@@ -98,6 +100,10 @@ def main() -> None:
     ax.tick_params(labelsize=11)
     if args.ymax:
         ax.set_ylim(top=args.ymax)
+    if args.ymin:
+        ax.set_ylim(bottom=args.ymin)
+    if args.xmin is not None:
+        ax.set_xlim(left=args.xmin)
     ax.grid(alpha=0.25, lw=0.6)
     ax.spines[["top", "right"]].set_visible(False)
     ax.legend(fontsize=args.legend_size, frameon=False, ncol=1, loc="upper right",
