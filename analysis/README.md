@@ -195,7 +195,26 @@ The viewer discovers data by listing its three directories -- `SCORES_DIR`,
   local, set the three env vars to those paths, and
   `streamlit run analysis/score_explorer.py`.
 
-## 8. Surviving instance destruction
+## 8. Half-line evolution GIFs
+
+`halfline_gif.py` animates the viewer's half-line panel for one cell across
+every probe step -- the way to *watch* activations evolve through training
+(and drop into a doc or slide deck):
+
+```bash
+python analysis/halfline_gif.py --run probe_dc_rout_soft_k32_j128 \
+    --layer 4 --seq 0 --token 63 --min-x-log -1.0
+```
+
+Same colours, jitter, rings (vs the previous probe step), k / k+j edges and
+temperature band as the streamlit panel; the x range is frozen across frames so
+motion means training dynamics, not axis rescaling. `--every 2` and the default
+900-ish px width keep a 101-frame GIF inside Google Slides' ~25-megapixel
+all-frames image limit; for slides an MP4 via
+`ffmpeg -framerate 6 -i f%03d.png -c:v libx264 -pix_fmt yuv420p out.mp4`
+(insert as Drive video) has no such limit.
+
+## 9. Surviving instance destruction
 
 `/workspace` is wiped when the instance is destroyed (on this box it is not a
 volume), and the runs backup watchers do **not** cover `/workspace/analysis` --
