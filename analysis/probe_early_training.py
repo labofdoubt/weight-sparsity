@@ -340,6 +340,9 @@ def main() -> None:
             source_run=original, source_config=args.config,
             selection_mode=bn.selection_mode, placement=bn.placement,
             surrogate_mode=bn.surrogate_mode, swap_lambda=bn.swap_lambda,
+            rblapsum_boundary_floor=bn.rblapsum_boundary_floor,
+            rblapsum_temperature=bn.rblapsum_temperature,
+            rblapsum_boundary_grad_mode=bn.rblapsum_boundary_grad_mode,
             n_layers=int(cfg.model.n_layers),
             seed=int(cfg.train.seed), max_steps=int(cfg.train.max_steps),
             temperature=dict(

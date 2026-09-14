@@ -275,7 +275,7 @@ def barrier_at(run: str, ci: int, li: int, bi: int, ti: int, k: int, j: int):
     mode = str(meta.get("surrogate_mode", ""))
     tc = meta.get("temperature")
     if j == 0 or tc is None or mode not in ("lapsum_scheduled", "lapsum_fixed",
-                                            "swap_gibbs"):
+                                            "swap_gibbs", "rblapsum"):
         return None
     import torch  # deferred: keeps app start-up off the torch import path
     from wsparse.bottleneck.lapsum import lapsum_barrier_sorted
@@ -284,6 +284,15 @@ def barrier_at(run: str, ci: int, li: int, bi: int, ti: int, k: int, j: int):
     arr, _, _ = load_run(run)
     r = np.abs(np.asarray(arr[ci, li, bi, ti], dtype=np.float32))
     cand = torch.from_numpy(np.sort(r)[::-1][: k + j].copy()).unsqueeze(0)
+    if mode == "rblapsum":
+        # boundary is the HARD rank: b = max(b0, s_(K+1)); T is a fixed constant
+        # (not score-scaled).  s_(K+1) is candidate index k (0-based, sorted desc).
+        s_k1 = float(cand[0, k]) if k < cand.shape[1] else float(cand[0, -1])
+        b0 = float(meta.get("rblapsum_boundary_floor", 0.0))
+        t_rb = float(meta.get("rblapsum_temperature", 1.0))
+        return max(b0, s_k1), t_rb, "rank_boundary", {
+            "floor": b0, "cap_active": bool(s_k1 > b0),
+            "mode": meta.get("rblapsum_boundary_grad_mode", "detach")}
     if mode == "lapsum_fixed":
         t_sched = float(tc["fixed"])
     else:
@@ -922,9 +931,22 @@ if bt is not None:
     if bt[0] / denom >= sr_min:
         fig.add_annotation(x=0.0, xref="x domain", y=bt[0] / denom, yanchor="bottom",
                            xanchor="left",
-                           text="b" if bt[2] == "barrier" else "K|K+1",
+                           text=("b" if bt[2] == "barrier"
+                                 else ("b0" if bt[2] == "rank_boundary"
+                                       and not bt[3].get("cap_active", True)
+                                       else "K|K+1")),
                            showarrow=False,
                            font=dict(size=11, color=BARRIER))
+    if bt[2] == "rank_boundary":
+        cap = bt[3].get("cap_active", True)
+        st.caption(
+            f"RBLapSum boundary **b = max(b0, s_(K+1))** = {bt[0]:.4g} "
+            f"(± T = {bt[1]:.3g}, a fixed constant) -- "
+            + ("the rank cap binds (b = s_(K+1))" if cap
+               else f"the floor b0 = {bt[3]['floor']:.3g} wins (fewer than k active)")
+            + f"; grad mode = {bt[3].get('mode', 'detach')}. Candidates within "
+            f"the violet band feel the local kernel."
+        )
     if bt[2] == "boundary":
         st.caption(
             f"swap window: TopK boundary ± T = {bt[1]:.3g} -- the score scale on "
@@ -938,7 +960,7 @@ if bt is None and hard_gate:
         "temperature window to draw. The gradient is the hard mask's, and only "
         f"the k={k} edge exists -- the config's j={j_cfg} is inert."
     )
-elif bt is not None:
+elif bt is not None and bt[2] == "barrier":
     st.caption(
         f"Violet band = **b ± t**, the LapSum active-gradient window: "
         f"b = {bt[0]:.4g}, t = {bt[1]:.4g} (raw score units; "
