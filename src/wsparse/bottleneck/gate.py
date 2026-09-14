@@ -67,7 +67,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         jumprelu_theta_init=None,
         jumprelu_count_one_sided: bool = False,
         rblapsum_boundary_grad_mode: str = "detach",
-        rblapsum_boundary_floor: float = 0.0,
+        rblapsum_boundary_floor=None,
         rblapsum_temperature: float = 1.0,
         rblapsum_kernel: str = "exponential",
         surrogate_grad_scale: float = 1.0,
@@ -170,7 +170,12 @@ class AdaptiveLapSumTopKGate(nn.Module):
             )
         self._count_sq = None
         self.rblapsum_boundary_grad_mode = rblapsum_boundary_grad_mode
-        self.rblapsum_boundary_floor = float(rblapsum_boundary_floor)
+        # None -> 0.1 for abs_topk, 0.0 otherwise (config resolves this too, but
+        # a directly-constructed gate should get the same default)
+        self.rblapsum_boundary_floor = (
+            (0.1 if selection_mode == "abs_topk" else 0.0)
+            if rblapsum_boundary_floor is None else float(rblapsum_boundary_floor)
+        )
         self.rblapsum_temperature = float(rblapsum_temperature)
         self.rblapsum_kernel = rblapsum_kernel
         if surrogate_mode == "rblapsum":

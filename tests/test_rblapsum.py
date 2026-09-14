@@ -10,6 +10,7 @@ from wsparse.model import build_model
 
 
 def make_gate(mode="detach", sel="abs_topk", b0=0.0, T=1.0, k=3, j=4, n=16):
+    # b0=None exercises the mode-dependent default; a float pins it
     return AdaptiveLapSumTopKGate(
         n_features=n, k=k, j=j, n_eff=3.0, selection_mode=sel,
         surrogate_mode="rblapsum", rblapsum_boundary_grad_mode=mode,
@@ -247,6 +248,19 @@ def test_controller_diagnostics_and_backward():
                 "bottleneck/rb_support_grad_norm"):
         assert key in stats, key
     assert stats["bottleneck/active_count"] <= 8 + 1e-6
+
+
+def test_boundary_floor_default_is_mode_dependent():
+    # abs_topk -> 0.1, topk -> 0.0, explicit value honored either way
+    assert bn_cfg(selection_mode="abs_topk").rblapsum_boundary_floor == 0.1
+    assert bn_cfg(selection_mode="topk").rblapsum_boundary_floor == 0.0
+    assert bn_cfg(selection_mode="abs_topk",
+                  rblapsum_boundary_floor=0.5).rblapsum_boundary_floor == 0.5
+    assert bn_cfg(selection_mode="abs_topk",
+                  rblapsum_boundary_floor=0.0).rblapsum_boundary_floor == 0.0
+    # the directly-constructed gate resolves the same way
+    assert make_gate(sel="abs_topk", b0=None).rblapsum_boundary_floor == 0.1
+    assert make_gate(sel="topk", b0=None).rblapsum_boundary_floor == 0.0
 
 
 def test_config_validation():
