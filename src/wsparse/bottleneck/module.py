@@ -102,6 +102,7 @@ class SparseTopKBottleneck(nn.Module):
             jumprelu_kernel_width=cfg.jumprelu_kernel_width,
             jumprelu_count_coef=cfg.jumprelu_count_coef,
             jumprelu_theta_init=cfg.jumprelu_theta_init,
+            jumprelu_count_one_sided=cfg.jumprelu_count_one_sided,
             surrogate_grad_scale=cfg.surrogate_grad_scale,
             inactive_grad_scale=cfg.inactive_grad_scale,
             project_scale_gradient=cfg.project_scale_gradient,

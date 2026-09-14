@@ -209,6 +209,53 @@ def test_count_loss_ignores_features_outside_the_pool():
     assert grad[gate.m + 2:].abs().sum().item() == 0.0   # far outside the pool
 
 
+def test_one_sided_count_loss_only_caps():
+    def gate_with(l0_over: bool, one_sided: bool):
+        g = make_gate(n_features=8, k=2, j=3, jumprelu_count_coef=1.0,
+                      jumprelu_kernel_width=5.0,
+                      jumprelu_count_one_sided=one_sided)
+        g.train()
+        if l0_over:      # 4 of 5 pool members active: L0 = 4 > k = 2
+            set_theta(g, [1.0] * 8)
+            a = torch.tensor([[3.0, 2.5, 2.0, 1.5, 0.5, 0.1, 0.05, 0.02]])
+        else:            # none active: L0 = 0 < k = 2
+            set_theta(g, [4.0] * 8)
+            a = torch.tensor([[3.0, 2.5, 2.0, 1.5, 0.5, 0.1, 0.05, 0.02]])
+        g(a.requires_grad_(True))
+        term = g.take_count_loss()
+        return g, term
+
+    # L0 > K: both variants penalize and push thresholds up (negative grad)
+    g, term = gate_with(l0_over=True, one_sided=True)
+    assert float(term) == pytest.approx((4 - 2) ** 2)
+    term.backward()
+    assert float(g.log_theta.grad[:5].sum()) < 0
+
+    # L0 < K: one-sided contributes exactly zero loss and zero theta gradient
+    g, term = gate_with(l0_over=False, one_sided=True)
+    assert float(term) == 0.0
+    term.backward()
+    assert g.log_theta.grad.abs().sum().item() == 0.0
+
+    # ... where the symmetric default recruits (positive grad, thetas fall)
+    g, term = gate_with(l0_over=False, one_sided=False)
+    assert float(term) == pytest.approx((2 - 0) ** 2)
+    term.backward()
+    assert float(g.log_theta.grad.sum()) > 0.0
+
+
+def test_one_sided_mixed_batch_only_over_rows_contribute():
+    g = make_gate(n_features=8, k=2, j=3, jumprelu_count_coef=1.0,
+                  jumprelu_kernel_width=5.0, jumprelu_count_one_sided=True)
+    g.train()
+    set_theta(g, [1.0] * 8)
+    a = torch.tensor([[3.0, 2.5, 2.0, 1.5, 0.5, 0.1, 0.05, 0.02],   # L0 = 4
+                      [0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.02, 0.01]])  # L0 = 0
+    g(a.requires_grad_(True))
+    term = g.take_count_loss()
+    assert float(term) == pytest.approx(((4 - 2) ** 2 + 0.0) / 2)
+
+
 def test_count_loss_steers_l0_toward_k():
     torch.manual_seed(4)
     gate = make_gate(n_features=64, k=8, j=24, jumprelu_count_coef=1.0,

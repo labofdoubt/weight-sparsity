@@ -554,6 +554,12 @@ class ActivationBottleneckConfig:
     # inverse-Mills geometry as init_mode's selection_gain.)  A numeric value
     # skips calibration and fixes the start exactly.
     jumprelu_theta_init: Optional[float] = None
+    # One-sided count loss: penalize only over-activation, relu(L0 - K)^2
+    # instead of (K - L0)^2.  Tokens at or under K contribute zero loss and
+    # zero theta gradient from the count term (relu's dead zone does the
+    # gating, so this costs nothing) -- the count loss becomes a pure L0 cap,
+    # and recruitment below K is left entirely to the task gradient.
+    jumprelu_count_one_sided: bool = False
     surrogate_grad_scale: float = 1.0
     # Reweights only the gradient reaching the J candidates outside the forward
     # support.  1.0 leaves the exact VJP alone; anything else breaks its

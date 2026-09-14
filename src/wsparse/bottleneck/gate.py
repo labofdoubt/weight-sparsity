@@ -64,6 +64,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         jumprelu_kernel_width: float = 0.5,
         jumprelu_count_coef: float = 0.0,
         jumprelu_theta_init=None,
+        jumprelu_count_one_sided: bool = False,
         surrogate_grad_scale: float = 1.0,
         inactive_grad_scale: float = 1.0,
         project_scale_gradient: bool = False,
@@ -130,6 +131,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self.swap_log_rho = swap_log_rho(swap_lambda, max(self.k, 1), max(self.j, 1))
         self.jumprelu_kernel_width = float(jumprelu_kernel_width)
         self.jumprelu_count_coef = float(jumprelu_count_coef)
+        self.jumprelu_count_one_sided = bool(jumprelu_count_one_sided)
         if surrogate_mode == "jumprelu":
             if selection_mode != "abs_topk":
                 raise ValueError(
@@ -446,7 +448,12 @@ class AdaptiveLapSumTopKGate(nn.Module):
             # raw (K - L0)^2 per row, held for the controller; the coefficient
             # is applied by the training loop, mirroring reconstruction_coef
             l0 = jumprelu_count(theta_c, score_c, self.jumprelu_kernel_width)
-            self._count_sq = ((float(self.k) - l0) ** 2).mean()
+            if self.jumprelu_count_one_sided:
+                # relu's dead zone is the flag: rows at or under K contribute
+                # zero loss and zero theta gradient, so the term only caps L0
+                self._count_sq = (torch.relu(l0 - float(self.k)) ** 2).mean()
+            else:
+                self._count_sq = ((float(self.k) - l0) ** 2).mean()
 
         if self.log_diagnostics and self.training:
             with torch.no_grad():
