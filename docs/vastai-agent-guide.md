@@ -99,10 +99,37 @@ rclone rmdir gdrive:weight-sparsity/_selftest
 
 Known quirks:
 
-* The remote currently uses rclone's **shared** `client_id` (the key is present
-  in the config but empty). It works, but rclone warns it is being retired
-  during 2026. Do not claim it is a private quota — checking that the line
-  exists is not the same as checking it has a value.
+* The config should carry a **private `client_id`/`client_secret`** (set up
+  2026-09-15; before that it ran on rclone's shared client_id, which Google
+  throttles aggressively under load — transfer failures like "rateLimitExceeded"
+  and chunk-commit loops — and which rclone is retiring during 2026).  Verify,
+  don't assume: `client_id` must have a **value** — the line being present but
+  empty means the shared default.  If a box shows it empty, the fix is on the
+  user's machine, then re-scp'd:
+
+  1. Google Cloud Console → a project → enable the **Google Drive API** →
+     **OAuth consent screen** (External; add the *working* Drive account as a
+     **test user** if it differs from the project owner) → **Credentials →
+     Create OAuth client ID → Desktop app** → copy id + secret.
+  2. `rclone config update gdrive client_id '<ID>' client_secret '<SECRET>'`
+  3. `rclone config reconnect gdrive:` — **required**: tokens are bound to the
+     client_id that issued them, so the old shared-client token will not work.
+     Say Yes to replacing the token and to the browser flow; **log in as the
+     working Drive account** (the client_id may live under another account);
+     No to "Shared Drive (Team Drive)".  An "Access blocked / app not verified"
+     page means the working account is missing from the consent screen's test
+     users.
+  4. `rclone lsf gdrive:weight-sparsity/` locally, then scp the conf to every
+     box (§2 command) and restart the backup watchers so they pick it up.
+
+  **What this does and does not fix:** the private client_id removes the
+  shared-app API quota (the transfer *errors* and stalls).  It does **not**
+  raise raw bandwidth — that is the box's network path to Google and varies
+  wildly between vast.ai machines (measured: ~60–70 MiB/s on one box, ~4 MiB/s
+  single-stream on another *with* the private client_id).  On a slow box the
+  only lever is parallelism (`--transfers 4` roughly doubled aggregate to
+  ~6 MiB/s); plan big cross-box moves accordingly, or view analysis in place
+  on the box that produced it — every box runs its own viewer.
 * **Google Drive allows duplicate directory names.** `runs_taiwan/` has two
   directories with the same name, one holding the checkpoints and one nearly
   empty. A naive per-directory listing can hit the wrong one and report a run
