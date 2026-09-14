@@ -390,8 +390,11 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
                 if "bottleneck/swap_R" in bn:
                     line += f" | R {bn['bottleneck/swap_R']:.3f}"
             if "bottleneck/active_count" in bn:
-                line += (f" | L0 {bn['bottleneck/active_count']:.1f}"
-                         f" | win {bn['bottleneck/in_window_frac']:.2f}")
+                line += f" | L0 {bn['bottleneck/active_count']:.1f}"
+                if "bottleneck/in_window_frac" in bn:
+                    line += f" | win {bn['bottleneck/in_window_frac']:.2f}"
+                if "bottleneck/rb_cap_active_frac" in bn:
+                    line += f" | cap {bn['bottleneck/rb_cap_active_frac']:.2f}"
             elif "bottleneck/score_gap" in bn:  # the hard baseline runs no solver
                 line += f" | gap {bn['bottleneck/score_gap']:.3g}"
             elif bn:

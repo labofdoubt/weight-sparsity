@@ -560,6 +560,24 @@ class ActivationBottleneckConfig:
     # gating, so this costs nothing) -- the count loss becomes a pure L0 cap,
     # and recruitment below K is left entirely to the task gradient.
     jumprelu_count_one_sided: bool = False
+
+    # ---- rblapsum (surrogate_mode: rblapsum) -------------------------------- #
+    # Rank-Boundary LapSum: LapSum's hard TopK forward, Top(K+J) candidates and
+    # exponential local kernel, but the boundary is the HARD rank b=max(b0,
+    # s_(K+1)) instead of the soft mass constraint sum p_i = K -- an upper cap
+    # of K active features, not exactly K.  No target-count penalty.
+    #   detach        independent local boundary gradients (default)
+    #   project       + remove the common-mode score direction (cap-active only)
+    #   through_rank  differentiate through the (K+1)-st score used as boundary
+    rblapsum_boundary_grad_mode: str = "detach"
+    # b0: a FIXED bottleneck-level activation floor (never data-dependent).  For
+    # abs_topk, b0=0 makes almost every feature eligible, so L0 stays ~K; a
+    # positive b0 is needed to get L0 < K on some tokens.  Strict s > b0.
+    rblapsum_boundary_floor: float = 0.0
+    # CONSTANT kernel temperature -- deliberately not score-scaled, to avoid a
+    # second score-dependent quantity while testing rblapsum.
+    rblapsum_temperature: float = 1.0
+    rblapsum_kernel: str = "exponential"
     surrogate_grad_scale: float = 1.0
     # Reweights only the gradient reaching the J candidates outside the forward
     # support.  1.0 leaves the exact VJP alone; anything else breaks its
@@ -700,12 +718,12 @@ class ActivationBottleneckConfig:
             )
         if self.surrogate_mode not in (
             "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed", "swap_gibbs",
-            "jumprelu", "hard"
+            "jumprelu", "rblapsum", "hard"
         ):
             raise ValueError(
                 f"unknown surrogate_mode: {self.surrogate_mode} "
                 "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed | swap_gibbs "
-                "| jumprelu | hard)"
+                "| jumprelu | rblapsum | hard)"
             )
         from .bottleneck.swap import swap_log_rho
 
@@ -735,6 +753,31 @@ class ActivationBottleneckConfig:
                 f"unknown temperature_scale_mode: {self.temperature_scale_mode} "
                 "(relative | absolute)"
             )
+        if self.surrogate_mode == "rblapsum":
+            if self.selection_mode not in ("topk", "abs_topk"):
+                raise ValueError(
+                    "surrogate_mode='rblapsum' requires selection_mode 'topk' or "
+                    "'abs_topk' (not gated_topk)"
+                )
+            if self.rblapsum_boundary_grad_mode not in ("detach", "project", "through_rank"):
+                raise ValueError(
+                    "rblapsum_boundary_grad_mode must be detach | project | through_rank, "
+                    f"got {self.rblapsum_boundary_grad_mode!r}"
+                )
+            if self.rblapsum_kernel != "exponential":
+                raise ValueError("rblapsum_kernel: only 'exponential' is implemented")
+            if self.rblapsum_temperature <= 0:
+                raise ValueError("rblapsum_temperature must be positive")
+            if self.inactive_grad_scale != 1.0:
+                raise ValueError(
+                    "inactive_grad_scale is a LapSum-VJP knob and is not applied by "
+                    "surrogate_mode='rblapsum'; leave it at 1.0"
+                )
+            if self.project_scale_gradient:
+                raise ValueError(
+                    "project_scale_gradient is LapSum-specific; rblapsum has its own "
+                    "boundary_grad_mode ('project') for common-mode removal"
+                )
         if self.surrogate_mode == "jumprelu":
             if self.selection_mode != "abs_topk":
                 raise ValueError(

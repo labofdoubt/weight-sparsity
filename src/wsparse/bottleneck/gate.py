@@ -32,6 +32,7 @@ import torch.nn as nn
 
 from .lapsum import lapsum_barrier_sorted, lapsum_budget, lapsum_probs
 from .jumprelu import default_log_theta, jumprelu_count, jumprelu_forward
+from .rblapsum import GRAD_MODES, rblapsum_gate
 from .swap import swap_gibbs_mask, swap_log_rho, swap_weights
 from .temperature import (
     STATUS_OK,
@@ -65,6 +66,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
         jumprelu_count_coef: float = 0.0,
         jumprelu_theta_init=None,
         jumprelu_count_one_sided: bool = False,
+        rblapsum_boundary_grad_mode: str = "detach",
+        rblapsum_boundary_floor: float = 0.0,
+        rblapsum_temperature: float = 1.0,
+        rblapsum_kernel: str = "exponential",
         surrogate_grad_scale: float = 1.0,
         inactive_grad_scale: float = 1.0,
         project_scale_gradient: bool = False,
@@ -98,12 +103,12 @@ class AdaptiveLapSumTopKGate(nn.Module):
             )
         if surrogate_mode not in (
             "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed", "swap_gibbs",
-            "jumprelu", "hard"
+            "jumprelu", "rblapsum", "hard"
         ):
             raise ValueError(
                 f"unknown surrogate_mode: {surrogate_mode!r} "
                 "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed | swap_gibbs "
-                "| jumprelu | hard)"
+                "| jumprelu | rblapsum | hard)"
             )
         if temperature_scale_mode not in ("relative", "absolute"):
             raise ValueError(
@@ -164,6 +169,32 @@ class AdaptiveLapSumTopKGate(nn.Module):
                              dtype=torch.uint8),
             )
         self._count_sq = None
+        self.rblapsum_boundary_grad_mode = rblapsum_boundary_grad_mode
+        self.rblapsum_boundary_floor = float(rblapsum_boundary_floor)
+        self.rblapsum_temperature = float(rblapsum_temperature)
+        self.rblapsum_kernel = rblapsum_kernel
+        if surrogate_mode == "rblapsum":
+            if selection_mode not in ("topk", "abs_topk"):
+                raise ValueError(
+                    "surrogate_mode='rblapsum' requires selection_mode "
+                    "'topk' or 'abs_topk' (not gated_topk)"
+                )
+            if rblapsum_boundary_grad_mode not in GRAD_MODES:
+                raise ValueError(
+                    f"unknown rblapsum_boundary_grad_mode: "
+                    f"{rblapsum_boundary_grad_mode!r} ({' | '.join(GRAD_MODES)})"
+                )
+            if rblapsum_kernel != "exponential":
+                raise ValueError(
+                    f"rblapsum_kernel={rblapsum_kernel!r}: only 'exponential' is "
+                    "implemented"
+                )
+            if self.rblapsum_temperature <= 0:
+                raise ValueError("rblapsum_temperature must be positive")
+            # the (K+1)-st score is the rank boundary, so J>=1 (already required
+            # by validate_gate_shapes for every non-hard mode) guarantees it
+            if self.j < 1:
+                raise ValueError("surrogate_mode='rblapsum' needs j >= 1 (the K+1 boundary)")
         self.surrogate_grad_scale = float(surrogate_grad_scale)
         self.inactive_grad_scale = float(inactive_grad_scale)
         self.project_scale_gradient = bool(project_scale_gradient)
@@ -354,6 +385,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
         if self.surrogate_mode == "jumprelu":
             return self._jumprelu(scores, value)
 
+        if self.surrogate_mode == "rblapsum":
+            return self._rblapsum(scores, value)
+
         cand_scores, cand_idx = torch.topk(
             scores, self.m, dim=-1, largest=True, sorted=True
         )
@@ -417,6 +451,54 @@ class AdaptiveLapSumTopKGate(nn.Module):
         if self.log_diagnostics:
             self._record(detached, b, t, p.detach(), solver_diag)
         return value * mask
+
+    # ---- rblapsum ------------------------------------------------------------- #
+    def _rblapsum(self, scores: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+        """Hard TopK forward with the rank-boundary local support gradient.
+
+        ONE Top(K+J) is reused for the candidates, the first-K hard forward and
+        the (K+1)-st rank boundary.  The hard support is ``TopK AND s > b0`` --
+        never more than K, fewer where fewer than K clear the floor -- and the
+        three grad modes share this forward exactly (see :mod:`.rblapsum`).
+        """
+        b0 = self.rblapsum_boundary_floor
+        t = self.rblapsum_temperature
+        cand_scores, cand_idx = torch.topk(scores, self.m, dim=-1, largest=True, sorted=True)
+        value_c = torch.gather(value, -1, cand_idx)          # signed z, carries grad
+        score_c = cand_scores.detach()                       # s = |z| or z, sorted desc
+        b_rank = score_c[..., self.k:self.k + 1]             # the (K+1)-st score
+        cap_active = b_rank > b0                             # rank cap binds?
+        b = torch.clamp(b_rank, min=b0)                      # b = max(b0, b_rank)
+        # active = TopK AND s > b0, using TopK's own tie-breaking (position < k)
+        active_c = torch.zeros_like(score_c)
+        active_c[..., :self.k] = (score_c[..., :self.k] > b0).to(score_c.dtype)
+        sign_c = (value_c.sign() if self.selection_mode == "abs_topk"
+                  else torch.ones_like(value_c))
+
+        sink = self._grad_sink if self.log_diagnostics and self.training else None
+        y_c = rblapsum_gate(value_c, active_c, score_c, sign_c, b, t,
+                            self.rblapsum_boundary_grad_mode, self.k, cap_active, sink)
+        y = torch.zeros_like(value).scatter(-1, cand_idx, y_c.to(value.dtype))
+
+        if self.log_diagnostics and self.training:
+            with torch.no_grad():
+                mask_full = torch.zeros_like(scores).scatter(
+                    -1, cand_idx, active_c.to(scores.dtype))
+                self._record_usage(mask_full)
+                self._record_rblapsum(active_c, cap_active, b_rank, b)
+        return y
+
+    @torch.no_grad()
+    def _record_rblapsum(self, active_c, cap_active, b_rank, b) -> None:
+        """Forward diagnostics for rblapsum (hard quantities only)."""
+        d = {
+            "active_count": active_c.sum(-1).mean(),
+            "active_count_max": active_c.sum(-1).max(),
+            "rb_cap_active_frac": cap_active.float().mean(),
+            "rb_b_rank": b_rank.mean(),
+            "rb_boundary": b.mean(),
+        }
+        self._forward_diag = {key: value.detach() for key, value in d.items()}
 
     # ---- jumprelu ------------------------------------------------------------- #
     def _jumprelu(self, scores: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
@@ -691,10 +773,10 @@ def validate_gate_shapes(
         raise ValueError(
             f"require k + j <= n_features, got k={k}, j={j}, n_features={n_features}"
         )
-    if surrogate_mode in ("swap_gibbs", "jumprelu"):
-        # same pool geometry as the LapSum modes, but n_eff is inert: neither
-        # the swap surrogate nor the independent-threshold jumprelu gate has an
-        # effective-count calibration to aim it at
+    if surrogate_mode in ("swap_gibbs", "jumprelu", "rblapsum"):
+        # same pool geometry as the LapSum modes, but n_eff is inert: the swap
+        # surrogate, the jumprelu gate and rblapsum's rank boundary all replace
+        # the effective-count calibration rather than aiming at it
         return
     if boundary_mode == "outside_only":
         if not 1.0 < n_eff < j:

@@ -17,6 +17,8 @@ from .lapsum import (
 from .module import SparseTopKBottleneck
 from .jumprelu import (default_log_theta, jumprelu_count,
                        jumprelu_forward, rect_kernel)
+from .rblapsum import GRAD_MODES as RBLAPSUM_GRAD_MODES
+from .rblapsum import rblapsum_gate
 from .swap import swap_gibbs_mask, swap_log_rho, swap_probs, swap_weights
 from .temperature import (
     STATUS_ABOVE_RANGE,
@@ -49,6 +51,8 @@ __all__ = [
     "lapsum_budget",
     "lapsum_barrier_sorted",
     "lapsum_barrier_bisect",
+    "RBLAPSUM_GRAD_MODES",
+    "rblapsum_gate",
     "default_log_theta",
     "jumprelu_count",
     "jumprelu_forward",
