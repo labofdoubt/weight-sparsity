@@ -170,6 +170,24 @@ class ActivationBottleneckController:
         total = torch.stack(terms).mean()
         return total, {"bottleneck/reconstruction": float(total.detach())}
 
+    def count_loss(self):
+        """Mean raw ``(K - L0)^2`` over the installed jumprelu bottlenecks.
+
+        Same contract as :meth:`reconstruction_loss`: activation-dependent, so
+        it must be collected after each forward and before the matching
+        backward, and the coefficient (``jumprelu_count_coef``) is applied by
+        the caller.  ``(None, {})`` when disabled.
+        """
+        if (not self.enabled or self.cfg.surrogate_mode != "jumprelu"
+                or not self.cfg.jumprelu_count_coef):
+            return None, {}
+        terms = [t for t in (layer.gate.take_count_loss() for _, layer in self.layers)
+                 if t is not None]
+        if not terms:
+            return None, {}
+        total = torch.stack(terms).mean()
+        return total, {"bottleneck/count_loss": float(total.detach())}
+
     # ---- parameters ---------------------------------------------------------- #
     def parameters(self) -> List[nn.Parameter]:
         params: List[nn.Parameter] = []

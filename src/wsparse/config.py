@@ -529,6 +529,31 @@ class ActivationBottleneckConfig:
     # (lambda = 0 turns the surrogate gradient off entirely).  Typed Any so the
     # sentinel string and a float both round-trip through YAML/CLI.
     swap_lambda: Any = "default"
+
+    # ---- jumprelu (surrogate_mode: jumprelu) -------------------------------- #
+    # Independent-threshold JumpReLU gate: every feature owns a trainable
+    # threshold theta_i = exp(log_theta_i); the Top(K+J) pool is ranked by the
+    # margin score - theta; candidates output value * H(margin), everything
+    # else is zero.  The forward is completely hard and does NOT force exactly
+    # K active features -- the count loss below steers L0 toward K.  Boundary
+    # gradients reach ONLY theta, via a rectangular kernel of ONE-SIDED width
+    # jumprelu_kernel_width (window [-T, +T]; the JumpReLU paper's rectangle
+    # on (-1/2, 1/2) makes its one-sided width eps/2 -- here T is one-sided by
+    # definition).  z never receives a kernel/STE term.
+    jumprelu_kernel_width: float = 0.5
+    # lambda_count on the target-K loss lambda * (K - L0)^2, computed from the
+    # HARD active count over the candidate pool and differentiated to theta
+    # only.  0 disables the loss (thresholds then move only via the task term).
+    jumprelu_count_coef: float = 0.0
+    # initial threshold value (theta, not log_theta).  None -> calibrated from
+    # data on the FIRST training forward: every threshold starts at the batch's
+    # median k-th candidate score, i.e. at the boundary the k-th survivor
+    # actually sits at, inside the kernel window where the rectangle can move
+    # it -- whatever this config's score scale is.  (Until that forward the
+    # placeholder is the expected k-th largest |N(0,1)| score, the same
+    # inverse-Mills geometry as init_mode's selection_gain.)  A numeric value
+    # skips calibration and fixes the start exactly.
+    jumprelu_theta_init: Optional[float] = None
     surrogate_grad_scale: float = 1.0
     # Reweights only the gradient reaching the J candidates outside the forward
     # support.  1.0 leaves the exact VJP alone; anything else breaks its
@@ -668,11 +693,13 @@ class ActivationBottleneckConfig:
                 "(score_softmax | true_gradient)"
             )
         if self.surrogate_mode not in (
-            "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed", "swap_gibbs", "hard"
+            "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed", "swap_gibbs",
+            "jumprelu", "hard"
         ):
             raise ValueError(
                 f"unknown surrogate_mode: {self.surrogate_mode} "
-                "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed | swap_gibbs | hard)"
+                "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed | swap_gibbs "
+                "| jumprelu | hard)"
             )
         from .bottleneck.swap import swap_log_rho
 
@@ -702,6 +729,35 @@ class ActivationBottleneckConfig:
                 f"unknown temperature_scale_mode: {self.temperature_scale_mode} "
                 "(relative | absolute)"
             )
+        if self.surrogate_mode == "jumprelu":
+            if self.selection_mode != "abs_topk":
+                raise ValueError(
+                    "surrogate_mode='jumprelu' requires selection_mode='abs_topk': "
+                    "theta = exp(log_theta) is positive by construction, which only "
+                    "matches the non-negative |a| score convention"
+                )
+            if self.inactive_grad_scale != 1.0:
+                raise ValueError(
+                    "inactive_grad_scale is a LapSum-VJP knob and is not applied "
+                    "by surrogate_mode='jumprelu'; leave it at 1.0"
+                )
+            if self.project_scale_gradient:
+                raise ValueError(
+                    "project_scale_gradient is LapSum-specific and is not applied "
+                    "by surrogate_mode='jumprelu'"
+                )
+            if self.jumprelu_kernel_width <= 0:
+                raise ValueError(
+                    "jumprelu_kernel_width must be positive: it is the one-sided "
+                    "width T of the rectangular kernel"
+                )
+            if self.jumprelu_count_coef < 0:
+                raise ValueError("jumprelu_count_coef must be >= 0")
+            if self.jumprelu_theta_init is not None and self.jumprelu_theta_init <= 0:
+                raise ValueError(
+                    "jumprelu_theta_init is a threshold value theta = exp(log_theta) "
+                    "and must be positive (or None for the order-statistic default)"
+                )
         if self.surrogate_mode in ("lapsum_scheduled", "swap_gibbs"):
             # both read the prescribed temperature schedule, so both need t > 0
             if self.temperature_start <= 0 or self.temperature_end <= 0:

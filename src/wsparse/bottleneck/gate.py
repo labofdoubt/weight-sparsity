@@ -31,6 +31,7 @@ import torch
 import torch.nn as nn
 
 from .lapsum import lapsum_barrier_sorted, lapsum_budget, lapsum_probs
+from .jumprelu import default_log_theta, jumprelu_count, jumprelu_forward
 from .swap import swap_gibbs_mask, swap_log_rho, swap_weights
 from .temperature import (
     STATUS_OK,
@@ -60,6 +61,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
         one_sided_weight_mode: str = "score_softmax",
         surrogate_mode: str = "lapsum_adaptive",
         swap_lambda="default",
+        jumprelu_kernel_width: float = 0.5,
+        jumprelu_count_coef: float = 0.0,
+        jumprelu_theta_init=None,
         surrogate_grad_scale: float = 1.0,
         inactive_grad_scale: float = 1.0,
         project_scale_gradient: bool = False,
@@ -92,11 +96,13 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 "(score_softmax | true_gradient)"
             )
         if surrogate_mode not in (
-            "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed", "swap_gibbs", "hard"
+            "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed", "swap_gibbs",
+            "jumprelu", "hard"
         ):
             raise ValueError(
                 f"unknown surrogate_mode: {surrogate_mode!r} "
-                "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed | swap_gibbs | hard)"
+                "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed | swap_gibbs "
+                "| jumprelu | hard)"
             )
         if temperature_scale_mode not in ("relative", "absolute"):
             raise ValueError(
@@ -122,6 +128,40 @@ class AdaptiveLapSumTopKGate(nn.Module):
         # log rho for the swap_gibbs surrogate; validated here even when the
         # mode is different so a bad value fails at construction, not mid-run
         self.swap_log_rho = swap_log_rho(swap_lambda, max(self.k, 1), max(self.j, 1))
+        self.jumprelu_kernel_width = float(jumprelu_kernel_width)
+        self.jumprelu_count_coef = float(jumprelu_count_coef)
+        if surrogate_mode == "jumprelu":
+            if selection_mode != "abs_topk":
+                raise ValueError(
+                    "surrogate_mode='jumprelu' requires selection_mode='abs_topk': "
+                    "thresholds are parameterized as exp(log_theta), which only "
+                    "makes sense against the non-negative |a| score convention"
+                )
+            if self.jumprelu_kernel_width <= 0:
+                raise ValueError("jumprelu_kernel_width must be positive (one-sided width T)")
+            if jumprelu_theta_init is None:
+                theta0 = default_log_theta(self.k, self.n_features)
+            else:
+                if float(jumprelu_theta_init) <= 0:
+                    raise ValueError("jumprelu_theta_init must be positive (theta = exp(log_theta))")
+                theta0 = math.log(float(jumprelu_theta_init))
+            # one trainable threshold per feature; 1-D, so the optimizer's
+            # existing dim<2 grouping already exempts it from weight decay
+            self.log_theta = nn.Parameter(
+                torch.full((self.n_features,), theta0, dtype=torch.float32)
+            )
+            # With jumprelu_theta_init=None the order-statistic value above is
+            # only a placeholder: the first *training* forward re-centres every
+            # threshold at the batch's median k-th candidate score, so training
+            # starts with the boundary where the scores actually are -- inside
+            # the kernel window -- whatever the score scale of this config.
+            # Persistent, so a resumed run never re-calibrates.
+            self.register_buffer(
+                "theta_calibrated",
+                torch.tensor(0 if jumprelu_theta_init is None else 1,
+                             dtype=torch.uint8),
+            )
+        self._count_sq = None
         self.surrogate_grad_scale = float(surrogate_grad_scale)
         self.inactive_grad_scale = float(inactive_grad_scale)
         self.project_scale_gradient = bool(project_scale_gradient)
@@ -309,6 +349,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 self._record_usage(hard_mask)
             return value * hard_mask
 
+        if self.surrogate_mode == "jumprelu":
+            return self._jumprelu(scores, value)
+
         cand_scores, cand_idx = torch.topk(
             scores, self.m, dim=-1, largest=True, sorted=True
         )
@@ -372,6 +415,76 @@ class AdaptiveLapSumTopKGate(nn.Module):
         if self.log_diagnostics:
             self._record(detached, b, t, p.detach(), solver_diag)
         return value * mask
+
+    # ---- jumprelu ------------------------------------------------------------- #
+    def _jumprelu(self, scores: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+        """Hard independent-threshold forward over the Top(K+J) margin pool.
+
+        The pool is ranked by the *margin* ``score - theta`` (how far a feature
+        is from its own boundary), selected on detached values -- nothing
+        differentiates through the topk.  Candidates output ``value * H(m)``;
+        the kernel pseudo-derivative reaches only ``log_theta`` (see
+        :mod:`.jumprelu`).  The same hard forward runs in train and eval.
+        """
+        s_det = scores.detach().to(self.solver_dtype)
+        if self.training and not bool(self.theta_calibrated):
+            with torch.no_grad():
+                kth = s_det.topk(self.k, dim=-1).values[..., -1]
+                boundary = kth.reshape(-1).median().clamp_min(1e-6)
+                self.log_theta.fill_(float(boundary.log()))
+                self.theta_calibrated.fill_(1)
+        theta = self.log_theta.exp()
+        margin_det = s_det - theta.detach().to(self.solver_dtype)
+        _, cand_idx = torch.topk(margin_det, self.m, dim=-1, largest=True, sorted=True)
+        value_c = torch.gather(value, -1, cand_idx).to(self.solver_dtype)
+        score_c = torch.gather(s_det, -1, cand_idx)
+        theta_c = theta.to(self.solver_dtype)[cand_idx]
+        y_c = jumprelu_forward(value_c, theta_c, score_c, self.jumprelu_kernel_width)
+        y = torch.zeros_like(value).scatter(-1, cand_idx, y_c.to(value.dtype))
+
+        if self.training and torch.is_grad_enabled() and self.jumprelu_count_coef:
+            # raw (K - L0)^2 per row, held for the controller; the coefficient
+            # is applied by the training loop, mirroring reconstruction_coef
+            l0 = jumprelu_count(theta_c, score_c, self.jumprelu_kernel_width)
+            self._count_sq = ((float(self.k) - l0) ** 2).mean()
+
+        if self.log_diagnostics and self.training:
+            with torch.no_grad():
+                h_c = (score_c > theta_c).to(scores.dtype)
+                mask_full = torch.zeros_like(scores).scatter(-1, cand_idx, h_c)
+                self._record_usage(mask_full)
+                self._record_jumprelu(score_c, theta_c, h_c)
+        return y
+
+    def take_count_loss(self):
+        """Pop the raw ``(K - L0)^2`` term from the last forward (None if absent)."""
+        term, self._count_sq = self._count_sq, None
+        return term
+
+    @torch.no_grad()
+    def _record_jumprelu(self, score_c, theta_c, h_c) -> None:
+        """Forward diagnostics for jumprelu.
+
+        ``active_count`` is the *hard* per-row L0 (never a kernel-weighted
+        proxy); ``in_window_frac`` is the share of the candidate pool inside
+        the rectangle, i.e. the features whose thresholds can currently move.
+        """
+        l0 = h_c.sum(-1)
+        margin = score_c - theta_c
+        theta = self.log_theta.exp()
+        d = {
+            "active_count": l0.mean(),
+            "active_count_max": l0.max(),
+            "count_sq": ((float(self.k) - l0) ** 2).mean(),
+            "in_window_frac": (margin.abs() < self.jumprelu_kernel_width)
+            .float().mean(),
+            "theta_mean": theta.mean(),
+            "theta_min": theta.min(),
+            "theta_max": theta.max(),
+            "score_gap": margin[..., self.k - 1].mean() if self.k <= margin.shape[-1]
+            else margin[..., -1].mean(),
+        }
+        self._forward_diag = {key: value.detach() for key, value in d.items()}
 
     # ---- diagnostics --------------------------------------------------------- #
     @torch.no_grad()
@@ -571,9 +684,10 @@ def validate_gate_shapes(
         raise ValueError(
             f"require k + j <= n_features, got k={k}, j={j}, n_features={n_features}"
         )
-    if surrogate_mode == "swap_gibbs":
-        # same pool geometry as the LapSum modes, but n_eff is inert: the swap
-        # surrogate has no effective-count calibration to aim it at
+    if surrogate_mode in ("swap_gibbs", "jumprelu"):
+        # same pool geometry as the LapSum modes, but n_eff is inert: neither
+        # the swap surrogate nor the independent-threshold jumprelu gate has an
+        # effective-count calibration to aim it at
         return
     if boundary_mode == "outside_only":
         if not 1.0 < n_eff < j:

@@ -279,6 +279,12 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
         recon_coef = (
             cfg.activation_bottleneck.reconstruction_coef if bottleneck.enabled else 0.0
         )
+        count_logs = {}
+        count_coef = (
+            cfg.activation_bottleneck.jumprelu_count_coef
+            if bottleneck.enabled and cfg.activation_bottleneck.surrogate_mode == "jumprelu"
+            else 0.0
+        )
         for _ in range(accum):
             x, y = train_stream.batch(micro_bs, device)
             with autocast_context(device, dtype):
@@ -292,6 +298,12 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
                 if recon is not None:
                     recon_sum += float(recon.detach())
                     micro = micro + recon_coef * recon
+            if count_coef:
+                # activation-dependent like the reconstruction term: collected
+                # per micro-batch, coefficient applied here, raw value logged
+                count_term, count_logs = bottleneck.count_loss()
+                if count_term is not None:
+                    micro = micro + count_coef * count_term
             scaler.scale(micro / accum).backward()
 
         # sparsity penalty: added once per optimizer step (it does not depend on
@@ -333,6 +345,7 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
             }
             metrics.update(penalty_logs)
             metrics.update(recon_logs)
+            metrics.update(count_logs)
             sp = controller.stats()
             metrics.update(sp)
             bn = bottleneck.stats()
@@ -376,6 +389,9 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
                     line += f" | dK {bn['bottleneck/budget_residual']:.1e}"
                 if "bottleneck/swap_R" in bn:
                     line += f" | R {bn['bottleneck/swap_R']:.3f}"
+            if "bottleneck/active_count" in bn:
+                line += (f" | L0 {bn['bottleneck/active_count']:.1f}"
+                         f" | win {bn['bottleneck/in_window_frac']:.2f}")
             elif "bottleneck/score_gap" in bn:  # the hard baseline runs no solver
                 line += f" | gap {bn['bottleneck/score_gap']:.3g}"
             elif bn:
