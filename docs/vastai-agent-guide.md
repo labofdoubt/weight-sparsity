@@ -49,13 +49,16 @@ source /venv/main/bin/activate
 cd /workspace && git clone https://github.com/labofdoubt/weight-sparsity.git
 cd weight-sparsity
 uv pip install -q transformers datasets tokenizers scikit-learn pandas \
-                  pyarrow matplotlib tensorboard
+                  pyarrow matplotlib tensorboard streamlit plotly pytest
 uv pip install -q -e . --no-deps      # torch is already in the image
 mkdir -p /workspace/{runs,hf_cache,data,plots}
 ```
 
 `benchmark_data/` (the frozen interpretability dataset) comes with the clone —
-it is committed, not downloaded.
+it is committed, not downloaded.  streamlit/plotly are only needed where the
+viewer runs and pytest only for the suite, but a fresh image has none of them
+and the viewer service BACKOFFs confusingly without the first two — cheaper to
+install all three up front.
 
 **Do not install into `/venv/main` casually if training is running there.** A
 dependency resolution can pull a different numpy or torch out from under a live
