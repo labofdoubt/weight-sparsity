@@ -817,7 +817,15 @@ def swap_page() -> None:
             f"axes independently scaled — unbiased pairs only)")
 
     # ---- LapSum gradient alignment -------------------------------------------- #
-    if "lapsum_swap_score" in cell.columns and cell.lapsum_swap_score.notna().any():
+    if not ("lapsum_swap_score" in cell.columns
+            and cell.lapsum_swap_score.notna().any()):
+        st.subheader("LapSum gradient alignment")
+        st.caption("Not available for this checkpoint step yet — the alignment "
+                   "columns are added by the (re)scan/annotation pass, which "
+                   "processes steps in ascending order. Pick an earlier step, "
+                   "or wait for the pass to reach this one (~30 s viewer "
+                   "refresh once it lands).")
+    else:
         st.subheader("LapSum gradient alignment")
         st.caption("Q = g_j^LS − g_i^LS in selection-score space (|z| under "
                    "abs_topk): negative Q means the LapSum support gradient "
