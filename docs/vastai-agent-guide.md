@@ -130,11 +130,16 @@ Known quirks:
   only lever is parallelism (`--transfers 4` roughly doubled aggregate to
   ~6 MiB/s); plan big cross-box moves accordingly, or view analysis in place
   on the box that produced it — every box runs its own viewer.
-* **Google Drive allows duplicate directory names.** `runs_taiwan/` has two
-  directories with the same name, one holding the checkpoints and one nearly
-  empty. A naive per-directory listing can hit the wrong one and report a run
-  as missing when it is not. Count recursively (`rclone lsf -R`), and use
-  `rclone dedupe --dedupe-mode list <path>` when something looks absent.
+* **Google Drive allows duplicate directory names**, and our watchers can
+  CREATE such twins: starting several watchers at the same moment against a
+  prefix that does not exist yet races their first `rclone copy` calls, and
+  Drive lets every racer create the folder (this produced doubled
+  `runs_taiwan/` and later `runs_france/`).  Prevention: `rclone mkdir
+  gdrive:<prefix>` ONCE before starting the watchers.  Cure: run `rclone
+  dedupe --dedupe-mode newest` on the PARENT (dedupe merges duplicate
+  directories inside the path it is given, so pointing it at the duplicate
+  itself does nothing).  When something looks absent, count recursively
+  (`rclone lsf -R`) before concluding it is gone.
 * Use `--drive-chunk-size 128M` for large files. Without it, throughput was
   1.4 MB/s against 10 MB/s with it.
 
@@ -206,6 +211,8 @@ event files waiting behind a 1.4 GB checkpoint upload:
 
 ```bash
 cd /workspace/weight-sparsity
+rclone mkdir gdrive:weight-sparsity/runs_<name>       # BEFORE the watchers: see the
+rclone mkdir gdrive:weight-sparsity/analysis_<name>   # duplicate-directory race in §2
 tmux new-session -d -s backup_tb \
   "bash scripts/backup_watch.sh /workspace/runs gdrive:weight-sparsity/runs_<name> 60"
 tmux new-session -d -s backup_ckpt \
