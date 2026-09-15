@@ -775,22 +775,46 @@ def swap_page() -> None:
     st.subheader("First-order screen vs exact")
     fin = unbiased.dropna(subset=["delta_loss_linearized"])
     if len(fin) > 2:
+        # the two scales differ by orders of magnitude (downstream nonlinearity
+        # amplifies the first-order estimate), so the axes are scaled
+        # INDEPENDENTLY and the reference line is the fitted calibration
+        # y = alpha x through the origin, not y = x.
+        asinh = st.toggle("arcsinh axes (spread heavy tails)", value=False,
+                          key="swp_asinh")
+        xs = fin.delta_loss_linearized.to_numpy()
+        ys = fin.delta_loss_mean.to_numpy()
+        denom = float((xs ** 2).sum())
+        alpha = float((xs * ys).sum() / denom) if denom > 0 else float("nan")
+        if asinh:
+            sx = max(1e-12, float(np.median(np.abs(xs))) or 1e-12)
+            sy = max(1e-12, float(np.median(np.abs(ys))) or 1e-12)
+            px, py = np.arcsinh(xs / sx), np.arcsinh(ys / sy)
+            lx = np.linspace(xs.min(), xs.max(), 200)
+            line_x, line_y = np.arcsinh(lx / sx), np.arcsinh(alpha * lx / sy)
+            xt, yt = "arcsinh(ΔL̂ / median|ΔL̂|)", "arcsinh(ΔL / median|ΔL|)"
+        else:
+            px, py = xs, ys
+            lx = np.linspace(xs.min(), xs.max(), 2)
+            line_x, line_y = lx, alpha * lx
+            xt, yt = "ΔL̂ (first-order)", "ΔL exact"
         fig2 = go.Figure(go.Scattergl(
-            x=fin.delta_loss_linearized, y=fin.delta_loss_mean, mode="markers",
-            marker=dict(size=5, color=fin.source_rank, colorscale="Viridis")))
-        m = float(max(fin.delta_loss_linearized.abs().max(),
-                      fin.delta_loss_mean.abs().max()))
-        fig2.add_trace(go.Scatter(x=[-m, m], y=[-m, m], mode="lines",
-                                  line=dict(color=INK_MUTED, dash="dot"),
-                                  showlegend=False))
-        fig2.add_hline(y=0, line_width=1); fig2.add_vline(x=0, line_width=1)
-        fig2.update_layout(**banner("first-order vs exact", 380, legend=False))
-        fig2.update_xaxes(title="ΔL̂ (first-order)", gridcolor=GRID, zeroline=False)
-        fig2.update_yaxes(title="ΔL exact", gridcolor=GRID, zeroline=False)
+            x=px, y=py, mode="markers",
+            marker=dict(size=5, color=fin.source_rank, colorscale="Viridis",
+                        colorbar=dict(title="source i"))))
+        fig2.add_trace(go.Scatter(x=line_x, y=line_y, mode="lines",
+                                  name=f"y = {alpha:.2f}·x",
+                                  line=dict(color=INK_MUTED, dash="dot")))
+        fig2.add_hline(y=0, line_width=1, line_color=GRID)
+        fig2.add_vline(x=0, line_width=1, line_color=GRID)
+        fig2.update_layout(**banner("first-order vs exact", 380))
+        fig2.update_xaxes(title=xt, gridcolor=GRID, zeroline=False)
+        fig2.update_yaxes(title=yt, gridcolor=GRID, zeroline=False)
         st.plotly_chart(fig2, width="stretch", theme=None)
-        st.caption(f"Pearson {fin.delta_loss_mean.corr(fin.delta_loss_linearized):.3f}, "
-                   f"Spearman {fin.delta_loss_mean.corr(fin.delta_loss_linearized, method='spearman'):.3f} "
-                   f"(unbiased pairs only)")
+        st.caption(
+            f"Pearson {fin.delta_loss_mean.corr(fin.delta_loss_linearized):.3f}, "
+            f"Spearman {fin.delta_loss_mean.corr(fin.delta_loss_linearized, method='spearman'):.3f}, "
+            f"calibration slope α = {alpha:.2f} (exact ≈ α × first-order; "
+            f"axes independently scaled — unbiased pairs only)")
 
     # ---- evolution over training --------------------------------------------- #
     ctx = swap_summary(name, "context")
