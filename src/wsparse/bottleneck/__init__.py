@@ -19,6 +19,9 @@ from .jumprelu import (default_log_theta, jumprelu_count,
                        jumprelu_forward, rect_kernel)
 from .rblapsum import GRAD_MODES as RBLAPSUM_GRAD_MODES
 from .rblapsum import rblapsum_gate
+from .reinforce import (DISTRIBUTIONS as REINFORCE_DISTRIBUTIONS,
+                        conditional_bernoulli_sample, gumbel_pl_sample,
+                        pl_score_from_order, sample_exact_k)
 from .swap import swap_gibbs_mask, swap_log_rho, swap_probs, swap_weights
 from .temperature import (
     STATUS_ABOVE_RANGE,
@@ -52,6 +55,11 @@ __all__ = [
     "lapsum_barrier_sorted",
     "lapsum_barrier_bisect",
     "RBLAPSUM_GRAD_MODES",
+    "REINFORCE_DISTRIBUTIONS",
+    "conditional_bernoulli_sample",
+    "gumbel_pl_sample",
+    "pl_score_from_order",
+    "sample_exact_k",
     "rblapsum_gate",
     "default_log_theta",
     "jumprelu_count",

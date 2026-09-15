@@ -188,6 +188,26 @@ class ActivationBottleneckController:
         total = torch.stack(terms).mean()
         return total, {"bottleneck/count_loss": float(total.detach())}
 
+    def policy_score(self):
+        """Per-token policy-score surrogate summed over the installed gates.
+
+        Shape (batch, tokens); grad w.r.t. the live logits equals
+        ``sum_d d log pi_d(sample_d) / d a`` -- the exact joint score, so the
+        layers are SUMMED, never averaged.  Same collect-after-forward contract
+        as :meth:`reconstruction_loss`; the caller weights it by the detached
+        advantage.  ``None`` when not in reinforce mode or nothing was stored.
+        """
+        if not self.enabled or self.cfg.surrogate_mode != "reinforce_topk":
+            return None
+        terms = [t for t in (layer.gate.take_policy_score() for _, layer in self.layers)
+                 if t is not None]
+        if not terms:
+            return None
+        total = terms[0]
+        for t in terms[1:]:
+            total = total + t
+        return total
+
     # ---- parameters ---------------------------------------------------------- #
     def parameters(self) -> List[nn.Parameter]:
         params: List[nn.Parameter] = []

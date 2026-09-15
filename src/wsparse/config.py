@@ -581,6 +581,34 @@ class ActivationBottleneckConfig:
     # second score-dependent quantity while testing rblapsum.
     rblapsum_temperature: float = 1.0
     rblapsum_kernel: str = "exponential"
+
+    # ---- reinforce_topk (surrogate_mode: reinforce_topk) --------------------- #
+    # Stochastic hard support trained with a REINFORCE / score-function
+    # estimator: deterministic Top(K+J) candidates, an exact-K subset sampled
+    # per token and layer, hard forward y = z * stopgrad(mask), ordinary
+    # gradient to selected values, and the support learned ONLY through
+    # advantage * d log pi(sample)/d a with a = s/T.  Eval uses deterministic
+    # TopK.  Distributions: gumbel_pl (Gumbel-TopK, ordered Plackett-Luce
+    # estimator, O(q+K)) | conditional_bernoulli (exact-K conditional law,
+    # set-symmetric mask-minus-marginal score, O(qK) DP).
+    reinforce_distribution: str = "gumbel_pl"
+    # CONSTANT temperature on the logits a = s / T -- deliberately not derived
+    # from the score scale for the first experiments.  Pick it near the typical
+    # deterministic boundary gap s_(K) - s_(K+1) so ranks K+1..K+J actually
+    # enter the support sometimes.
+    reinforce_temperature: float = 1.0
+    # Advantage baseline, applied in the training loop (the gate cannot know
+    # the loss): batch_loo (leave-one-out over the micro-batch's per-example
+    # losses; needs micro_batch_size > 1) | ema (detached scalar EMA of the
+    # mean loss) | none (raw loss -- debugging reference).
+    reinforce_baseline: str = "batch_loo"
+    reinforce_baseline_ema_decay: float = 0.99
+    # Global coefficient on the policy-gradient term.  Per-example policy
+    # scores are SUMS over tokens/layers (the exact joint score); use this
+    # knob, never a silent sum->mean change, if the scale is wrong.
+    reinforce_coef: float = 1.0
+    # Sample in eval too (diagnostics only; the policy loss stays train-only).
+    reinforce_stochastic_eval: bool = False
     surrogate_grad_scale: float = 1.0
     # Reweights only the gradient reaching the J candidates outside the forward
     # support.  1.0 leaves the exact VJP alone; anything else breaks its
@@ -721,12 +749,12 @@ class ActivationBottleneckConfig:
             )
         if self.surrogate_mode not in (
             "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed", "swap_gibbs",
-            "jumprelu", "rblapsum", "hard"
+            "jumprelu", "rblapsum", "reinforce_topk", "hard"
         ):
             raise ValueError(
                 f"unknown surrogate_mode: {self.surrogate_mode} "
                 "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed | swap_gibbs "
-                "| jumprelu | rblapsum | hard)"
+                "| jumprelu | rblapsum | reinforce_topk | hard)"
             )
         from .bottleneck.swap import swap_log_rho
 
@@ -785,6 +813,36 @@ class ActivationBottleneckConfig:
                 raise ValueError(
                     "project_scale_gradient is LapSum-specific; rblapsum has its own "
                     "boundary_grad_mode ('project') for common-mode removal"
+                )
+        if self.surrogate_mode == "reinforce_topk":
+            if self.selection_mode not in ("topk", "abs_topk"):
+                raise ValueError(
+                    "surrogate_mode='reinforce_topk' requires selection_mode "
+                    "'topk' or 'abs_topk' (not gated_topk)"
+                )
+            if self.reinforce_distribution not in ("gumbel_pl", "conditional_bernoulli"):
+                raise ValueError(
+                    "reinforce_distribution must be gumbel_pl | conditional_bernoulli, "
+                    f"got {self.reinforce_distribution!r}"
+                )
+            if self.reinforce_baseline not in ("batch_loo", "ema", "none"):
+                raise ValueError(
+                    "reinforce_baseline must be batch_loo | ema | none, "
+                    f"got {self.reinforce_baseline!r}"
+                )
+            if self.reinforce_temperature <= 0:
+                raise ValueError("reinforce_temperature must be positive")
+            if not 0.0 < self.reinforce_baseline_ema_decay < 1.0:
+                raise ValueError("reinforce_baseline_ema_decay must be in (0, 1)")
+            if self.inactive_grad_scale != 1.0:
+                raise ValueError(
+                    "inactive_grad_scale is a LapSum-VJP knob and is not applied by "
+                    "surrogate_mode='reinforce_topk'; leave it at 1.0"
+                )
+            if self.project_scale_gradient:
+                raise ValueError(
+                    "project_scale_gradient is LapSum-specific; the REINFORCE score "
+                    "gradients are shift-invariant already (sum to zero)"
                 )
         if self.surrogate_mode == "jumprelu":
             if self.selection_mode != "abs_topk":

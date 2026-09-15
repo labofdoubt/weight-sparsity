@@ -14,6 +14,7 @@ import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
+import torch.nn.functional as F
 
 from .config import Config, config_from_dict, load_config
 from .data import build_streams, load_meta
@@ -259,6 +260,7 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
     best_val = float("inf")
     last_metrics: Dict[str, float] = {}
 
+    rf_ema_baseline: Optional[float] = None  # reinforce EMA baseline, cross-step
     for step in range(start_step, cfg.train.max_steps):
         lr = lr_at(step, cfg.train)
         set_lr(optimizer, lr)
@@ -285,12 +287,57 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
             if bottleneck.enabled and cfg.activation_bottleneck.surrogate_mode == "jumprelu"
             else 0.0
         )
+        rf_logs = {}
+        rf_mode = (bottleneck.enabled
+                   and cfg.activation_bottleneck.surrogate_mode == "reinforce_topk")
+        rf_coef = cfg.activation_bottleneck.reinforce_coef if rf_mode else 0.0
         for _ in range(accum):
             x, y = train_stream.batch(micro_bs, device)
-            with autocast_context(device, dtype):
-                _, ce = model(x, y)
+            if rf_mode:
+                with autocast_context(device, dtype):
+                    logits, _ = model(x)
+                # per-token CE with the model's own fp32 + ignore_index semantics;
+                # per-example means feed the REINFORCE advantage, and invalid
+                # tokens contribute neither loss nor policy score
+                ce_tok = F.cross_entropy(
+                    logits.view(-1, logits.size(-1)).float(), y.reshape(-1),
+                    ignore_index=-100, reduction="none",
+                ).view(y.shape)
+                valid = (y != -100).float()
+                ce = (ce_tok * valid).sum() / valid.sum().clamp_min(1.0)
+                micro = ce
+                policy = bottleneck.policy_score()
+                if policy is not None and rf_coef:
+                    l_ex = ((ce_tok.detach() * valid).sum(-1)
+                            / valid.sum(-1).clamp_min(1.0))          # (B,)
+                    ps_ex = (policy * valid).sum(-1)                  # (B,) joint SUM
+                    base_mode = cfg.activation_bottleneck.reinforce_baseline
+                    bsz = int(l_ex.shape[0])
+                    if base_mode == "batch_loo" and bsz > 1:
+                        baseline = (l_ex.sum() - l_ex) / (bsz - 1)
+                    elif base_mode == "none":
+                        baseline = l_ex.new_zeros(())
+                    else:
+                        # ema (also the batch_loo fallback when B == 1)
+                        rho = cfg.activation_bottleneck.reinforce_baseline_ema_decay
+                        now = float(l_ex.mean())
+                        rf_ema_baseline = (now if rf_ema_baseline is None
+                                           else rho * rf_ema_baseline + (1 - rho) * now)
+                        baseline = l_ex.new_full((), rf_ema_baseline)
+                    advantage = (l_ex - baseline).detach()
+                    rf_loss = (advantage * ps_ex).mean()
+                    micro = micro + rf_coef * rf_loss
+                    rf_logs = {
+                        "bottleneck/rf_advantage_mean": float(advantage.mean()),
+                        "bottleneck/rf_advantage_std": (float(advantage.std())
+                                                        if bsz > 1 else 0.0),
+                        "bottleneck/rf_policy_loss": float(rf_loss.detach()),
+                    }
+            else:
+                with autocast_context(device, dtype):
+                    _, ce = model(x, y)
+                micro = ce
             ce_sum += ce.detach().float().item()
-            micro = ce
             if recon_coef:
                 # activation-dependent, so it belongs to *this* micro-batch and
                 # is accumulated with the same 1/accum weighting as the CE
@@ -346,6 +393,7 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
             metrics.update(penalty_logs)
             metrics.update(recon_logs)
             metrics.update(count_logs)
+            metrics.update(rf_logs)
             sp = controller.stats()
             metrics.update(sp)
             bn = bottleneck.stats()
@@ -389,6 +437,10 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
                     line += f" | dK {bn['bottleneck/budget_residual']:.1e}"
                 if "bottleneck/swap_R" in bn:
                     line += f" | R {bn['bottleneck/swap_R']:.3f}"
+            if "bottleneck/rf_overlap" in bn:
+                line += f" | ov {bn['bottleneck/rf_overlap']:.2f}"
+                if "bottleneck/rf_advantage_std" in metrics:
+                    line += f" | Astd {metrics['bottleneck/rf_advantage_std']:.3f}"
             if "bottleneck/active_count" in bn:
                 line += f" | L0 {bn['bottleneck/active_count']:.1f}"
                 if "bottleneck/in_window_frac" in bn:

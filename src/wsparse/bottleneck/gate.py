@@ -33,6 +33,8 @@ import torch.nn as nn
 from .lapsum import lapsum_barrier_sorted, lapsum_budget, lapsum_probs
 from .jumprelu import default_log_theta, jumprelu_count, jumprelu_forward
 from .rblapsum import GRAD_MODES, rblapsum_gate
+from .reinforce import DISTRIBUTIONS as RF_DISTRIBUTIONS
+from .reinforce import sample_exact_k
 from .swap import swap_gibbs_mask, swap_log_rho, swap_weights
 from .temperature import (
     STATUS_OK,
@@ -70,6 +72,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
         rblapsum_boundary_floor=None,
         rblapsum_temperature: float = 1.0,
         rblapsum_kernel: str = "exponential",
+        reinforce_distribution: str = "gumbel_pl",
+        reinforce_temperature: float = 1.0,
+        reinforce_stochastic_eval: bool = False,
         surrogate_grad_scale: float = 1.0,
         inactive_grad_scale: float = 1.0,
         project_scale_gradient: bool = False,
@@ -103,12 +108,12 @@ class AdaptiveLapSumTopKGate(nn.Module):
             )
         if surrogate_mode not in (
             "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed", "swap_gibbs",
-            "jumprelu", "rblapsum", "hard"
+            "jumprelu", "rblapsum", "reinforce_topk", "hard"
         ):
             raise ValueError(
                 f"unknown surrogate_mode: {surrogate_mode!r} "
                 "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed | swap_gibbs "
-                "| jumprelu | rblapsum | hard)"
+                "| jumprelu | rblapsum | reinforce_topk | hard)"
             )
         if temperature_scale_mode not in ("relative", "absolute"):
             raise ValueError(
@@ -200,6 +205,23 @@ class AdaptiveLapSumTopKGate(nn.Module):
             # by validate_gate_shapes for every non-hard mode) guarantees it
             if self.j < 1:
                 raise ValueError("surrogate_mode='rblapsum' needs j >= 1 (the K+1 boundary)")
+        self.reinforce_distribution = reinforce_distribution
+        self.reinforce_temperature = float(reinforce_temperature)
+        self.reinforce_stochastic_eval = bool(reinforce_stochastic_eval)
+        self._policy_score = None
+        if surrogate_mode == "reinforce_topk":
+            if selection_mode not in ("topk", "abs_topk"):
+                raise ValueError(
+                    "surrogate_mode='reinforce_topk' requires selection_mode "
+                    "'topk' or 'abs_topk' (not gated_topk)"
+                )
+            if reinforce_distribution not in RF_DISTRIBUTIONS:
+                raise ValueError(
+                    f"unknown reinforce_distribution: {reinforce_distribution!r} "
+                    f"({' | '.join(RF_DISTRIBUTIONS)})"
+                )
+            if self.reinforce_temperature <= 0:
+                raise ValueError("reinforce_temperature must be positive")
         self.surrogate_grad_scale = float(surrogate_grad_scale)
         self.inactive_grad_scale = float(inactive_grad_scale)
         self.project_scale_gradient = bool(project_scale_gradient)
@@ -393,6 +415,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
         if self.surrogate_mode == "rblapsum":
             return self._rblapsum(scores, value)
 
+        if self.surrogate_mode == "reinforce_topk":
+            return self._reinforce(scores, value)
+
         cand_scores, cand_idx = torch.topk(
             scores, self.m, dim=-1, largest=True, sorted=True
         )
@@ -503,6 +528,77 @@ class AdaptiveLapSumTopKGate(nn.Module):
             "rb_b_rank": b_rank.mean(),
             "rb_boundary": b.mean(),
         }
+        self._forward_diag = {key: value.detach() for key, value in d.items()}
+
+    # ---- reinforce_topk -------------------------------------------------------- #
+    def _reinforce(self, scores: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+        """Stochastic exact-K hard support with a score-function surrogate.
+
+        Candidates are the deterministic Top(K+J) (indices found on detached
+        scores; membership gets no derivative).  In training an exact-K subset
+        is sampled from the configured distribution; the forward is hard
+        (``y = z * stopgrad(mask)``), the selected values keep their ordinary
+        gradient, and the gate stores the per-token gradient-only surrogate
+
+            local_policy_score = sum_i a_i * stopgrad(score_grad_i),
+
+        whose grad w.r.t. the live logits a = s_c / T is d log pi(sample)/da.
+        The training loop multiplies by the detached advantage (the gate cannot
+        know the loss yet) -- see ``take_policy_score``.  In eval the support
+        is the deterministic TopK (unless reinforce_stochastic_eval).
+        """
+        q = self.m
+        cand_scores, cand_idx = torch.topk(
+            scores.detach(), q, dim=-1, largest=True, sorted=True
+        )
+        stochastic = self.training or self.reinforce_stochastic_eval
+        if not stochastic:
+            hard_mask = torch.zeros_like(scores).scatter(-1, cand_idx[..., : self.k], 1.0)
+            return value * hard_mask
+
+        value_c = torch.gather(value, -1, cand_idx)
+        s_c = torch.gather(scores, -1, cand_idx)          # differentiable (sign chain)
+        a = s_c.float() / self.reinforce_temperature
+        res = sample_exact_k(a, self.k, self.reinforce_distribution)
+        mask_c = res["selected_mask"]                     # detached, exact-K
+        y = torch.zeros_like(value).scatter(
+            -1, cand_idx, value_c * mask_c.to(value.dtype)
+        )
+        if self.training and torch.is_grad_enabled():
+            # gradient-only surrogate: grad_a == d log pi / d a; per-token, kept
+            # for the controller/training loop to weight by the advantage
+            self._policy_score = (a * res["score_grad"]).sum(-1)
+        if self.log_diagnostics and self.training:
+            with torch.no_grad():
+                mask_full = torch.zeros_like(scores).scatter(
+                    -1, cand_idx, mask_c.to(scores.dtype))
+                self._record_usage(mask_full)
+                self._record_reinforce(res, mask_c)
+        return y
+
+    def take_policy_score(self):
+        """Pop the per-token policy-score surrogate from the last forward."""
+        term, self._policy_score = self._policy_score, None
+        return term
+
+    @torch.no_grad()
+    def _record_reinforce(self, res, mask_c) -> None:
+        sg = res["score_grad"]
+        d = {
+            "rf_temperature": torch.tensor(self.reinforce_temperature),
+            "rf_log_prob": res["log_prob"].mean(),
+            "rf_nll_per_selected": -res["log_prob"].mean() / max(1, self.k),
+            # candidates arrive sorted by score, so deterministic TopK is the
+            # first k positions: overlap needs no second topk
+            "rf_overlap": mask_c[..., : self.k].mean() if self.k <= mask_c.shape[-1]
+            else mask_c.mean(),
+            "rf_rankJ_inclusion": mask_c[..., self.k:].mean()
+            if mask_c.shape[-1] > self.k else torch.tensor(0.0),
+            "rf_score_grad_norm": sg.norm(dim=-1).mean(),
+            "rf_score_grad_sum_abs": sg.sum(-1).abs().mean(),
+        }
+        if "mu_sum_error" in res:
+            d["rf_cb_mu_err"] = res["mu_sum_error"]
         self._forward_diag = {key: value.detach() for key, value in d.items()}
 
     # ---- jumprelu ------------------------------------------------------------- #
@@ -778,10 +874,9 @@ def validate_gate_shapes(
         raise ValueError(
             f"require k + j <= n_features, got k={k}, j={j}, n_features={n_features}"
         )
-    if surrogate_mode in ("swap_gibbs", "jumprelu", "rblapsum"):
-        # same pool geometry as the LapSum modes, but n_eff is inert: the swap
-        # surrogate, the jumprelu gate and rblapsum's rank boundary all replace
-        # the effective-count calibration rather than aiming at it
+    if surrogate_mode in ("swap_gibbs", "jumprelu", "rblapsum", "reinforce_topk"):
+        # same pool geometry as the LapSum modes, but n_eff is inert: these
+        # modes replace the effective-count calibration rather than aiming at it
         return
     if boundary_mode == "outside_only":
         if not 1.0 < n_eff < j:
