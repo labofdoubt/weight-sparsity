@@ -167,6 +167,37 @@ def test_through_rank_cap_active_subtracts_sum_at_boundary():
     assert torch.allclose(gz_c, sign_c * g_s, atol=1e-5)
 
 
+def test_through_rank_kappa_distributes_the_correction():
+    g, a, up = cap_active_example()
+    g.rblapsum_boundary_grad_mode = "through_rank_kappa"
+    a_ref, ci, cap = raw_a(g, a, up)
+    assert bool(cap.all())
+    # expected: g_s = a - q * sum(a), q = kappa / sum(kappa) over the pool
+    from wsparse.bottleneck.lapsum import laplace_pdf
+    scores = a.abs()
+    cs, _ = torch.topk(scores, g.m, dim=-1, largest=True, sorted=True)
+    b = torch.clamp(cs[..., g.k:g.k + 1], min=g.rblapsum_boundary_floor)
+    kap = laplace_pdf((cs - b) / g.rblapsum_temperature) / g.rblapsum_temperature
+    q = kap / kap.sum(-1, keepdim=True)
+    g_s = a_ref - q.double() * a_ref.sum(-1, keepdim=True)
+    assert float(g_s.sum(-1).abs().max()) < 1e-5              # still zero-sum
+    gz = z_support_grad(g, a, up)
+    gz_c = torch.gather(gz, -1, ci)
+    sign_c = torch.gather(a, -1, ci).sign()
+    assert torch.allclose(gz_c, (sign_c * g_s).float(), atol=1e-5)
+    # and the boundary feature is NOT a point sink: its correction share is
+    # proportional to its kappa, like everyone else's
+    corr = (a_ref - g_s).abs()
+    share = corr / corr.sum(-1, keepdim=True)
+    qn = q / q.sum(-1, keepdim=True)
+    assert torch.allclose(share.float(), qn.float(), atol=1e-5)
+
+
+def test_through_rank_kappa_common_shift_invariant():
+    d = abs(common_shift_deriv("through_rank_kappa"))
+    assert d < 1e-6
+
+
 def test_through_rank_floor_active_no_correction():
     g = make_gate(mode="through_rank", b0=3.5, k=3, j=4, n=16)
     a = torch.tensor([[6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.5] + [0.1] * 9])

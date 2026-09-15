@@ -27,6 +27,10 @@ score-scaled).  Three boundary-gradient modes differ ONLY in what they do to
     through_rank  g_s = a; g_s[r] -= sum(a)   differentiate through the value of
                                               the (K+1)-st score, r its position
                                               (only where the rank cap binds)
+    through_rank_kappa  g_s = a - q sum(a),   the same zero-sum correction
+                  q = kappa/sum(kappa)        distributed kappa-weighted --
+                                              LapSum's rank-one Jacobian form at
+                                              the rank boundary (cap-active only)
 
 ``project`` and ``through_rank`` both give ``sum_i g_s_i = 0`` when the cap
 binds, so a collective score shift produces no support gradient -- but neither
@@ -45,8 +49,9 @@ import torch
 
 from .lapsum import laplace_pdf
 
-GRAD_MODES = ("detach", "project", "through_rank")
-_MODE_ID = {"detach": 0, "project": 1, "through_rank": 2}
+GRAD_MODES = ("detach", "project", "through_rank", "through_rank_kappa")
+_MODE_ID = {"detach": 0, "project": 1, "through_rank": 2,
+            "through_rank_kappa": 3}
 
 
 class _RBLapSumGate(torch.autograd.Function):
@@ -90,6 +95,17 @@ class _RBLapSumGate(torch.autograd.Function):
             corr = torch.zeros_like(a)
             corr[..., k:k + 1] = torch.where(cap_active, total, torch.zeros_like(total))
             a = a - corr
+        elif mode_id == 3:  # through_rank_kappa: the same zero-sum correction,
+            # distributed kappa-weighted across the pool instead of as a point
+            # mass on the boundary feature.  This is exactly LapSum's rank-one
+            # Jacobian structure (g = a - q * sum(a), q = kappa / sum kappa)
+            # applied at the rank boundary: each member's common mode is removed
+            # IN PROPORTION TO ITS OWN kernel weight, so no feature is left
+            # uncompensated and none becomes a sink.  Cap-active rows only.
+            total = a.sum(-1, keepdim=True)
+            q = kappa / kappa.sum(-1, keepdim=True).clamp_min(
+                torch.finfo(kappa.dtype).tiny)
+            a = torch.where(cap_active, a - q.to(a.dtype) * total, a)
 
         g_s = a
         grad_value = grad_value + sign_c * g_s

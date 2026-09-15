@@ -795,9 +795,11 @@ class ActivationBottleneckConfig:
                     "surrogate_mode='rblapsum' requires selection_mode 'topk' or "
                     "'abs_topk' (not gated_topk)"
                 )
-            if self.rblapsum_boundary_grad_mode not in ("detach", "project", "through_rank"):
+            if self.rblapsum_boundary_grad_mode not in (
+                    "detach", "project", "through_rank", "through_rank_kappa"):
                 raise ValueError(
-                    "rblapsum_boundary_grad_mode must be detach | project | through_rank, "
+                    "rblapsum_boundary_grad_mode must be detach | project | "
+                    "through_rank | through_rank_kappa, "
                     f"got {self.rblapsum_boundary_grad_mode!r}"
                 )
             if self.rblapsum_kernel != "exponential":
