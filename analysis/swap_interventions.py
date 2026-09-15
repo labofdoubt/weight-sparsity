@@ -71,6 +71,7 @@ def scan_model(model, cfg, step, xb, yb, args, store):
         x, y = xb[seq: seq + 1], yb[seq: seq + 1]
         state = eng.capture(x, y)
         eng.capture_gradients(x, y, state)
+        ls_ok = eng.capture_lapsum_gradients(x, y, state, step)
         worst = max(eng.verify_baseline(state, y).values())
         if worst > 1e-4:
             print(f"[swap] WARNING step={step} seq={seq}: baseline restart "
@@ -86,6 +87,10 @@ def scan_model(model, cfg, step, xb, yb, args, store):
                     seed=args.seed, seq_id=seq, value_mode=vmode)
                 res = eng.evaluate(state, li, swaps, y, batch_size=args.batch_size)
                 act, cand = eng.ranks_at(state, li, int(t))
+                q = eng.q_matrix(state, li, int(t)) if ls_ok else None
+                if q is not None:
+                    store["lin"][f"q_s{seq}_l{li}_t{int(t)}"] = q.astype(np.float16)
+                g_ls = state.ls_grad.get(li)
                 for s, r in zip(swaps, res):
                     store["rows"].append(dict(
                         checkpoint_step=step, sequence_id=seq,
@@ -121,10 +126,63 @@ def scan_model(model, cfg, step, xb, yb, args, store):
                         prefix_delta_max_abs=r["prefix_delta_max_abs"],
                         downstream_support_mode="recompute",
                         K=eng.k, J=eng.j,
+                        lapsum_grad_source=(float(g_ls[t, s.source])
+                                            if g_ls is not None else float("nan")),
+                        lapsum_grad_target=(float(g_ls[t, s.target])
+                                            if g_ls is not None else float("nan")),
+                        lapsum_swap_score=(
+                            float(q[s.source_rank - 1, s.target_rank - 1])
+                            if q is not None else float("nan")),
                     ))
                 store["lin"][f"s{seq}_l{li}_t{int(t)}"] = \
                     eng.lin_matrix(state, li, int(t), vmode).astype(np.float16)
         print(f"[swap] step={step} seq={seq}: {len(store['rows'])} rows total")
+
+
+def annotate_lapsum(name_dir, ckpts, xb, yb, args, device):
+    """Join lapsum_{grad_source,grad_target,swap_score} + Q matrices onto an
+    existing dataset's rows, one checkpoint at a time (no new interventions)."""
+    for path in ckpts:
+        step = checkpoint_step(path)
+        rows_path = os.path.join(name_dir, f"rows_step{step}.parquet")
+        if not os.path.exists(rows_path):
+            print(f"[swap] step {step}: no rows file, skipping")
+            continue
+        model, cfg, _ = load_for_inference(path, device=str(device))
+        eng = SwapInterventionEngine(model, cfg, device=str(device))
+        df = pd.read_parquet(rows_path)
+        lin_path = os.path.join(name_dir, f"lin_step{step}.npz")
+        lin = dict(np.load(lin_path)) if os.path.exists(lin_path) else {}
+        gs = np.full(len(df), np.nan); gt = np.full(len(df), np.nan)
+        qq = np.full(len(df), np.nan)
+        for seq in sorted(df.sequence_id.unique()):
+            x, y = xb[seq: seq + 1], yb[seq: seq + 1]
+            state = eng.capture(x, y)
+            if not eng.capture_lapsum_gradients(x, y, state, step):
+                print(f"[swap] step {step}: not a lapsum run, nothing to annotate")
+                return
+            for li in sorted(df.layer_index.unique()):
+                g = state.ls_grad[li]
+                sel = (df.sequence_id == seq) & (df.layer_index == li)
+                idx = df.index[sel]
+                tt = df.token_index[sel].to_numpy()
+                src = df.source_feature_id[sel].to_numpy()
+                tgt = df.target_feature_id[sel].to_numpy()
+                gs[idx] = g[tt, src].cpu().numpy()
+                gt[idx] = g[tt, tgt].cpu().numpy()
+                qq[idx] = gt[idx] - gs[idx]
+                for t in np.unique(tt):
+                    q = eng.q_matrix(state, li, int(t))
+                    if q is not None:
+                        lin[f"q_s{seq}_l{li}_t{int(t)}"] = q.astype(np.float16)
+        df["lapsum_grad_source"] = gs
+        df["lapsum_grad_target"] = gt
+        df["lapsum_swap_score"] = qq
+        df.to_parquet(rows_path)
+        np.savez_compressed(lin_path, **lin)
+        print(f"[swap] step {step}: annotated {len(df)} rows")
+        del model
+        torch.cuda.empty_cache()
 
 
 QS = (0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99)
@@ -154,6 +212,27 @@ def summarize(name_dir: str) -> None:
                 fin.delta_loss_linearized, method="spearman")
             row["lin_mae"] = float((fin.delta_loss_mean
                                     - fin.delta_loss_linearized).abs().mean())
+        if "lapsum_swap_score" in g:
+            ls = g.dropna(subset=["lapsum_swap_score"])
+            row["lapsum_swap_n_pairs"] = len(ls)
+            if len(ls) > 2:
+                qv, dv = ls.lapsum_swap_score, ls.delta_loss_mean
+                row["lapsum_swap_score_std"] = float(qv.std())
+                degenerate = qv.std() < 1e-12 or dv.std() < 1e-12
+                row["lapsum_swap_degenerate"] = bool(degenerate)
+                if not degenerate:
+                    row["lapsum_swap_spearman"] = dv.corr(qv, method="spearman")
+                    row["lapsum_swap_pearson"] = dv.corr(qv)
+                    row["lapsum_swap_sign_agreement"] = float(
+                        (np.sign(qv) == np.sign(dv)).mean())
+                    neg_q = ls[qv < 0]
+                    if len(neg_q):
+                        row["lapsum_swap_beneficial_precision"] = float(
+                            (neg_q.delta_loss_mean < 0).mean())
+                    ben = ls[dv < 0]
+                    if len(ben):
+                        row["lapsum_swap_beneficial_recall"] = float(
+                            (ben.lapsum_swap_score < 0).mean())
         ctx.append(row)
     pd.DataFrame(ctx).to_parquet(os.path.join(name_dir, "context_summary.parquet"))
     src = []
@@ -163,6 +242,12 @@ def summarize(name_dir: str) -> None:
         row.update(n=len(g), median=d.median(), mean=d.mean(), min=d.min(),
                    q05=d.quantile(0.05), q95=d.quantile(0.95),
                    frac_beneficial=float((d < 0).mean()))
+        if "lapsum_swap_score" in g:
+            ls = g.dropna(subset=["lapsum_swap_score"])
+            if len(ls) >= 5 and ls.lapsum_swap_score.std() > 1e-12 \
+                    and ls.delta_loss_mean.std() > 1e-12:
+                row["lapsum_swap_spearman"] = ls.delta_loss_mean.corr(
+                    ls.lapsum_swap_score, method="spearman")
         src.append(row)
     pd.DataFrame(src).to_parquet(os.path.join(name_dir, "source_summary.parquet"))
     print(f"[swap] summaries: {len(ctx)} contexts, {len(src)} source rows")
@@ -197,6 +282,9 @@ def main() -> None:
     ap.add_argument("--layers", default=None,
                     help="comma-separated layer indices to scan (default: all)")
     ap.add_argument("--max-ckpts", type=int, default=None)
+    ap.add_argument("--annotate-lapsum", action="store_true",
+                    help="retrofit lapsum_* columns + Q matrices onto an "
+                         "EXISTING dataset (joins on feature ids; no new swaps)")
     args = ap.parse_args()
 
     if bool(args.ckpt_dir) == bool(args.live_config):
@@ -253,6 +341,11 @@ def main() -> None:
                              int(cfg.data.seq_len), seed=0)
         xb, yb = stream.batch(args.sequences, device,
                               deterministic_offset=args.offset)
+        if args.annotate_lapsum:
+            annotate_lapsum(name_dir, ckpts, xb, yb, args, device)
+            summarize(name_dir)
+            print(f"[swap] annotated {name_dir}")
+            return
         store = make_store(cfg, xb.cpu())
         for path in ckpts:
             step = checkpoint_step(path)

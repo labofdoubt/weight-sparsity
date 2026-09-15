@@ -816,6 +816,66 @@ def swap_page() -> None:
             f"calibration slope α = {alpha:.2f} (exact ≈ α × first-order; "
             f"axes independently scaled — unbiased pairs only)")
 
+    # ---- LapSum gradient alignment -------------------------------------------- #
+    if "lapsum_swap_score" in cell.columns and cell.lapsum_swap_score.notna().any():
+        st.subheader("LapSum gradient alignment")
+        st.caption("Q = g_j^LS − g_i^LS in selection-score space (|z| under "
+                   "abs_topk): negative Q means the LapSum support gradient "
+                   "pushes toward the i→j swap. Alignment = Q and exact ΔL "
+                   "agree in sign/rank. Unbiased pairs only.")
+        ls = unbiased.dropna(subset=["lapsum_swap_score"])
+        srcs = ["all"] + sorted(ls.source_rank.unique().tolist())
+        pick = st.selectbox("Source i (filter)", srcs, key="swp_ls_src")
+        lss = ls if pick == "all" else ls[ls.source_rank == pick]
+        if len(lss) > 2:
+            fq = go.Figure(go.Scattergl(
+                x=lss.lapsum_swap_score, y=lss[metric], mode="markers",
+                marker=dict(size=5, color=lss.source_rank, colorscale="Viridis",
+                            colorbar=dict(title="source i"))))
+            fq.add_hline(y=0, line_width=1, line_color=GRID)
+            fq.add_vline(x=0, line_width=1, line_color=GRID)
+            fq.update_layout(**banner("Q (LapSum swap score) vs exact ΔL — "
+                                      "aligned = lower-left & upper-right", 380,
+                                      legend=False))
+            fq.update_xaxes(title="Q = g_j − g_i (score space)",
+                            gridcolor=GRID, zeroline=False)
+            fq.update_yaxes(title=f"exact {metric}", gridcolor=GRID, zeroline=False)
+            st.plotly_chart(fq, width="stretch", theme=None)
+            qv, dv = lss.lapsum_swap_score, lss[metric]
+            if qv.std() > 1e-12 and dv.std() > 1e-12:
+                neg = lss[qv < 0]
+                st.caption(
+                    f"ρ_LS (Spearman) = **{dv.corr(qv, method='spearman'):.3f}**, "
+                    f"Pearson = {dv.corr(qv):.3f}, "
+                    f"sign agreement = {(np.sign(qv) == np.sign(dv)).mean():.3f}, "
+                    f"P(ΔL<0 | Q<0) = "
+                    f"{(neg[metric] < 0).mean() if len(neg) else float('nan'):.3f}, "
+                    f"n = {len(lss)}")
+            else:
+                st.caption("degenerate: Q or ΔL has ~zero variance here")
+        # side-by-side landscapes with identical indexing
+        try:
+            lin = np.load(os.path.join(SWAPS_DIR, name, f"lin_step{step}.npz"))
+            qmat = lin[f"q_s{seq}_l{layer}_t{token}"].astype(np.float32)
+        except (FileNotFoundError, KeyError):
+            qmat = None
+        if qmat is not None:
+            dmat = np.full((k, j), np.nan)
+            for _, r in cell.iterrows():
+                dmat[int(r.source_rank) - 1, int(r.target_candidate_rank) - 1] = r[metric]
+            cq1, cq2 = st.columns(2)
+            for ccol, m2, ttl in ((cq1, qmat, "Q (LapSum, all pairs)"),
+                                  (cq2, dmat, f"exact {metric} (measured)")):
+                lim2 = float(np.nanmax(np.abs(m2))) or 1.0
+                h2 = go.Figure(go.Heatmap(
+                    z=m2, colorscale="RdBu_r", zmin=-lim2, zmax=lim2,
+                    x=[f"K+{c+1}" for c in range(j)],
+                    y=[f"{r+1}" for r in range(k)], colorbar=dict(title="")))
+                h2.update_layout(**banner(ttl, 360, legend=False))
+                h2.update_yaxes(autorange="reversed")
+                with ccol:
+                    st.plotly_chart(h2, width="stretch", theme=None)
+
     # ---- evolution over training --------------------------------------------- #
     ctx = swap_summary(name, "context")
     if ctx is not None and len(steps) > 1:
@@ -841,6 +901,21 @@ def swap_page() -> None:
         fr.update_xaxes(title="checkpoint step", gridcolor=GRID, zeroline=False)
         fr.update_yaxes(title="fraction ΔL < 0", gridcolor=GRID, zeroline=False)
         st.plotly_chart(fr, width="stretch", theme=None)
+        if "lapsum_swap_spearman" in sel.columns and sel.lapsum_swap_spearman.notna().any():
+            fl = go.Figure()
+            for col, colr in [("lapsum_swap_spearman", INK),
+                              ("lapsum_swap_sign_agreement", BAND_COLOR["topk"]),
+                              ("lapsum_swap_beneficial_precision", BAND_COLOR["cand"])]:
+                if col in sel.columns:
+                    fl.add_trace(go.Scatter(x=sel.checkpoint_step, y=sel[col],
+                                            mode="lines+markers",
+                                            name=col.replace("lapsum_swap_", ""),
+                                            line=dict(color=colr)))
+            fl.add_hline(y=0, line=dict(color=INK_MUTED, width=1))
+            fl.update_layout(**banner("LapSum alignment vs training step", 300))
+            fl.update_xaxes(title="checkpoint step", gridcolor=GRID, zeroline=False)
+            fl.update_yaxes(gridcolor=GRID, zeroline=False)
+            st.plotly_chart(fl, width="stretch", theme=None)
         st.caption("Distributions are over the CURRENT TopK / next-J pair space "
                    "at each checkpoint -- feature identities may change between "
                    "steps (ids are stored for future tracking).")

@@ -69,6 +69,8 @@ class BaselineState:
     value: Dict[int, torch.Tensor]     # layer -> (T, N) pre-gate value z
     ce: torch.Tensor                   # (T,) baseline per-token CE, fp32
     grads: Dict[int, torch.Tensor] = field(default_factory=dict)  # dL/dcode
+    ls_grad: Dict[int, torch.Tensor] = field(default_factory=dict)
+    # ^ LapSum support gradient d~L/ds per feature, score space, (T, N) sparse
 
 
 class SwapInterventionEngine:
@@ -161,6 +163,84 @@ class SwapInterventionEngine:
             for h in hooks:
                 h.remove()
             self.model.train(was_training)
+
+    def set_prescribed_temperature(self, step: int) -> None:
+        """Fill each gate's scheduled_temperature for this checkpoint step.
+
+        The buffer is non-persistent (a pure function of the step), so a loaded
+        checkpoint carries the ctor default -- wrong for scheduled runs.
+        """
+        from .schedules import build_schedule
+        bn = self.cfg.activation_bottleneck
+        if bn.surrogate_mode == "lapsum_fixed":
+            t = float(bn.fixed_temperature)
+        else:
+            t = float(build_schedule(
+                kind=bn.temperature_schedule, start=bn.temperature_start,
+                end=bn.temperature_end, warmup_steps=bn.temperature_warmup_steps,
+                anneal_steps=bn.temperature_anneal_steps, power=bn.temperature_power,
+                max_steps=int(self.cfg.train.max_steps))(step))
+        for li in self.layers:
+            self.mods[li].gate.scheduled_temperature.fill_(t)
+
+    def capture_lapsum_gradients(self, x_ids: torch.Tensor, targets: torch.Tensor,
+                                 state: BaselineState, step: int) -> bool:
+        """LapSum SUPPORT gradient d~L/ds for every pool member, score space.
+
+        Runs one grad-enabled forward in train() mode so surrogate_active() is
+        True and the LapSum VJP applies; the surrogate term is value-zero, so
+        the loss is the same mean CE the swaps difference.  Dropout is forced
+        off, gate diagnostics/usage recording disabled and restored, and
+        gradients come via autograd.grad (parameter .grad untouched).  Returns
+        False (leaving ls_grad empty) for non-LapSum modes.
+        """
+        if not str(self.cfg.activation_bottleneck.surrogate_mode).startswith("lapsum"):
+            return False
+        self.set_prescribed_temperature(step)
+        was_training = self.model.training
+        drops = [(m, m.p) for m in self.model.modules()
+                 if isinstance(m, torch.nn.Dropout)]
+        saved_diag = {li: self.mods[li].gate.log_diagnostics for li in self.layers}
+        caps = {li: {} for li in self.layers}
+        try:
+            for m, _ in drops:
+                m.p = 0.0
+            for li in self.layers:
+                self.mods[li].gate.log_diagnostics = False
+                self.mods[li].gate._score_grad_capture = caps[li]
+            self.model.train()
+            with torch.enable_grad():
+                logits, _ = self.model(x_ids)
+                ce = per_token_ce(logits, targets)
+                loss = ce[targets != -100].mean()
+                loss.backward()          # hooks fire; param grads cleared below
+            self.model.zero_grad(set_to_none=True)
+            for li in self.layers:
+                cap = caps[li]
+                if "grad" not in cap:
+                    return False
+                g_full = torch.zeros_like(state.value[li])
+                g_full.scatter_(-1, cap["idx"][0].to(g_full.device),
+                                cap["grad"][0].float())
+                state.ls_grad[li] = g_full
+            return True
+        finally:
+            for m, pval in drops:
+                m.p = pval
+            for li in self.layers:
+                self.mods[li].gate.log_diagnostics = saved_diag[li]
+                self.mods[li].gate._score_grad_capture = None
+            self.model.train(was_training)
+
+    def q_matrix(self, state: BaselineState, layer: int, token: int) -> Optional[np.ndarray]:
+        """LapSum swap score Q[i, j] = g_j^LS - g_i^LS over the K x J pairs."""
+        g = state.ls_grad.get(layer)
+        if g is None:
+            return None
+        act, cand = self.ranks_at(state, layer, token)
+        gi = g[token, torch.as_tensor(act, device=g.device)].double()
+        gj = g[token, torch.as_tensor(cand, device=g.device)].double()
+        return (gj[None, :] - gi[:, None]).float().cpu().numpy()
 
     # ---- suffix forward ----------------------------------------------------- #
     @torch.no_grad()

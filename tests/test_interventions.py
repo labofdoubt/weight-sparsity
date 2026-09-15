@@ -1,5 +1,7 @@
 """Swap-intervention engine: restart exactness, swap semantics, causality."""
 
+import os
+
 import numpy as np
 import pytest
 import torch
@@ -152,6 +154,120 @@ def test_lin_matrix_matches_build_swap():
     for (i, j) in [(1, 1), (2, 3), (3, 4)]:
         sw = eng.build_swap(state, li, 8, i, j, "screen")
         assert m[i - 1, j - 1] == pytest.approx(sw.lin, rel=1e-5, abs=1e-9)
+
+
+def make_lapsum(sel="abs_topk"):
+    torch.manual_seed(3)
+    model = build_model(ModelConfig(vocab_size=97, max_seq_len=32, n_layers=2,
+                                    d_model=32, n_heads=4))
+    bn = ActivationBottleneckConfig(
+        enabled=True, n_features=16, k=3, j=4, n_eff=3.0, layers="all",
+        surrogate_mode="lapsum_scheduled", selection_mode=sel,
+        temperature_schedule="constant", temperature_start=1.0,
+        temperature_scale_mode="absolute", placement="residual_out", bias=False)
+
+    class TrainCfg:
+        max_steps = 1000
+
+    class Cfg:
+        activation_bottleneck = bn
+        train = TrainCfg
+
+    apply_activation_bottleneck(model, bn, max_steps=1000)
+    model.eval()
+    x = torch.randint(0, 97, (1, 20))
+    y = torch.roll(x, -1, dims=1).clone()
+    eng = SwapInterventionEngine(model, Cfg, device="cpu")
+    state = eng.capture(x, y)
+    return eng, state, x, y
+
+
+def test_lapsum_support_gradient_capture():
+    eng, state, x, y = make_lapsum()
+    ok = eng.capture_lapsum_gradients(x, y, state, step=500)
+    assert ok
+    t = 9
+    for li in eng.layers:
+        g = state.ls_grad[li]
+        assert g.shape == state.value[li].shape
+        act, cand = eng.ranks_at(state, li, t)
+        # the hallmark of the surrogate: INACTIVE candidates get support gradient
+        assert float(g[t, torch.as_tensor(cand)].abs().sum()) > 0
+        # outside the K+J pool: exactly nothing
+        outside = torch.ones(16, dtype=torch.bool)
+        outside[torch.as_tensor(act)] = False
+        outside[torch.as_tensor(cand)] = False
+        assert float(g[t, outside].abs().max()) == 0.0
+    # Q matrix: exact broadcast identity Q[i,j] = g_j - g_i
+    li = eng.layers[0]
+    q = eng.q_matrix(state, li, t)
+    assert q.shape == (eng.k, eng.j)
+    g = state.ls_grad[li]
+    act, cand = eng.ranks_at(state, li, t)
+    for i in (0, 2):
+        for jj in (0, 3):
+            want = float(g[t, int(cand[jj])] - g[t, int(act[i])])
+            assert q[i, jj] == pytest.approx(want, rel=1e-4, abs=1e-8)
+    # forward/eval state restored, no param grads left behind
+    assert not eng.model.training
+    assert all(p.grad is None for p in eng.model.parameters())
+
+
+def test_lapsum_capture_refuses_non_lapsum():
+    eng, state, x, y = make()
+    assert eng.capture_lapsum_gradients(x, y, state, step=100) is False
+    assert not state.ls_grad
+
+
+def test_sign_convention_gradient_descent_direction():
+    # g_j < g_i  =>  Q < 0  =>  descent on s (delta s = -eta g) raises s_j - s_i
+    g_i, g_j, eta = 0.5, -0.2, 0.1
+    q = g_j - g_i
+    assert q < 0
+    ds_j, ds_i = -eta * g_j, -eta * g_i
+    assert (ds_j - ds_i) > 0                      # j rises relative to i
+
+
+def test_alignment_summary_math_on_synthetic_rows(tmp_path):
+    import importlib.util
+    import pandas as pd
+    spec = importlib.util.spec_from_file_location(
+        "swapcli", os.path.join(os.path.dirname(__file__), "..", "analysis",
+                                "swap_interventions.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    rng = np.random.default_rng(0)
+    n = 200
+    q = rng.normal(size=n)
+    base = dict(checkpoint_step=100, sequence_id=0, layer_index=0, token_index=5,
+                K=4, J=8, sample_kind="random")
+    def rows(delta):
+        return pd.DataFrame([dict(base, source_rank=int(i % 4) + 1,
+                                  target_candidate_rank=int(i % 8) + 1,
+                                  delta_loss_mean=float(delta[i]),
+                                  delta_nll_total=float(delta[i]),
+                                  delta_loss_linearized=float("nan"),
+                                  lapsum_swap_score=float(q[i]))
+                             for i in range(n)])
+    d = tmp_path / "ds"; d.mkdir()
+    rows(3.0 * q).to_parquet(d / "rows_step100.parquet")
+    mod.summarize(str(d))
+    ctx = pd.read_parquet(d / "context_summary.parquet").iloc[0]
+    assert ctx.lapsum_swap_spearman == pytest.approx(1.0)
+    assert ctx.lapsum_swap_pearson == pytest.approx(1.0)
+    assert ctx.lapsum_swap_sign_agreement == pytest.approx(1.0)
+    assert ctx.lapsum_swap_beneficial_precision == pytest.approx(1.0)
+    rows(-3.0 * q).to_parquet(d / "rows_step100.parquet")
+    mod.summarize(str(d))
+    ctx = pd.read_parquet(d / "context_summary.parquet").iloc[0]
+    assert ctx.lapsum_swap_spearman == pytest.approx(-1.0)
+    # degenerate Q -> flagged, correlations absent (NaN), never silently 0
+    rows(np.zeros(n) + 1.0).assign(lapsum_swap_score=0.0).to_parquet(
+        d / "rows_step100.parquet")
+    mod.summarize(str(d))
+    ctx = pd.read_parquet(d / "context_summary.parquet").iloc[0]
+    assert bool(ctx.lapsum_swap_degenerate)
+    assert not np.isfinite(ctx.get("lapsum_swap_spearman", float("nan")))
 
 
 def test_non_residual_out_placement_rejected():

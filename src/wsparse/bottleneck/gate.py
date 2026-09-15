@@ -435,6 +435,14 @@ class AdaptiveLapSumTopKGate(nn.Module):
             return value * hard_mask
 
         cand = cand_scores.to(self.solver_dtype)
+        # Optional analysis capture: the LapSum support gradient in SELECTION-
+        # SCORE space (d~L/ds over the K+J pool, |z|-space under abs_topk,
+        # BEFORE the sign chain back to z).  Enabled by assigning a dict to
+        # `_score_grad_capture`; costs nothing when None (the default).
+        if getattr(self, "_score_grad_capture", None) is not None:
+            _cap = self._score_grad_capture
+            _cap["idx"] = cand_idx.detach()
+            cand.register_hook(lambda g, _cap=_cap: _cap.__setitem__("grad", g.detach()))
         detached = cand.detach()
         sink = self._grad_sink if self.log_diagnostics else None
 
