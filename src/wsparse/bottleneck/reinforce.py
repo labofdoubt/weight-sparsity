@@ -64,35 +64,38 @@ def _deterministic_result(a: torch.Tensor, k: int) -> Dict[str, torch.Tensor]:
 
 
 def pl_score_from_order(a: torch.Tensor, order: torch.Tensor):
-    """Analytic ``d log P(order) / d a`` and ``log P(order)`` in O(q + K).
+    """Exact ``d log P(order) / d a`` and ``log P(order)``, fully in log space.
 
     ``a``: (..., q) fp32 logits (already detached).  ``order``: (..., K) the
-    sampled selection order (indices into the candidate axis, first = first
-    chosen).  Exposed separately so tests can compare it against autograd on
-    the sequential-logsumexp definition.
+    sampled selection order (first = first chosen).  Identity:
+
+        d log P / d a_j = 1[j selected] - sum_{t : j available at t} p_t(j),
+
+    with ``p_t = softmax(a over the still-available set)`` -- each term lies in
+    [0, 1], so the result is exactly bounded in [-K, 1] whatever the logit
+    spread.  The O(q+K) running-subtraction recursion (w_j * c_r with linear
+    denominators) is mathematically equivalent but numerically INVALID at
+    small temperatures: with a-spreads of O(100) the weights span e^-400 and
+    the subtractive denominators cancel catastrophically -- observed score
+    entries of -112 against the [-K, 1] bound.  This version is O(qK) (a
+    K-iteration loop of (M, q) logsumexps), which is the same loop count and
+    negligible on GPU.  Exposed separately so tests can compare it against
+    autograd on the sequential-logsumexp definition.
     """
     k = order.shape[-1]
-    m = a.max(dim=-1, keepdim=True).values
-    w = (a - m).exp()                                   # shift-invariant weights
-    w_sel = torch.gather(w, -1, order)                  # (..., k)
     a_sel = torch.gather(a, -1, order)
-    remaining = w.sum(-1, keepdim=True)                 # Z_1
-    cum_inv = torch.zeros_like(remaining)
-    cum_at_sel = torch.zeros_like(w_sel)
+    avail = torch.ones_like(a, dtype=torch.bool)
+    score_grad = torch.zeros_like(a)
     log_prob = torch.zeros(a.shape[:-1], dtype=a.dtype, device=a.device)
-    clipped = False
     for t in range(k):
-        z_t = remaining.clamp_min(_EPS)
-        clipped = clipped or bool((remaining < _EPS).any())
-        cum_inv = cum_inv + 1.0 / z_t
-        cum_at_sel[..., t] = cum_inv.squeeze(-1)
-        log_prob = log_prob + (a_sel[..., t] - m.squeeze(-1)) - z_t.log().squeeze(-1)
-        remaining = remaining - w_sel[..., t : t + 1]
-    horizon = cum_inv.expand_as(w).clone()              # c_K everywhere ...
-    horizon.scatter_(-1, order, cum_at_sel)             # ... c_{r_j} where selected
+        masked = a.masked_fill(~avail, _NEG)
+        logz = masked.logsumexp(-1, keepdim=True)
+        score_grad = score_grad - (masked - logz).exp()   # p_t; 0 where unavailable
+        log_prob = log_prob + a_sel[..., t] - logz.squeeze(-1)
+        avail = avail.scatter(-1, order[..., t : t + 1], False)
     mask = torch.zeros_like(a).scatter(-1, order, 1.0)
-    score_grad = mask - w * horizon
-    return mask, score_grad, log_prob, clipped
+    score_grad = score_grad + mask
+    return mask, score_grad, log_prob, False
 
 
 @torch.no_grad()

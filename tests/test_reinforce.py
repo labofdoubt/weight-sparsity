@@ -206,6 +206,36 @@ def test_gumbel_sampling_matches_pl_probabilities():
         assert got == pytest.approx(want, abs=0.012), (sub, got, want)
 
 
+def test_gumbel_pl_score_stable_at_extreme_logit_spread():
+    # tiny-T regime: spreads of O(400) in logit units.  The score must stay in
+    # its exact bound [-K, 1], sum to ~0, and match autograd -- this is the
+    # regression for the linear-space cancellation that produced entries of
+    # -112 in real training.
+    torch.manual_seed(20)
+    base = torch.sort(torch.rand(6, 64), -1, descending=True).values
+    a = (base * 400.0).requires_grad_(True)
+    res = gumbel_pl_sample(a.detach(), 32)
+    sg = res["score_grad"]
+    assert float(sg.min()) >= -32.0 - 1e-4 and float(sg.max()) <= 1.0 + 1e-4
+    assert float(sg.sum(-1).abs().max()) < 1e-3
+    order = (a.detach() + 0).topk(32, -1).indices        # any fixed order works
+    _, sg2, lp, _ = pl_score_from_order(a.detach(), order)
+    lp_ref = pl_ordered_logprob(a, order)
+    lp_ref.sum().backward()
+    assert torch.allclose(a.grad, sg2, atol=1e-4)
+    assert torch.allclose(lp_ref.detach(), lp, atol=1e-3)
+
+
+def test_cb_stable_at_extreme_logit_spread():
+    torch.manual_seed(21)
+    a = torch.sort(torch.rand(4, 40), -1, descending=True).values * 400.0
+    res = conditional_bernoulli_sample(a, 8)
+    assert torch.all(res["selected_mask"].sum(-1) == 8)
+    assert float(res["mu_sum_error"]) < 1e-3
+    assert float(res["score_grad"].sum(-1).abs().max()) < 1e-3
+    assert float(res["score_grad"].min()) >= -1.0 - 1e-5   # mask - mu in [-1, 1]
+
+
 # --------------------------------------------------------------------------- #
 # I/J/K/L: gate-level gradient routing, sign, forward invariance, eval
 # --------------------------------------------------------------------------- #
