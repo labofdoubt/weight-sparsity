@@ -214,7 +214,33 @@ all-frames image limit; for slides an MP4 via
 `ffmpeg -framerate 6 -i f%03d.png -c:v libx264 -pix_fmt yuv420p out.mp4`
 (insert as Drive video) has no such limit.
 
-## 9. Surviving instance destruction
+## 9. Swap interventions (exact counterfactual support edits)
+
+`swap_interventions.py` measures DeltaL_{i->j}: replace active feature i with
+inactive candidate j (of the next J) at ONE token of ONE bottleneck, resume the
+model exactly from that point (one baseline forward caches per-layer restart
+state; suffix forwards run in batches), and difference unreduced fp32 per-token
+CE.  Negative = the swap improves the loss.  Two modes over the same fixed
+val-batch probe sequences: `--ckpt-dir <run>` walks a checkpoint ladder;
+`--live-config <config>` trains and probes the live model every
+`--probe-every` steps (pure inference + autograd.grad on gate outputs -- the
+run is not perturbed).  Pair selection is hybrid by default: stratified random
+targets per source (seeded WITHOUT the step, so ranks recur across checkpoints)
+plus first-order-screened tail_best/tail_worst pairs, labeled and excluded
+from distribution summaries; K*J <= --exhaustive-threshold auto-upgrades to
+exhaustive.  Output per dataset under analysis/swaps/<name>/: rows_step*.parquet
+(one row per exact swap), lin_step*.npz (full first-order K x J matrices),
+context/source summary parquets, meta.json (token strings, positions, modes).
+The viewer's "Swap interventions" page shows the highlighted sentence, the
+DeltaL histogram + stats, the K x J heatmap (exact cells; toggle to the full
+approximate matrix -- never presented as measurements), per-source and
+target-rank views, first-order-vs-exact scatter with correlations, and quantile
+evolution across checkpoints.  Engine + correctness tests (restart exactness,
+batching, causality, linearization): `src/wsparse/interventions.py`,
+`tests/test_interventions.py`.  Only `placement=residual_out` is supported (the
+bottleneck ends its block, so the suffix restart is exact).
+
+## 10. Surviving instance destruction
 
 `/workspace` is wiped when the instance is destroyed (on this box it is not a
 volume), and the runs backup watchers do **not** cover `/workspace/analysis` --

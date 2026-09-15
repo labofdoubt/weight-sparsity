@@ -60,6 +60,7 @@ import streamlit as st
 SCORES_DIR = os.environ.get("SCORES_DIR", "/workspace/analysis/scores")
 PROBE_DIR = os.environ.get("PROBE_DIR", "/workspace/analysis/probe")
 WNORM_DIR = os.environ.get("WNORM_DIR", "/workspace/analysis/wnorm")
+SWAPS_DIR = os.environ.get("SWAPS_DIR", "/workspace/analysis/swaps")
 
 # A dataset is addressed as "<kind>/<name>" so every cached helper below can go
 # on taking a single string, and st.cache_data keys stay correct across kinds.
@@ -617,18 +618,230 @@ def weight_norm_page():
 
 
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# Swap Interventions page
+# --------------------------------------------------------------------------- #
+@st.cache_data(show_spinner=False, ttl=30)
+def swap_datasets():
+    import glob as _g
+    out = {}
+    for m in sorted(_g.glob(os.path.join(SWAPS_DIR, "*", "meta.json"))):
+        d = os.path.dirname(m)
+        try:
+            out[os.path.basename(d)] = json.load(open(m))
+        except Exception:
+            continue
+    return out
+
+
+@st.cache_data(show_spinner=False, ttl=30)
+def swap_rows(name: str, step: int):
+    import pandas as pd
+    return pd.read_parquet(os.path.join(SWAPS_DIR, name, f"rows_step{step}.parquet"))
+
+
+@st.cache_data(show_spinner=False, ttl=30)
+def swap_summary(name: str, which: str):
+    import pandas as pd
+    p = os.path.join(SWAPS_DIR, name, f"{which}_summary.parquet")
+    return pd.read_parquet(p) if os.path.exists(p) else None
+
+
+@st.cache_data(show_spinner=False, ttl=30)
+def swap_steps(name: str):
+    import glob as _g, re as _re
+    return sorted(int(_re.search(r"rows_step(\d+)\.parquet$", f).group(1))
+                  for f in _g.glob(os.path.join(SWAPS_DIR, name, "rows_step*.parquet")))
+
+
+def swap_page() -> None:
+    import pandas as pd
+    dsets = swap_datasets()
+    if not dsets:
+        st.info(f"No swap-intervention datasets under {SWAPS_DIR}. Produce one with "
+                "`analysis/swap_interventions.py --ckpt-dir <run> --data-dir "
+                "/workspace/data/tinystories` (checkpoint ladder) or `--live-config` "
+                "(early-training probe).")
+        return
+    name = st.sidebar.selectbox("Dataset", sorted(dsets), key="swp_ds")
+    meta = dsets[name]
+    steps = swap_steps(name)
+    step = st.sidebar.select_slider("Checkpoint step", steps, value=steps[-1])
+    df = swap_rows(name, step)
+    seq = st.sidebar.selectbox("Probe sequence", sorted(df.sequence_id.unique()))
+    layer = st.sidebar.selectbox("Bottleneck layer", sorted(df.layer_index.unique()))
+    toks = sorted(df[(df.sequence_id == seq) & (df.layer_index == layer)]
+                  .token_index.unique())
+    strings = meta["sequences"][seq]["token_strings"]
+    token = st.sidebar.selectbox(
+        "Token position", toks,
+        format_func=lambda t: f"{t}: {strings[t]!r}")
+    metric = st.sidebar.radio("Loss metric", ["delta_loss_mean", "delta_nll_total"])
+    filt = st.sidebar.radio("Sample filter",
+                            ["random/exhaustive only", "all measured", "tail only"])
+    cell = df[(df.sequence_id == seq) & (df.layer_index == layer)
+              & (df.token_index == token)]
+    unbiased = cell[cell.sample_kind.isin(["random", "exhaustive"])]
+    shown = {"random/exhaustive only": unbiased,
+             "all measured": cell,
+             "tail only": cell[cell.sample_kind.str.startswith("tail")]}[filt]
+    k, j = int(cell.K.iat[0]), int(cell.J.iat[0])
+
+    # sentence with the intervention token highlighted
+    win = range(max(0, token - 18), min(len(strings), token + 19))
+    html = "".join(
+        (f"<mark style='background:#eb6834;color:white;padding:1px 2px;"
+         f"border-radius:3px'>{strings[t]}</mark>" if t == token else strings[t])
+        for t in win)
+    st.markdown(f"<div style='font-family:serif;font-size:1.05rem'>…{html}…</div>",
+                unsafe_allow_html=True)
+    exh = bool((cell.sample_kind == "exhaustive").any())
+    st.caption(
+        f"{len(cell)} exact swaps measured ({len(unbiased)} unbiased) of "
+        f"{k * j} possible pairs"
+        + (" — exhaustive." if exh else
+           f" — sampled; the histogram estimates the full K×J distribution."))
+
+    d = shown[metric]
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        fig = go.Figure(go.Histogram(x=d, nbinsx=60, marker_color=BAND_COLOR["cand"]))
+        fig.add_vline(x=0.0, line=dict(color=INK, width=2))
+        fig.update_layout(**banner("exact ΔL distribution", 330, legend=False))
+        fig.update_xaxes(title=f"{metric}   (negative = beneficial)",
+                         gridcolor=GRID, zeroline=False)
+        fig.update_yaxes(title="swaps", gridcolor=GRID, zeroline=False)
+        st.plotly_chart(fig, width="stretch", theme=None)
+    with c2:
+        du = unbiased[metric]
+        st.metric("fraction beneficial (ΔL<0)", f"{(du < 0).mean():.3f}")
+        st.write(pd.DataFrame(dict(
+            stat=["median", "q05", "q95", "min", "max"],
+            value=[du.median(), du.quantile(.05), du.quantile(.95),
+                   du.min(), du.max()])).set_index("stat").style.format("{:.5f}"))
+
+    # ---- K x J heatmap ------------------------------------------------------ #
+    st.subheader("K × J swap matrix")
+    show_lin = st.toggle("Show FULL first-order (approximate) matrix instead of "
+                         "measured-exact cells", value=False)
+    if show_lin:
+        lin = np.load(os.path.join(SWAPS_DIR, name, f"lin_step{step}.npz"))
+        mat = lin[f"s{seq}_l{layer}_t{token}"].astype(np.float32)
+        title = "first-order ΔL̂ (ALL pairs — approximation, not measurements)"
+    else:
+        mat = np.full((k, j), np.nan)
+        for _, r in cell.iterrows():
+            mat[int(r.source_rank) - 1, int(r.target_candidate_rank) - 1] = r[metric]
+        title = f"exact {metric} (blank = not measured)"
+    lim = float(np.nanmax(np.abs(mat))) or 1.0
+    hm = go.Figure(go.Heatmap(
+        z=mat, colorscale="RdBu_r", zmin=-lim, zmax=lim,
+        x=[f"K+{c+1}" for c in range(j)], y=[f"{r+1}" for r in range(k)],
+        colorbar=dict(title="ΔL")))
+    hm.update_layout(**banner(title, 420, legend=False))
+    hm.update_xaxes(title="target candidate rank")
+    hm.update_yaxes(title="source rank (active)", autorange="reversed")
+    st.plotly_chart(hm, width="stretch", theme=None)
+
+    # ---- per-source distribution + target-rank scatter ----------------------- #
+    c3, c4 = st.columns(2)
+    with c3:
+        st.subheader("Per-source distribution")
+        fb = go.Figure()
+        fb.add_trace(go.Box(x=shown.source_rank, y=shown[metric],
+                            marker_color=BAND_COLOR["topk"], boxpoints="all",
+                            jitter=0.5, pointpos=0, marker_size=3, line_width=1))
+        fb.add_hline(y=0, line=dict(color=INK_MUTED, width=1))
+        fb.update_layout(**banner("ΔL by source rank", 360, legend=False))
+        fb.update_xaxes(title="source rank i", gridcolor=GRID, zeroline=False)
+        fb.update_yaxes(title=metric, gridcolor=GRID, zeroline=False)
+        st.plotly_chart(fb, width="stretch", theme=None)
+    with c4:
+        st.subheader("Target-rank scatter")
+        fs = go.Figure(go.Scattergl(
+            x=shown.target_candidate_rank, y=shown[metric], mode="markers",
+            marker=dict(size=5, color=shown.source_rank, colorscale="Viridis",
+                        colorbar=dict(title="source i")),
+            text=[f"i={a} -> K+{b} ({c})" for a, b, c in
+                  zip(shown.source_rank, shown.target_candidate_rank,
+                      shown.sample_kind)], hoverinfo="text+y"))
+        fs.add_hline(y=0, line=dict(color=INK_MUTED, width=1))
+        fs.update_layout(**banner("ΔL by target rank", 360, legend=False))
+        fs.update_xaxes(title="target candidate rank", gridcolor=GRID, zeroline=False)
+        fs.update_yaxes(title=metric, gridcolor=GRID, zeroline=False)
+        st.plotly_chart(fs, width="stretch", theme=None)
+
+    # ---- first-order vs exact ------------------------------------------------ #
+    st.subheader("First-order screen vs exact")
+    fin = unbiased.dropna(subset=["delta_loss_linearized"])
+    if len(fin) > 2:
+        fig2 = go.Figure(go.Scattergl(
+            x=fin.delta_loss_linearized, y=fin.delta_loss_mean, mode="markers",
+            marker=dict(size=5, color=fin.source_rank, colorscale="Viridis")))
+        m = float(max(fin.delta_loss_linearized.abs().max(),
+                      fin.delta_loss_mean.abs().max()))
+        fig2.add_trace(go.Scatter(x=[-m, m], y=[-m, m], mode="lines",
+                                  line=dict(color=INK_MUTED, dash="dot"),
+                                  showlegend=False))
+        fig2.add_hline(y=0, line_width=1); fig2.add_vline(x=0, line_width=1)
+        fig2.update_layout(**banner("first-order vs exact", 380, legend=False))
+        fig2.update_xaxes(title="ΔL̂ (first-order)", gridcolor=GRID, zeroline=False)
+        fig2.update_yaxes(title="ΔL exact", gridcolor=GRID, zeroline=False)
+        st.plotly_chart(fig2, width="stretch", theme=None)
+        st.caption(f"Pearson {fin.delta_loss_mean.corr(fin.delta_loss_linearized):.3f}, "
+                   f"Spearman {fin.delta_loss_mean.corr(fin.delta_loss_linearized, method='spearman'):.3f} "
+                   f"(unbiased pairs only)")
+
+    # ---- evolution over training --------------------------------------------- #
+    ctx = swap_summary(name, "context")
+    if ctx is not None and len(steps) > 1:
+        st.subheader("Evolution over training (this sequence/layer/token)")
+        sel = ctx[(ctx.sequence_id == seq) & (ctx.layer_index == layer)
+                  & (ctx.token_index == token)].sort_values("checkpoint_step")
+        fe = go.Figure()
+        for col, colr in [("median", INK), ("q05", BAND_COLOR["topk"]),
+                          ("q95", BAND_COLOR["cand"]), ("min", BAND_COLOR["rest"])]:
+            fe.add_trace(go.Scatter(x=sel.checkpoint_step, y=sel[col],
+                                    mode="lines+markers", name=col,
+                                    line=dict(color=colr)))
+        fe.add_hline(y=0, line=dict(color=INK_MUTED, width=1))
+        fe.update_layout(**banner("ΔL quantiles vs training step", 340))
+        fe.update_xaxes(title="checkpoint step", gridcolor=GRID, zeroline=False)
+        fe.update_yaxes(title="ΔL quantiles", gridcolor=GRID, zeroline=False)
+        st.plotly_chart(fe, width="stretch", theme=None)
+        fr = go.Figure(go.Scatter(x=sel.checkpoint_step, y=sel.frac_beneficial,
+                                  mode="lines+markers",
+                                  line=dict(color=BARRIER)))
+        fr.update_layout(**banner("fraction beneficial vs training step", 240,
+                                  legend=False))
+        fr.update_xaxes(title="checkpoint step", gridcolor=GRID, zeroline=False)
+        fr.update_yaxes(title="fraction ΔL < 0", gridcolor=GRID, zeroline=False)
+        st.plotly_chart(fr, width="stretch", theme=None)
+        st.caption("Distributions are over the CURRENT TopK / next-J pair space "
+                   "at each checkpoint -- feature identities may change between "
+                   "steps (ids are stored for future tracking).")
+    if not exh and k * j > len(cell):
+        st.caption(f"Deep dive: `python analysis/swap_interventions.py --ckpt-dir "
+                   f"<run> --data-dir <data> --pair-mode exhaustive "
+                   f"--exhaustive-threshold {k * j}` computes all {k * j} pairs "
+                   f"for selected contexts.")
+
+
 # page dispatch
 # --------------------------------------------------------------------------- #
 # st.stop() below means the score pages' code never runs on the weight-norm
 # page, so the two do not pay for each other -- which st.tabs would not give,
 # since it executes every tab body on every rerun.
 _page = st.sidebar.radio(
-    "Page", ["Scores & gradients", "Weight norms"], index=0,
+    "Page", ["Scores & gradients", "Weight norms", "Swap interventions"], index=0,
     help="Scores & gradients: the per-cell views over checkpoint or probe "
          "datasets. Weight norms: how each block's weight matrices evolve "
          "through training, from probe_weight_norms.py.")
 if _page == "Weight norms":
     weight_norm_page()
+    st.stop()
+if _page == "Swap interventions":
+    swap_page()
     st.stop()
 
 
