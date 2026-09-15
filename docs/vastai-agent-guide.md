@@ -234,7 +234,17 @@ tmux new-session -d -s backup_analysis \
 with `RuntimeError: unexpected pos` / `basic_ios::clear: iostream error` — that
 is a full disk, not a code fault. `scripts/clean_checkpoints.sh <runs> <remote>
 [--keep-latest-only]` prunes, and refuses to delete anything it cannot first
-find on the remote.
+find on the remote.  Run the standing guard as a fourth watcher so pressure is
+handled between your checks — it prunes at a soft threshold and warns loudly at
+a hard one, never kills anything and never touches `/workspace/analysis`:
+
+```bash
+tmux new-session -d -s disk_guard \
+  "bash scripts/disk_guard_watch.sh /workspace/runs gdrive:weight-sparsity/runs_<name> 300 40 15"
+```
+
+Launch-time `df` guards in chain scripts are still wanted — the guard reclaims,
+it does not veto a launch that would need more than reclaim can give.
 
 ---
 
