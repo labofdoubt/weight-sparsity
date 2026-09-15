@@ -569,6 +569,13 @@ class ActivationBottleneckConfig:
     #   detach        independent local boundary gradients (default)
     #   project       + remove the common-mode score direction (cap-active only)
     #   through_rank  differentiate through the (K+1)-st score used as boundary
+    #                 CAUTION: at sharp T the point-mass compensation on the
+    #                 boundary feature leaves the rest of the pool per-feature
+    #                 uncompensated and the boundary score can run away (j32/T1
+    #                 diverged ~1.6k steps, both seeds)
+    #   through_rank_kappa  the same zero-sum correction distributed
+    #                 kappa-weighted -- LapSum's rank-one Jacobian form at the
+    #                 rank boundary; removes the runaway (verified same-seed)
     rblapsum_boundary_grad_mode: str = "detach"
     # b0: a FIXED bottleneck-level activation floor (never data-dependent).  For
     # abs_topk, b0=0 makes almost every feature eligible, so L0 stays ~K; a
