@@ -246,6 +246,19 @@ tmux new-session -d -s disk_guard \
 Launch-time `df` guards in chain scripts are still wanted — the guard reclaims,
 it does not veto a launch that would need more than reclaim can give.
 
+**On a slow-uplink box, cap the watchers' bandwidth.** TensorBoard/streamlit
+tunnel responses travel the same uplink rclone uploads on; a post-run
+checkpoint backlog (tens of GB at a few MiB/s) saturates it for hours and the
+viewers crawl.  rclone honors the env var natively — no script change:
+
+```bash
+tmux new-session -d -s backup_ckpt \
+  "RCLONE_BWLIMIT=3M bash scripts/backup_watch.sh ... "
+```
+
+Pick the cap below the measured uplink (§2's speedtest) so interactive tunnels
+keep headroom.  Boxes with fast uplinks don't need it.
+
 ---
 
 ## 6. Getting checkpoints back
