@@ -259,6 +259,16 @@ tmux new-session -d -s backup_ckpt \
 Pick the cap below the measured uplink (§2's speedtest) so interactive tunnels
 keep headroom.  Boxes with fast uplinks don't need it.
 
+**Check IPv6 before believing any throughput number.**  One box advertised
+645 Mbps but pushed 2-6 MiB/s to Drive with intermittent stalls -- rclone was
+dialing Google's IPv6 endpoints and the container's IPv6 was broken
+("dial tcp [2001:4860:...]:443: network is unreachable" in `-v` output), so
+streams died and retried constantly.  `RCLONE_BIND=0.0.0.0` (or `--bind
+0.0.0.0`) forces IPv4 and removes the failures.  Even then the vast.ai
+bandwidth figure is the host NIC measured against a nearby server, shared
+across tenants -- the *Drive-path* ceiling is what matters and must be
+measured (this box: ~7 MiB/s at 12 IPv4 streams).
+
 ---
 
 ## 6. Getting checkpoints back
