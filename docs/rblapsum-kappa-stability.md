@@ -335,3 +335,30 @@ Geometry measured at checkpoint-2000 of two stable campaign models
 | kstab_k32_j480_t05_servo (T₀=0.5) | rescued: servo lifts T out of the marginal zone; final CE ≈ 1.49 |
 | kstab_k32_j96_t01_servo (T₀=0.1) | rescued from the 150-step collapse by the population guard (T must climb ~10× within ~100 steps) |
 | kstab_k32_j480_servo (T₀=1.0) | null test: servo holds T ≈ 1, quality matches the 1.491 flagship |
+
+### 7b. What the force looks like rank-by-rank (and one honest unknown)
+
+Reconstructed per-rank means over steps 300–1000 (k=64/T=1 probes, layer 4):
+the surrogate force is a **dipole centred on the boundary** — the *marginal
+actives* (ranks ~33–64) carry `w < 0` (the loss wants them weaker) and get
+pushed down; the near-tail (65–128) gets pushed up; the top-16, which the
+loss genuinely wants stronger (`w` ≈ +9e-7, the largest in the table),
+barely feels the kernel (κ ≈ 0.05). So in its healthy regime the gate runs
+a *swap pump*: it actively closes the gap and encourages the support to
+exchange marginal members for promising tail members. That is the mechanism
+working as intended — the pathology is only its interaction with a too-sharp
+kernel.
+
+Two more within-row facts:
+- The *uncorrected* common-mode total Σa is 4–5× **larger** at j=64 than at
+  j=448 (a truncated tail cancels less), yet j=64 is the stable one — more
+  evidence that the kappa correction neutralises the common mode exactly
+  and the common mode is not the driver.
+- At T=1 the kernel reaches the whole candidate set even at j=448 (κ ≈ 0.18
+  at rank 512), so j sets the *window population* (n_eff 102/206/373 for
+  j=64/192/448). Within the k=64 row, burst rate tracks population (0.37 /
+  0.42 / 0.97 per 1k). **Open residual:** the T=0.5 row does *not* follow
+  the same ordering (j32 has the smallest window and the most bursts), so
+  the within-row victim selection at T=0.5 is not explained by population
+  alone — plausibly threshold-saturated chaos; the seed-repeat runs speak
+  to this.
