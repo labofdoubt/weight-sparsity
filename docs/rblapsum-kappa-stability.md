@@ -436,3 +436,25 @@ K = 32/64/96: **the servo should settle T ≈ 0.9–1.2 at k=32, ≈ 2–2.6 at
 k=64, ≈ 3–4 at k=96** (deep blocks highest), discovering the entire
 T_c(K) line on its own — with k32/k64 quality matching the fixed-T
 flagships (1.491 / 1.472).
+
+## 14. Wave 2.1 mid-flight (step ~2400) — the servo settles where predicted
+
+| run | T₀ | rb_temp @2.4k | rb_chi | window | loss | pre-registered T |
+|---|--:|--:|--:|--:|--:|---|
+| k32_j480_servo | 1.0 | **0.947** | 46.4 | 129 | 1.919 | 0.9–1.2 ✓ |
+| k32_j480_t05_servo | 0.5 | **0.946** | 37.2 | 143 | 1.942 | (rescue) → same point ✓ |
+| k32_j96_t01_servo | 0.1 | **1.039** | 44.8 | 103 | 1.905 | (rescue from the 150-step killer) ✓✓ |
+| k64_j448_servo | 1.0 | **2.268** | 45.0 | 450 | 1.884 | 2–2.6 ✓ |
+| k96_j416_servo | 1.0 | **3.001** | 45.5 | 483 | 1.908 | 3–4 ✓ |
+
+Three different starting temperatures at k=32 (1.0, 0.5, 0.1 — one safe,
+one usually-lethal, one always-lethal) converge onto the same ≈0.95–1.04:
+the controller's operating point is well-defined and path-independent. The
+servo has effectively *discovered the T_c(K) line by itself* (0.95 / 2.27 /
+3.00 ≈ proportional to the measured b/δ = 80/212/319), while every loss
+sits on the healthy fixed-T trajectory.
+
+Meanwhile **kstab_k96_j416_t1 (fixed T=1) died on schedule** — loss ≈ 6.0
+by step 3800, inside the pre-registered 1.5–6k window. That is the
+theory's sharpest confirmed prediction: a never-tried K, called in advance
+from score geometry alone.
