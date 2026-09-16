@@ -25,3 +25,4 @@ wandb/
 # typeset research notebook is a tracked deliverable
 !docs/rblapsum-kappa-stability.pdf
 !docs/rblapsum-kappa-stability-neutral.pdf
+!docs/scale-dynamics-note.pdf
