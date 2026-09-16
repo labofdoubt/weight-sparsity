@@ -72,6 +72,12 @@ class AdaptiveLapSumTopKGate(nn.Module):
         rblapsum_boundary_floor=None,
         rblapsum_temperature: float = 1.0,
         rblapsum_kernel: str = "exponential",
+        rblapsum_temperature_mode: str = "fixed",
+        rblapsum_chi_target: float = 8e-5,
+        rblapsum_window_floor: float = 16.0,
+        rblapsum_t_min: float = 0.25,
+        rblapsum_t_max: float = 8.0,
+        rblapsum_servo_rate: float = 0.02,
         reinforce_distribution: str = "gumbel_pl",
         reinforce_temperature: float = 1.0,
         reinforce_stochastic_eval: bool = False,
@@ -183,6 +189,12 @@ class AdaptiveLapSumTopKGate(nn.Module):
         )
         self.rblapsum_temperature = float(rblapsum_temperature)
         self.rblapsum_kernel = rblapsum_kernel
+        self.rblapsum_temperature_mode = rblapsum_temperature_mode
+        self.rblapsum_chi_target = float(rblapsum_chi_target)
+        self.rblapsum_window_floor = float(rblapsum_window_floor)
+        self.rblapsum_t_min = float(rblapsum_t_min)
+        self.rblapsum_t_max = float(rblapsum_t_max)
+        self.rblapsum_servo_rate = float(rblapsum_servo_rate)
         if surrogate_mode == "rblapsum":
             if selection_mode not in ("topk", "abs_topk"):
                 raise ValueError(
@@ -201,6 +213,30 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 )
             if self.rblapsum_temperature <= 0:
                 raise ValueError("rblapsum_temperature must be positive")
+            if rblapsum_temperature_mode not in ("fixed", "servo"):
+                raise ValueError(
+                    f"rblapsum_temperature_mode must be fixed | servo, "
+                    f"got {rblapsum_temperature_mode!r}")
+            if rblapsum_temperature_mode == "servo":
+                if not (0 < self.rblapsum_t_min <= self.rblapsum_temperature
+                        <= self.rblapsum_t_max):
+                    raise ValueError(
+                        "servo needs 0 < rblapsum_t_min <= rblapsum_temperature"
+                        " <= rblapsum_t_max")
+                if self.rblapsum_chi_target <= 0:
+                    raise ValueError("rblapsum_chi_target must be positive")
+                if self.rblapsum_window_floor < 1:
+                    raise ValueError("rblapsum_window_floor must be >= 1")
+                if not 0 < self.rblapsum_servo_rate <= 0.2:
+                    raise ValueError("rblapsum_servo_rate must be in (0, 0.2]")
+                if self.k <= 4 or self.j < 8:
+                    raise ValueError(
+                        "servo measures the rank spacing over the 4 ranks each"
+                        " side of the boundary: needs k > 4 and j >= 8")
+                self.register_buffer(
+                    "rb_temp", torch.tensor(float(self.rblapsum_temperature)))
+                self.register_buffer("rb_kick_ema", torch.zeros(()))
+                self.register_buffer("rb_delta_ema", torch.zeros(()))
             # the (K+1)-st score is the rank boundary, so J>=1 (already required
             # by validate_gate_shapes for every non-hard mode) guarantees it
             if self.j < 1:
@@ -500,7 +536,6 @@ class AdaptiveLapSumTopKGate(nn.Module):
         three grad modes share this forward exactly (see :mod:`.rblapsum`).
         """
         b0 = self.rblapsum_boundary_floor
-        t = self.rblapsum_temperature
         cand_scores, cand_idx = torch.topk(scores, self.m, dim=-1, largest=True, sorted=True)
         value_c = torch.gather(value, -1, cand_idx)          # signed z, carries grad
         score_c = cand_scores.detach()                       # s = |z| or z, sorted desc
@@ -513,7 +548,12 @@ class AdaptiveLapSumTopKGate(nn.Module):
         sign_c = (value_c.sign() if self.selection_mode == "abs_topk"
                   else torch.ones_like(value_c))
 
-        sink = self._grad_sink if self.log_diagnostics and self.training else None
+        servo = self.rblapsum_temperature_mode == "servo"
+        if servo and self.training:
+            self._rb_servo_update(score_c, b)
+        t = float(self.rb_temp) if servo else self.rblapsum_temperature
+        sink = (self._grad_sink
+                if (self.log_diagnostics or servo) and self.training else None)
         y_c = rblapsum_gate(value_c, active_c, score_c, sign_c, b, t,
                             self.rblapsum_boundary_grad_mode, self.k, cap_active, sink)
         y = torch.zeros_like(value).scatter(-1, cand_idx, y_c.to(value.dtype))
@@ -527,6 +567,53 @@ class AdaptiveLapSumTopKGate(nn.Module):
         return y
 
     @torch.no_grad()
+    def _rb_servo_update(self, score_c: torch.Tensor, b: torch.Tensor) -> None:
+        """One step of the kernel-temperature servo (training forwards only).
+
+        Two controls on the per-layer scalar ``rb_temp``
+        (docs/rblapsum-kappa-stability.md has the evidence):
+
+        - population floor: if fewer than ``rblapsum_window_floor`` candidates
+          sit inside the kernel window this batch, T grows 10% immediately.
+          The divergence cliff is the window emptying -- the kappa zero-sum
+          then concentrates onto one feature (through_rank's point sink) and
+          the boundary runs away -- so the window is never allowed to empty.
+        - kick-to-spacing trim (at most 2%/step): hold
+          EMA(mean |g_s| in window) / EMA(local rank spacing at the boundary)
+          at ``rblapsum_chi_target``.  The kick estimate arrives from the
+          previous backward through the grad sink (one-step lag).
+
+        Uses local batches only -- under DDP each rank servos its own copy.
+        """
+        t = float(self.rb_temp)
+        m_sp = 4
+        delta = (score_c[..., self.k - 1 - m_sp]
+                 - score_c[..., self.k - 1 + m_sp]) / (2 * m_sp)
+        delta_b = delta.mean()
+        n_win = ((score_c - b).abs() < t).sum(-1).to(torch.float32).mean()
+        ema = 0.95
+        self.rb_delta_ema.mul_(ema).add_((1 - ema) * delta_b)
+        kick = self._grad_sink.get("rb_kick_win")
+        if kick is not None:
+            self.rb_kick_ema.mul_(ema).add_(
+                (1 - ema) * kick.to(self.rb_kick_ema.dtype))
+        if float(n_win) < self.rblapsum_window_floor:
+            self.rb_temp.mul_(1.10)
+        elif float(self.rb_kick_ema) > 0 and float(self.rb_delta_ema) > 0:
+            chi = float(self.rb_kick_ema) / float(self.rb_delta_ema)
+            step = self.rblapsum_servo_rate * math.log(
+                chi / self.rblapsum_chi_target)
+            self.rb_temp.mul_(math.exp(max(-0.0198, min(0.0198, step))))
+        self.rb_temp.clamp_(self.rblapsum_t_min, self.rblapsum_t_max)
+        self._rb_servo_diag = {
+            "rb_temp": self.rb_temp.detach().clone(),
+            "rb_win_count": n_win.detach(),
+            "rb_chi": delta_b.new_tensor(
+                float(self.rb_kick_ema)
+                / max(float(self.rb_delta_ema), 1e-30)),
+        }
+
+    @torch.no_grad()
     def _record_rblapsum(self, active_c, cap_active, b_rank, b) -> None:
         """Forward diagnostics for rblapsum (hard quantities only)."""
         d = {
@@ -536,6 +623,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
             "rb_b_rank": b_rank.mean(),
             "rb_boundary": b.mean(),
         }
+        if getattr(self, "_rb_servo_diag", None):
+            d.update(self._rb_servo_diag)
         self._forward_diag = {key: value.detach() for key, value in d.items()}
 
     # ---- reinforce_topk -------------------------------------------------------- #

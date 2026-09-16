@@ -124,6 +124,12 @@ class _RBLapSumGate(torch.autograd.Function):
                 sink["rb_common_mode_raw"] = (
                     ar.sum(-1).abs() / (ar.norm(dim=-1) + eps)
                 ).mean().detach()
+                # mean |kick| inside the kernel window -- the temperature
+                # servo's raw pressure signal (read at the next forward)
+                win = (score_c - b).abs() < t
+                sink["rb_kick_win"] = (
+                    g_s.abs()[win].mean().detach() if bool(win.any())
+                    else torch.zeros((), device=g_s.device))
                 if mode_id == 2:
                     # is the boundary feature becoming a gradient sink?
                     bmag = gs[:, k].abs().mean()

@@ -588,6 +588,27 @@ class ActivationBottleneckConfig:
     # second score-dependent quantity while testing rblapsum.
     rblapsum_temperature: float = 1.0
     rblapsum_kernel: str = "exponential"
+    # Temperature control.  "fixed": the constant above, throughout.  "servo":
+    # a per-layer scalar T adapted online to the boundary-neighbourhood
+    # geometry (evidence: docs/rblapsum-kappa-stability.md).  Two controls:
+    # (a) population floor -- if fewer than rblapsum_window_floor candidates sit
+    #     inside the kernel window on a batch, T grows 10% that step.  The
+    #     divergence cliff is the window emptying: the kappa zero-sum then
+    #     lands on one feature (= through_rank's point sink) and the boundary
+    #     runs away.  The guard makes that state unreachable.
+    # (b) kick-to-spacing trim -- otherwise T moves (<= 2%/step) to hold
+    #     EMA(mean |g_s| in window) / EMA(local rank spacing at the boundary)
+    #     at rblapsum_chi_target.  8e-5 is the measured "safe and best
+    #     quality" operating point (k=32, T=1); the runs that destabilised sat
+    #     at 1.5-2e-4; T=2 rows sat at 3-5e-5 with zero boundary bursts.
+    # Servo state (T and both EMAs) is a persistent per-layer buffer, so
+    # checkpoints carry it and resumes continue the trajectory.
+    rblapsum_temperature_mode: str = "fixed"
+    rblapsum_chi_target: float = 8e-5
+    rblapsum_window_floor: float = 16.0
+    rblapsum_t_min: float = 0.25
+    rblapsum_t_max: float = 8.0
+    rblapsum_servo_rate: float = 0.02
 
     # ---- reinforce_topk (surrogate_mode: reinforce_topk) --------------------- #
     # Stochastic hard support trained with a REINFORCE / score-function
@@ -813,6 +834,22 @@ class ActivationBottleneckConfig:
                 raise ValueError("rblapsum_kernel: only 'exponential' is implemented")
             if self.rblapsum_temperature <= 0:
                 raise ValueError("rblapsum_temperature must be positive")
+            if self.rblapsum_temperature_mode not in ("fixed", "servo"):
+                raise ValueError(
+                    "rblapsum_temperature_mode must be fixed | servo, "
+                    f"got {self.rblapsum_temperature_mode!r}")
+            if self.rblapsum_temperature_mode == "servo":
+                if not (0 < self.rblapsum_t_min <= self.rblapsum_temperature
+                        <= self.rblapsum_t_max):
+                    raise ValueError(
+                        "servo needs 0 < rblapsum_t_min <= "
+                        "rblapsum_temperature <= rblapsum_t_max")
+                if self.rblapsum_chi_target <= 0:
+                    raise ValueError("rblapsum_chi_target must be positive")
+                if self.rblapsum_window_floor < 1:
+                    raise ValueError("rblapsum_window_floor must be >= 1")
+                if not 0 < self.rblapsum_servo_rate <= 0.2:
+                    raise ValueError("rblapsum_servo_rate must be in (0, 0.2]")
             if self.inactive_grad_scale != 1.0:
                 raise ValueError(
                     "inactive_grad_scale is a LapSum-VJP knob and is not applied by "

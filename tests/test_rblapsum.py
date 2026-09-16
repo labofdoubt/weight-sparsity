@@ -319,3 +319,120 @@ def test_lapsum_gate_unaffected():
     lap.scheduled_temperature.fill_(0.5)
     y = lap(a)
     assert int((y != 0).sum(-1).max()) == 3        # exactly K, LapSum unchanged
+
+
+# --------------------------------------------------------------------------- #
+# temperature servo (rblapsum_temperature_mode="servo")
+# --------------------------------------------------------------------------- #
+
+
+def make_servo_gate(T=1.0, k=8, j=24, n=64, **kw):
+    return AdaptiveLapSumTopKGate(
+        n_features=n, k=k, j=j, n_eff=3.0, selection_mode="abs_topk",
+        surrogate_mode="rblapsum",
+        rblapsum_boundary_grad_mode="through_rank_kappa",
+        rblapsum_boundary_floor=0.0, rblapsum_temperature=T,
+        rblapsum_temperature_mode="servo", log_diagnostics=True, **kw)
+
+
+def tight_batch(n=64, spacing=1e-3, base=1.0, rows=4):
+    """Candidate scores packed within the window: population guard stays off."""
+    a = torch.full((rows, n), 1e-4)
+    vals = base + spacing * torch.arange(40, dtype=torch.float32)
+    a[:, :40] = vals.flip(0)
+    return a
+
+
+def test_servo_fixed_mode_has_no_state():
+    g = make_gate(mode="through_rank_kappa", T=1.0)
+    assert not hasattr(g, "rb_temp")
+    assert "rb_temp" not in g.state_dict()
+
+
+def test_servo_population_guard_raises_T():
+    g = make_servo_gate(T=0.5)
+    a = torch.zeros(2, 64)
+    a[:, :32] = torch.linspace(3200.0, 100.0, 32)  # spacing 100 >> T
+    g.train()
+    g(a)
+    assert torch.isclose(g.rb_temp, torch.tensor(0.55), atol=1e-6)
+    g(a)
+    assert torch.isclose(g.rb_temp, torch.tensor(0.605), atol=1e-6)
+    g.eval()
+    g(a)
+    assert torch.isclose(g.rb_temp, torch.tensor(0.605), atol=1e-6)  # eval: frozen
+
+
+def test_servo_trim_raises_T_under_kernel_pressure():
+    torch.manual_seed(0)
+    g = make_servo_gate(T=1.0)
+    a = tight_batch()
+    g.train()
+    for _ in range(30):
+        x = a.clone().requires_grad_(True)
+        y = g(x)
+        y.backward(torch.ones_like(y))  # big upstream -> big kick -> chi >> target
+    assert 1.2 < float(g.rb_temp) <= 1.02 ** 30 + 1e-6
+    assert float(g.rb_temp) <= g.rblapsum_t_max
+
+
+def test_servo_trim_lowers_T_when_quiet():
+    torch.manual_seed(0)
+    g = make_servo_gate(T=1.0)
+    a = tight_batch()
+    g.train()
+    for _ in range(30):
+        x = a.clone().requires_grad_(True)
+        y = g(x)
+        y.backward(1e-12 * torch.ones_like(y))  # negligible kick -> chi << target
+    assert g.rblapsum_t_min <= float(g.rb_temp) < 0.9
+
+
+def test_servo_state_roundtrip():
+    g = make_servo_gate(T=1.0)
+    a = torch.zeros(2, 64)
+    a[:, :32] = torch.linspace(3200.0, 100.0, 32)
+    g.train()
+    g(a)
+    sd = g.state_dict()
+    assert "rb_temp" in sd and "rb_kick_ema" in sd and "rb_delta_ema" in sd
+    g2 = make_servo_gate(T=1.0)
+    g2.load_state_dict(sd)
+    assert torch.isclose(g2.rb_temp, g.rb_temp)
+
+
+def test_servo_validation():
+    with pytest.raises(ValueError):
+        make_servo_gate(T=1.0, rblapsum_temperature_mode="auto")  # unknown mode
+    with pytest.raises(ValueError):
+        make_servo_gate(T=10.0)                     # T0 above t_max
+    with pytest.raises(ValueError):
+        make_servo_gate(T=1.0, k=4)                 # spacing needs k > 4
+    with pytest.raises(ValueError):
+        make_servo_gate(T=1.0, j=4)                 # spacing needs j >= 8
+    with pytest.raises(ValueError):
+        bn_cfg(rblapsum_temperature_mode="servo", rblapsum_t_min=2.0)
+    with pytest.raises(ValueError):
+        bn_cfg(rblapsum_temperature_mode="servo", rblapsum_chi_target=0.0)
+    # a valid servo config passes end to end
+    assert bn_cfg(rblapsum_temperature_mode="servo").rblapsum_temperature_mode == "servo"
+
+
+def test_servo_through_model_and_stats():
+    torch.manual_seed(7)
+    model = build_model(ModelConfig(vocab_size=97, max_seq_len=32, n_layers=2,
+                                    d_model=32, n_heads=4))
+    ctl = apply_activation_bottleneck(
+        model, bn_cfg(rblapsum_boundary_grad_mode="through_rank_kappa",
+                      rblapsum_temperature_mode="servo"), max_steps=10)
+    model.train()
+    x = torch.randint(0, 97, (2, 16))
+    _, loss = model(x, x)
+    loss.backward()
+    _, loss = model(x, x)   # second step: servo diag now has kick history
+    loss.backward()
+    stats = ctl.stats()
+    for key in ("bottleneck/rb_temp", "bottleneck/rb_win_count",
+                "bottleneck/rb_chi"):
+        assert key in stats, key
+    assert stats["bottleneck/rb_temp"] > 0
