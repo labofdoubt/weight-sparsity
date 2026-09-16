@@ -299,7 +299,7 @@ def run_drift(args):
     snap_m = {k: v.detach().clone() for k, v in model.state_dict().items()}
     snap_o = copy.deepcopy(opt.state_dict())
     stats = ("R_all", "R_K", "b")
-    branches = ("full", "task", "supp")
+    branches = ("full", "task", "supp", "nfull", "ntask")
     dx = {br: [[] for _ in bctl.layers] for br in branches}
     clip = float(cfg.train.grad_clip)
 
@@ -340,7 +340,10 @@ def run_drift(args):
         G_task, G_full = G[0.0], G[1.0]
         G_supp = {n: G_full[n] - G_task.get(n, torch.zeros_like(G_full[n]))
                   for n in G_full}
-        for br, Gb in (("full", G_full), ("task", G_task), ("supp", G_supp)):
+        G_negf = {n: -g for n, g in G_full.items()}
+        G_negt = {n: -g for n, g in G_task.items()}
+        for br, Gb in (("full", G_full), ("task", G_task), ("supp", G_supp),
+                       ("nfull", G_negf), ("ntask", G_negt)):
             assign_grads(model, Gb)
             if clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
@@ -367,19 +370,43 @@ def run_drift(args):
                     "n": int(v.size),
                     "samples": [float(t) for t in v]}
         # paired effects: task_effect = task - null (per batch, null constant);
-        # supp_effect = full - task (per batch, cancels shared batch noise)
+        # supp_effect = full - task (per batch, cancels shared batch noise).
+        # Any parameter perturbation inflates R quadratically (heating), so the
+        # signed first-order drift is the antithetic ODD part
+        # (Delta(+G) - Delta(-G)) / 2, and the quadratic heating is the EVEN
+        # part (Delta(+G) + Delta(-G)) / 2 - Delta(null).
         rec["drift"]["task_effect"] = {}
         rec["drift"]["supp_effect"] = {}
+        rec["drift"]["task_odd"] = {}
+        rec["drift"]["full_odd"] = {}
+        rec["drift"]["supp_odd"] = {}
+        rec["drift"]["task_even"] = {}
+        rec["drift"]["full_even"] = {}
         for st in stats:
             t = np.array([d[st] for d in dx["task"][li]]) - dx_null[li][st]
             f = np.array([d[st] for d in dx["full"][li]])
             k = np.array([d[st] for d in dx["task"][li]])
+            nf = np.array([d[st] for d in dx["nfull"][li]])
+            nt = np.array([d[st] for d in dx["ntask"][li]])
             e = f - k
-            rec["drift"]["task_effect"][st] = {
-                "mu": float(t.mean()), "D": float(0.5 * t.var()), "n": int(t.size)}
-            rec["drift"]["supp_effect"][st] = {
-                "mu": float(e.mean()), "D": float(0.5 * e.var()), "n": int(e.size),
-                "samples": [float(v) for v in e]}
+            t_odd = 0.5 * (k - nt)
+            f_odd = 0.5 * (f - nf)
+            s_odd = f_odd - t_odd
+            t_even = 0.5 * (k + nt) - dx_null[li][st]
+            f_even = 0.5 * (f + nf) - dx_null[li][st]
+            def pack(v, keep=False):
+                d = {"mu": float(v.mean()), "D": float(0.5 * v.var()),
+                     "n": int(v.size)}
+                if keep:
+                    d["samples"] = [float(x) for x in v]
+                return d
+            rec["drift"]["task_effect"][st] = pack(t)
+            rec["drift"]["supp_effect"][st] = pack(e, keep=True)
+            rec["drift"]["task_odd"][st] = pack(t_odd)
+            rec["drift"]["full_odd"][st] = pack(f_odd)
+            rec["drift"]["supp_odd"][st] = pack(s_odd, keep=True)
+            rec["drift"]["task_even"][st] = pack(t_even)
+            rec["drift"]["full_even"][st] = pack(f_even)
 
     out = {"ckpt": args.ckpt, "step": step, "lr": lr, "lr_mult": args.lr_mult,
            "alpha": args.alpha, "temp_mult": args.temp_mult,
@@ -390,11 +417,12 @@ def run_drift(args):
            "R0": R0, "layers": layers_out}
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     json.dump(out, open(args.out, "w"), indent=1)
-    mu_n = np.mean([r["drift"]["null"]["R_all"] for r in layers_out])
-    mu_t = np.mean([r["drift"]["task_effect"]["R_all"]["mu"] for r in layers_out])
-    mu_e = np.mean([r["drift"]["supp_effect"]["R_all"]["mu"] for r in layers_out])
+    mu_to = np.mean([r["drift"]["task_odd"]["R_all"]["mu"] for r in layers_out])
+    mu_so = np.mean([r["drift"]["supp_odd"]["R_all"]["mu"] for r in layers_out])
+    mu_fe = np.mean([r["drift"]["full_even"]["R_all"]["mu"] for r in layers_out])
     print(f"[drift] {os.path.basename(args.ckpt)} alpha={args.alpha} "
-          f"null={mu_n:+.3e} task_eff={mu_t:+.3e} supp_eff={mu_e:+.3e} -> {args.out}")
+          f"task_odd={mu_to:+.3e} supp_odd={mu_so:+.3e} heat={mu_fe:+.3e} "
+          f"-> {args.out}")
 
 
 # --------------------------------------------------------------------------- #
