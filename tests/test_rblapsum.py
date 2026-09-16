@@ -374,15 +374,28 @@ def test_servo_trim_raises_T_under_kernel_pressure():
     assert float(g.rb_temp) <= g.rblapsum_t_max
 
 
-def test_servo_trim_lowers_T_when_geometry_is_wide():
-    # wide boundary: delta = 0.05, b ~ 2.6 -> chi_geo ~ 26 < 45 -> T falls,
-    # window stays populated (guard must not fire)
+def test_servo_never_sharpens_below_baseline():
+    # wide boundary: chi_geo ~ 26 < 45 wants T down -- but the trim is
+    # protective-only: T stays pinned at the configured baseline
     g = make_servo_gate(T=1.0)
     a = tight_batch(spacing=0.05, base=1.0)
     g.train()
     for _ in range(30):
         g(a)
-    assert g.rblapsum_t_min <= float(g.rb_temp) < 0.95
+    assert abs(float(g.rb_temp) - 1.0) < 1e-6
+
+
+def test_servo_relaxes_back_to_baseline_after_pressure():
+    g = make_servo_gate(T=1.0)
+    g.train()
+    hot = tight_batch(spacing=1e-3)          # chi_geo ~ 500 -> T rises
+    for _ in range(40):
+        g(hot)
+    assert float(g.rb_temp) > 1.3
+    calm = tight_batch(spacing=0.05, base=1.0)  # chi_geo ~ 26 -> relax
+    for _ in range(300):
+        g(calm)
+    assert abs(float(g.rb_temp) - 1.0) < 0.02   # back to baseline, not below
 
 
 def test_servo_state_roundtrip():

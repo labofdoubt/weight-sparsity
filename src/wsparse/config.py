@@ -603,7 +603,12 @@ class ActivationBottleneckConfig:
     #     batch sizes (a kick-based trim was falsified by its own telemetry).
     #     Campaign calibration: every run that kept chi_geo <= ~55 survived;
     #     every death carried >= ~58 somewhere; >= ~110 is seed-roulette
-    #     territory.  45 sits just below the proven k32/T1 operating point.
+    #     territory.  The trim is PROTECTIVE-ONLY: it never sharpens T below
+    #     the configured rblapsum_temperature (symmetric trimming walked a
+    #     k32 run into the marginal band as its geometry relaxed -- the
+    #     servo rises above the baseline when needed and relaxes back to
+    #     it, never below).  Set rblapsum_temperature to the value you
+    #     would run fixed (1.0).
     # Servo state (T and both EMAs) is a persistent per-layer buffer, so
     # checkpoints carry it and resumes continue the trajectory.
     rblapsum_temperature_mode: str = "fixed"

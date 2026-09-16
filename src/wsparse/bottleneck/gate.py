@@ -590,6 +590,17 @@ class AdaptiveLapSumTopKGate(nn.Module):
           every run that stayed <= ~55 survived; every death carried >= ~58
           somewhere; >= ~110 is seed-roulette territory.
 
+        The trim is PROTECTIVE-ONLY: it never sharpens T below the
+        configured ``rblapsum_temperature``.  Holding the chi target
+        symmetrically was falsified live: safe geometry relaxes over
+        training (the stable k32/T1 flagship runs at chi_geo 39 -> 30), so
+        a symmetric trim walks T down into the proven-marginal band --
+        the first k32 null test destabilised exactly that way at ~4k.
+        The servo therefore rises above the baseline when geometry demands
+        (larger K, bursts, the early transient) and relaxes back TO the
+        baseline, never below it.  Set the baseline to the value you would
+        run fixed (1.0).
+
         Uses local batches only -- under DDP each rank servos its own copy.
         """
         t = float(self.rb_temp)
@@ -615,7 +626,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
             step = self.rblapsum_servo_rate * math.log(
                 max(chi_geo, 1e-30) / self.rblapsum_chi_target)
             self.rb_temp.mul_(math.exp(max(-0.0198, min(0.0198, step))))
-        self.rb_temp.clamp_(self.rblapsum_t_min, self.rblapsum_t_max)
+        self.rb_temp.clamp_(
+            max(self.rblapsum_t_min, self.rblapsum_temperature),
+            self.rblapsum_t_max)
         diag = {
             "rb_temp": self.rb_temp.detach().clone(),
             "rb_win_count": n_win.detach(),
