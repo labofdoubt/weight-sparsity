@@ -387,6 +387,39 @@ numbers are indicative rather than definitive.
 
 
 
+\section{Results 5b: the fate map in \texorpdfstring{$\Pi$}{Pi}, per block and training step}
+
+The analogue of the earlier report's dose--response figure, with the order
+parameter replaced according to the present findings, and broken down over
+blocks and training steps. Points are taken from pre-collapse checkpoints
+only; the trajectory panel tracks the worst block of each run over
+training; the dose--response panel plots the pre-onset burst rate against
+the earliest healthy worst-block value. Currently the eighteen fixed-\(T\)
+campaign runs with checkpointed ladders are included (\(K = 32, 64\)); the
+running boundary-bracketing campaign (\(K = 32\)--\(128\), sixteen
+configurations) will extend it.
+
+\begin{figure}[h]\centering
+\includegraphics[width=.94\textwidth]{figures/sdn_pi_fate_map.png}
+\caption{Exact surrogate gain \(\Pisurr\) versus fate, per block and
+training step. Deaths separate from survivors within blocks (upper
+panels); the worst-block \(\Pisurr\) of every dying run rises toward the
+collapse while every survivor's declines over training (lower left; the
+one surviving spike-and-return trace is the recoverable burst of the
+\(T{=}0.5\) survivor); the pre-onset burst rate is monotone in the early
+worst-block \(\Pisurr\) (lower right).}
+\end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=.94\textwidth]{figures/sdn_piapprox_fate_map.png}
+\caption{The same construction with the simplified parameter
+\(b^2/(4T\delta)\). The dose--response ordering survives, but the
+within-block separation is weaker than with the exact \(\Pisurr\) (compare
+the step-2000 panels), and individual blocks with collapsing rank spacing
+produce far-right outliers; the exact \(\Pisurr\) should be preferred
+where the tensors are available.}
+\end{figure}
+
 \section{Results 6: drift versus diffusion, and the escape picture}
 
 The learning-rate and batch-size sweeps separate the two destabilization
