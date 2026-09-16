@@ -489,6 +489,8 @@ def run_continue(args):
     cfg.train.checkpoint_every_steps = 10 ** 9
     cfg.train.sample_every_steps = 10 ** 9
     cfg.train.wandb_project = ""
+    if args.seed:
+        cfg.train.seed = args.seed
 
     seq = int(cfg.data.seq_len)
     val_stream = TokenStream(os.path.join(args.data_dir, "val.bin"), seq, seed=0)
@@ -595,6 +597,7 @@ def main():
     c.add_argument("--eval-batch", type=int, default=8)
     c.add_argument("--supp-scale", type=float, default=1.0)
     c.add_argument("--temp-mult", type=float, default=1.0)
+    c.add_argument("--seed", type=int, default=0)
     c.add_argument("--when", default="start",
                    help="start | trigger[:X] (pooled b above X times rolling median) | never")
     c.set_defaults(fn=run_continue)
