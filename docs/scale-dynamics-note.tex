@@ -136,6 +136,10 @@ as separate branch counterfactuals.
 burst (\(k32\,j224\,T0.5\) at steps 2000/4000/6000), marginal states of runs
 that later died (\(k32\,j480\,T0.5\); \(k64\,j448\,T1\)), and a post-collapse
 state (\(k32\,j480\,T0.1\)). All checkpoints carry full optimizer state.
+State-class labels describe the run's eventual fate; except for the
+post-collapse state, every checkpoint is healthy at measurement time (in
+particular, ``pre-death'' means a healthy step-2000 state of the run that
+destabilized at step 3940).
 \item \textbf{One-step drift/diffusion} (16 batches per state, five branch
 steps per batch, per-layer \(\Delta \log R\) on a fixed evaluation batch).
 \item \textbf{Surrogate gain and radial structure} per state and layer:
@@ -212,7 +216,11 @@ Fig.~1; where it matters, the exact \(\Pisurr\) should be used.
 exact \(\Pisurr\) against the dense-boundary approximation. Each point is
 one (checkpoint, block) pair; color encodes the checkpoint's state class:
 calm (\(T{=}2\)), stable (\(k32/T1\)), marginal (\(T{=}0.5\)),
-pre-death (\(k64/T1\)), post-collapse (\(T{=}0.1\)).}
+pre-death (\(k64/T1\)), post-collapse (\(T{=}0.1\)). The class labels
+refer to the run's eventual fate, not to the condition at measurement
+time: ``pre-death'' points come from a checkpoint (step 2000) at which the
+run was still fully healthy but destabilized about 1{,}900 steps later;
+only ``post-collapse'' points are measured after a collapse.}
 \end{figure}
 
 The predicted \(K\)- and \(T\)-ratios from the earlier report are
