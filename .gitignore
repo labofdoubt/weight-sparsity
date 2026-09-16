@@ -21,3 +21,6 @@ wandb/
 
 # reference papers (see README for arXiv links)
 *.pdf
+
+# typeset research notebook is a tracked deliverable
+!docs/rblapsum-kappa-stability.pdf

@@ -2,6 +2,10 @@
 
 *Started 2026-09-16. Question posed after the France kappa campaign.*
 
+> A typeset version with proper formulas is kept alongside:
+> [rblapsum-kappa-stability.pdf](rblapsum-kappa-stability.pdf)
+> (source: `rblapsum-kappa-stability.tex`, compiled with `tectonic`).
+
 ## 1. The question
 
 The `through_rank_kappa` gradient mode fixed the runaway that killed
