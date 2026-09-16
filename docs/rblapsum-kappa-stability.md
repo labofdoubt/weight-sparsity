@@ -408,3 +408,31 @@ Theory status after wave 1: no surviving contradiction. The one falsified
 letter-prediction (seed 1338 "dies again") sharpened the claim: **a
 marginal row sets a death *rate*, not a death sentence** — consistent with
 the through_rank regen that also refused to re-diverge.
+
+## 13. Wave 2.0 aborted by its own telemetry — the trim redesigned
+
+800 steps into the first servo wave the telemetry showed the kick-based
+trim mis-calibrated: healthy runs were trimming T *down* (k64: 0.97→0.45)
+onto the population floor, because measured live chi sat far below the
+8e-5 target. Root cause: **the kick |g_s| carries the training loss's
+per-token normalisation** — the probe captures that calibrated the target
+use 256-token batches, live steps use ~50k tokens, so a gradient-unit
+threshold is off by that ratio. Gradient-unit targets do not transfer.
+(The T₀=0.1 rescue was nevertheless already working — the floor guard had
+lifted T to 0.5 with healthy loss while fixed-T=0.1 was long dead.)
+
+The fix drops gradient units entirely. Checking the fate table against the
+**pure-geometry pressure** Χ_geo = b/(2Tδ) — forward-only, dimensionless —
+measured at ckpt 2000 (layer max): every run that stayed ≤ ~55 survived;
+every death carried ≥ ~58; the k64/T1 row sits at ~114 where survival is
+seed roulette. The u-factor evidently contributes little discriminating
+signal on top of the geometry. The servo's trim now holds
+Χ_geo = EMA(b)/(2·T·EMA(δ)) at 45, just below the proven k32/T1 operating
+point (~51); the population floor stays as the burst backstop.
+
+Wave 2.1 relaunched (same six runs, same names). Sharpened, falsifiable
+settling predictions from Χ_geo* = 45 and the measured b/δ ≈ 80/212/319 at
+K = 32/64/96: **the servo should settle T ≈ 0.9–1.2 at k=32, ≈ 2–2.6 at
+k=64, ≈ 3–4 at k=96** (deep blocks highest), discovering the entire
+T_c(K) line on its own — with k32/k64 quality matching the fixed-T
+flagships (1.491 / 1.472).
