@@ -220,7 +220,13 @@ pre-death (\(k64/T1\)), post-collapse (\(T{=}0.1\)). The class labels
 refer to the run's eventual fate, not to the condition at measurement
 time: ``pre-death'' points come from a checkpoint (step 2000) at which the
 run was still fully healthy but destabilized about 1{,}900 steps later;
-only ``post-collapse'' points are measured after a collapse.}
+only ``post-collapse'' points are measured after a collapse. No averaging
+across blocks is performed --- each checkpoint contributes eight points,
+one per block. The training step is the checkpoint step of the library
+state (2000 for most states; 4000/6000 for the additional \(T{=}0.5\)
+checkpoints; 10000 for one calm and one stable state). Within a point,
+\(\Pisurr\) is the token mean over the fixed evaluation batch and
+\(G_{\mathrm{emp}}\) the token mean over one training microbatch.}
 \end{figure}
 
 The predicted \(K\)- and \(T\)-ratios from the earlier report are
