@@ -259,9 +259,9 @@ def assign_grads(model, G):
 
 
 def run_drift(args):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, cfg, bctl, opt, step, lr = load_ckpt(args.ckpt, device)
-    dtype = resolve_dtype(cfg.train.dtype)
+    dtype = resolve_dtype(cfg.train.dtype, device)
     if args.lr_mult != 1.0:
         set_lr(opt, lr * args.lr_mult)
     set_knob(bctl, "rblapsum_view_scale", args.alpha)
@@ -367,11 +367,11 @@ def run_drift(args):
 # --------------------------------------------------------------------------- #
 
 def run_reparam(args):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     results = {}
     for c in (1.0, args.c):
         model, cfg, bctl, opt, step, lr = load_ckpt(args.ckpt, device)
-        dtype = resolve_dtype(cfg.train.dtype)
+        dtype = resolve_dtype(cfg.train.dtype, device)
         set_knob(bctl, "rblapsum_view_scale", c)
         for _, g in gates_of(bctl):
             g.rblapsum_temperature = float(g.rblapsum_temperature) * c
