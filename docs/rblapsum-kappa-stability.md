@@ -1,0 +1,280 @@
+# Why does RBLapSum `through_rank_kappa` destabilize? — research notebook
+
+*Started 2026-09-16. Question posed after the France kappa campaign.*
+
+## 1. The question
+
+The `through_rank_kappa` gradient mode fixed the runaway that killed
+`through_rank` (see `docs/figures/rb_divergence_*.png`), and at k=32, T=1.0 it
+is the best method we have (val CE 1.491 at j=480, below the previous LapSum
+best of 1.545). But the campaign left three unexplained failures:
+
+| observation | detail |
+|---|---|
+| **k=64, j=448, T=1.0 diverges** | healthy at 2k steps (probe-batch CE 1.81), destabilizes ~3–4k (CE 5.9 at 4k), dead by 10k. Its T=2.0 twin is fine (1.472 final). k=64 with j=64 and j=192 at T=1.0 are also fine. |
+| **T=0.5 at k=32 mostly diverges** | j=32, 96, 480 collapse; j=224 survives with mild damage (1.5125 vs 1.4940 at T=1). |
+| **T=0.1 at k=32 always diverges** | all four j values, final CE ≈ 6 or worse. |
+
+The task: find the mechanism, decide whether the k-axis failure (k 32→64 at
+fixed T=1) and the T-axis failure (T 1→0.5→0.1 at fixed k=32) are the same
+mechanism, and derive a principled rule for T — or an algorithm change — that
+removes the problem.
+
+## 2. Plain-language glossary
+
+- **Score** `s_i = |z_i|`: how strongly feature i fires at a token. The gate
+  keeps the K largest as active and also watches the next J ("candidates").
+- **Boundary** `b = max(0.1, s_(K+1))`: the score of the first *inactive*
+  candidate — the "waterline" separating on from off.
+- **Kernel** `κ_T(s−b) = e^{−|s−b|/T}/(2T)`: a bump of width T centered at the
+  waterline. A candidate's surrogate gradient is proportional to its kernel
+  value, so only candidates within ~T of the waterline feel the gate's
+  training signal. κ's peak height is 1/(2T): narrower window ⇒ stronger
+  per-candidate force.
+- **Raw force** `a_i = u_i·z_i·κ_i` where `u_i = ∂L/∂y_i` is the gradient
+  arriving from above: how much the loss cares about feature i's output.
+- **The kappa correction** `g_i = a_i − q_i·Σa`, `q_i = κ_i/Σκ`: subtracts the
+  collective ("everyone up together") component of the force, spreading the
+  subtraction over the window in proportion to kernel weight. This is what
+  distinguishes `through_rank_kappa` from `detach` (no subtraction).
+- **Want** `w_i = −u_i·z_i`: positive when the loss would prefer feature i
+  more "on". With this sign convention a gradient-descent step moves scores as
+  `Δs_i ∝ κ_i·(w_i − ⟨w⟩_q)` — each candidate rises in proportion to how much
+  more it is wanted than the window average.
+- **Local spacing** `δ(b)`: the typical score distance between neighbouring
+  ranks at the waterline (measured as `(s_(K−3) − s_(K+5))/8`). Small δ =
+  crowded waterline.
+- **n_eff** `= (Σκ)²/Σκ²`: how many candidates effectively share the window.
+
+## 3. What we know going in
+
+- `through_rank` (the un-distributed correction) diverges by a proven
+  mechanism: the whole correction lands on one feature, per-feature common
+  mode survives, activations inflate through depth along loss-flat scale
+  directions, the boundary explodes, the kernel dies, training freezes.
+- `detach` (no correction at all) at k=32, T=1.0 was stable for 20k steps —
+  so the correction is not *necessary* for stability at k=32/T=1.
+- The k=64 campaign runs share everything with the k=32 runs except k and j
+  (arch 8×768, MD/decouple, abs_topk, residual_out, b0=0.1, lr schedule).
+- `uk_rout_rblapsum_kappa_k64_j448_md_abs` and `..._k32_j480_...` both watch
+  512 candidates. Only the waterline rank differs (65 vs 33). So whatever
+  kills k=64/j448/T1 is a property of *where the waterline sits*, not of the
+  candidate count.
+
+## 4. Candidate mechanisms (written before the measurements)
+
+**H1 — kappa degeneracy.** As T→0 the weights q collapse onto the single
+candidate nearest the waterline, so `through_rank_kappa` → `through_rank`,
+which is proven divergent. Predicts: instability tracks small `n_eff`.
+*Trouble it must survive:* the k=64 waterline (rank 65) sits in a denser part
+of the score distribution than rank 33, which should give *larger* n_eff at
+the same T — yet k=64 is the one that dies.
+
+**H2 — force magnitude.** The per-candidate kick scales like κ_max = 1/(2T);
+total surrogate "power" in the window scales like Σκ² ≈ ρ(b)/(4T) (ρ = local
+density = 1/δ). Instability when the surrogate force overwhelms the ordinary
+gradient. Predicts both axes qualitatively (small T ⇒ 1/T blowup; k=64 ⇒
+larger ρ) but needs the measured ρ ratio to be large enough.
+
+**H3 — boundary churn + ratchet.** Dimensionless criterion
+`Χ = (per-step score displacement at the waterline) / δ(b)`.
+When one optimizer step moves a waterline candidate further than the spacing
+between ranks, ranks reshuffle every step; the waterline never settles. The
+zero-sum bookkeeping is *instantaneous* — members that get kicked up leave
+the window upward and keep their gain; members kicked down drop out of the
+candidate set and stop being compensated — so sustained churn pumps score
+mass upward (a ratchet). Growth is scale-free (the kick `η·u·z/(2T)` and the
+spacing δ both scale with the activation scale), so once supercritical the
+inflation continues until numerics break.
+Kick ≈ `η·|u|·b/(2T)` ⇒ `Χ ∝ η·|u|·b/(2T·δ)`. Predicts: instability wherever
+`b/(T·δ)` is large — small T (1/T, and δ unchanged), k=64 (δ smaller at rank
+65 — *must be verified*), j-independent at fixed k (matches: all j behave
+alike at T=1 and T=0.1; the mixed T=0.5 row would then be
+threshold-straddling noise).
+
+**H4 — floor flapping.** With a deeper waterline (k=64), s_(K+1) may dip
+below the floor b0=0.1, mixing corrected (rank) and uncorrected (floor)
+regimes. Killed immediately if the TB `rb_cap_active_frac` of the k=64 runs
+stays ≈ 1.0 before divergence.
+
+H2 and H3 are cousins (both say "the kernel is too strong for the local
+score geometry"); H3 is sharper because it fixes the *comparison scale* (the
+rank spacing) and supplies the growth mechanism (the ratchet). H1 points the
+opposite way on the k-axis, which is why the δ/n_eff measurement matters.
+
+## 5. Evidence plan
+
+1. **Fate table + onset timing** from the France TB scalars (`analysis/kappa_stability.py tb`):
+   when exactly does each run destabilize; do `rb_support_grad_norm`,
+   `rb_boundary`, `rb_cap_active_frac` move first?
+2. **Score geometry** from the lens_1 ladders (`… ladder`): δ, gap, b, Σκ,
+   n_eff per layer per checkpoint — measured at each run's own waterline *and
+   counterfactually at rank 33 and 65 in the same tensors*, so the k=32 vs
+   k=64 geometry difference is measured inside identical models.
+3. **True forces** from the probe captures (`… probe`): reconstruct
+   `a, q, g_s` per candidate from captured (z, u), validate against captured
+   g_z, and measure kick sizes, Cov_q(d,w) (the band-stretch force), support
+   churn between probes, and the ratchet flux — for healthy runs and through
+   the early phase of the T=0.5/0.1 collapses.
+4. Then: falsification runs on france (free 8×5090).
+
+## 6. Evidence phase 1: fate, onset, and what moves first
+
+Extracted with `analysis/kappa_stability.py tb` from the France TB logs.
+Onset = first step whose train loss sits 1 nat above the best loss so far.
+
+| k | j | T | onset | final val CE |   | k | j | T | onset | final val CE |
+|--:|--:|--:|--:|--:|---|--:|--:|--:|--:|--:|
+| 32 | 32 | 0.1 | 640 | 5.98 | | 32 | 32 | 1.0 | — | 1.548 |
+| 32 | 96 | 0.1 | 640 | 9.44 | | 32 | 96 | 1.0 | — | 1.525 |
+| 32 | 224 | 0.1 | 520 | 5.98 | | 32 | 224 | 1.0 | — | 1.494 |
+| 32 | 480 | 0.1 | 580 | 5.98 | | 32 | 480 | 1.0 | — | 1.491 |
+| 32 | 32 | 0.5 | 3760 | 6.08 | | 32–64 | all | 2.0 | — | 1.47–1.56 |
+| 32 | 96 | 0.5 | 6480 | 5.53 | | 64 | 64 | 1.0 | — | 1.504 |
+| 32 | 224 | 0.5 | **—** | 1.512 | | 64 | 192 | 1.0 | — | 1.489 |
+| 32 | 480 | 0.5 | 7760 | 5.77 | | 64 | 448 | 1.0 | **3940** | 14.04 |
+
+![fate grid](figures/kstab_fate_grid.png)
+
+Facts the TB signals add (all runs, dying and stable):
+
+- `rb_cap_active_frac ≡ 1.0` always, even mid-collapse — the b0 floor never
+  engages. **H4 is dead.**
+- `rb_common_mode` stays ~1e-6: the kappa correction stays exactly zero-sum
+  while the run diverges. The correction operates as designed throughout.
+- The **boundary score inflates long before the loss reacts**: the T=0.5
+  victims carry b at 25–500× baseline for hundreds–thousands of steps
+  pre-onset; k64/j448 shows +22% b and 4.4× grad-norm in its last 1000 steps.
+- `rb_support_grad_norm` does *not* grow pre-onset — the surrogate force
+  never explodes; it quietly steers the model into an unstable region, and
+  the *ordinary* loss gradients blow up when the model arrives there.
+
+![boundary inflation](figures/kstab_boundary_inflation.png)
+
+**The figure above changed the shape of the theory.** Destabilisation is not
+a smooth drift: every marginal run shows repeated *inflation bursts* —
+transient boundary excursions (up to 10³×) that mostly *recover*. The T=0.5
+survivor (j224) rode out a 10³ burst at ~4300 twice. Each victim's death is
+one burst that fails to recover and hands over to a permanent exponential
+climb. Death is a noise-activated **escape event**.
+
+Burst census (excursions of b above 3× its rolling median, per 1000 steps,
+pre-onset only):
+
+| row | burst rate | fate |
+|---|--:|---|
+| k=32 T=2 and k=64 T=2 | 0.00 | all stable (max excursion ≤ 1.9×) |
+| k=32 T=1 | 0.05–0.21 | all stable |
+| k=64 T=1 | j64: 0.37, j192: 0.42, **j448: 0.97** | **j448 dies** |
+| k=32 T=0.5 | j224: **0.52**, j480: 1.7, j32: 3.1, j96: 3.2 | **j224 alone survives** |
+
+Burst rate predicts fate *within* rows too: the k64 victim had the highest
+rate of its row, the T05 survivor the lowest of its row by 3–6×.
+
+## 7. Evidence phase 2: the forces, measured
+
+`analysis/kappa_stability.py probe` reconstructs the exact surrogate force
+per candidate from the probe captures (u = dL/d~z and signed z, steps
+0–1000 every 10). The reconstruction matches the captured dL/dz to ~0.000
+relative error, so these are the true training-time forces.
+
+**The T=0.1 collapse, anatomised** (k32 j96; layer 4; kick = mean |g_s| in
+the kernel window, n_eff = how many candidates share the window):
+
+| step | probe CE | kick | n_eff | s_(K+1) | top-K mean |
+|--:|--:|--:|--:|--:|--:|
+| 0 | 11.30 | 7.2e-3 | 22 | 3.8 | 4.3 |
+| 100 | 7.18 | 5.7e-5 | 15 | 4.9 | 5.7 |
+| 150 | 6.20 | 1.9e-4 | 3 | 11.9 | 15.6 |
+| 250 | 6.10 | 6.1e-4 | 2 | 36 | 47 |
+| 350 | 5.84 | 1.7e-6 | **1** | 50 | 73 |
+| 500 | 6.06 | ~0 | 1 | 664 | 1297 |
+| 1000 | 17.2 | ~0 | 1 | 21941 | 49688 |
+
+The sequence: a huge initial kick (κ_max = 1/(2T) = 5) → scores inflate to
+escape the kernel → the window population n_eff collapses to **1** → the
+kappa correction *degenerates into through_rank* (the whole zero-sum lands
+on one boundary feature — the proven-divergent mode) → runaway inflation →
+kernel dead (kick → 0) → the model is stranded at 10³–10⁴× activation scale,
+CE frozen ~6. Support churn: 96% of the top-K replaced per 10 steps at the
+start (vs ~30% healthy), then frozen solid (overlap → 1.0).
+
+**The pressure number.** Define the *kick-to-spacing ratio*
+
+    Χ = mean|g_s| in window / δ(b)
+
+(how far one surrogate kick moves a boundary score, relative to the score
+distance between neighbouring ranks there — Χ ≳ 1-ish per *optimizer step*
+would mean ranks reshuffle every step; the raw gradient-unit values below
+are much smaller but comparable across runs). Measured at steps 300–1000:
+
+| row | Χ (layer-mean) | fate |
+|---|--:|---|
+| k=32 T=2 | 2.7e-5 | stable |
+| k=64 T=2 | 5.4e-5 | stable |
+| k=32 T=1 | 8.2e-5 | stable |
+| k=64 T=1 | 1.5–1.7e-4 (all three j!) | marginal: 1 of 3 dies |
+| k=32 T=0.5 | 1.9e-4 | marginal: 3 of 4 die |
+| k=32 T=0.1 | ~1e-2 at init | dies in ~150 steps |
+
+Χ is a *row* property (nearly identical across j at fixed k,T) and cleanly
+orders the rows: **safe below ~1e-4, marginal at ~1.5–2e-4, instant death
+at ~100× that.** The user's hunch is confirmed: the k-axis failure and the
+T-axis failure are the same mechanism, because
+
+    Χ ∝ |u| · b / (2 T δ(b)),
+
+and the rank-65 boundary lives in a ~3.3–4.6× denser score region (δ@33 /
+δ@65 measured in *the same tensors* of every healthy model) at ~30% lower
+b, giving Χ(k64,T1)/Χ(k32,T1) ≈ 2.2 ≈ Χ(k32,T0.5)/Χ(k32,T1). Equivalently:
+**k=64 at T=1 IS k=32 at T≈0.5.** The measured safe-T ratio T_c(64)/T_c(32)
+≈ 2.2 matches the campaign outcome (T=2 safe at k=64).
+
+Two side-findings:
+- n_eff at healthy steady state is 46–446 — nowhere near 1. The kappa
+  correction only degenerates *during* bursts/collapses. H1 as a standing
+  explanation is dead; it survives as the *cliff* at the end of a burst.
+- The per-feature ratchet is real but tiny in healthy runs: window members
+  kicked up fall ~0.04 score units less per 10 steps than members kicked
+  down, on a mean regression flow of −0.5. The surrogate is a ~2–5% bias on
+  the natural score dynamics — consistent with "quiet steering", not
+  "domination".
+
+## 8. Theory v3: burst-escape
+
+1. The kernel exerts pressure Χ on the boundary region. The model's cheapest
+   response (norm-pinned MD weights, downstream norms) is to inflate its
+   score scale, which sheds window members; the CE loss pushes back.
+2. At safe Χ the tug-of-war equilibrates (zero bursts at T=2, tiny rare
+   bursts at k32/T1). At marginal Χ the equilibrium is punctuated by
+   stochastic inflation bursts.
+3. A burst that transiently empties the window (n_eff → O(1)) flips the
+   kappa correction into its through_rank/point-sink degenerate limit —
+   which is *itself* an inflation pump — the burst becomes self-sustaining,
+   the kernel dies entirely, and the network is stranded at enormous
+   activation scale (frozen CE ≈ 6, or worse once numerics saturate).
+4. T=0.1 reaches the cliff deterministically in ~150 steps; marginal rows
+   reach it stochastically (burst roulette, onset 3.7–7.7k, victim = highest
+   burst rate); safe rows never reach it.
+
+## 9. Falsification wave 1 (running on france, 6k steps, 20k schedules)
+
+Pre-registered predictions:
+
+| run | tests | prediction (v3) |
+|---|---|---|
+| k64 j448 T1 **detach** | is the kappa correction the cause? | v3 says the *raw* kernel force is the pump; detach at this pressure should die too |
+| k64 j448 T1 **project** | uniform vs κ-weighted zero-sum | should be between detach and kappa |
+| k64 j448 T1 seed 1338 | is the 3940 death deterministic? | dies again, at a different step (burst roulette) |
+| k64 j448 **T=1.5** | Χ threshold bracket (Χ ≈ 1.0–1.1e-4) | at the safe edge: survives 6k, marginal at 20k |
+| k64 **j320** T1 | j-threshold inside the marginal row | same Χ as siblings ⇒ survival decided by burst luck; rate between j192 and j448 |
+| k32 j480 **T=0.75** | Χ bracket on the k32 axis (Χ ≈ 1.1e-4) | marginal-safe: survives 6k |
+| k32 j96 T05 seed 1338 | victim reshuffle | dies, at a different onset than 6480 |
+| probe5k of k64 j448 T1 | gradient-resolved capture through the death | n_eff → O(1) during the fatal burst; Χ flat-then-spike, not a slow ramp |
+
+**Early returns (step ~1100):** detach CE 9.0 with grad-norm=inf and project
+CE 7.1 with grad-norm=inf — both already collapsed, while every kappa run is
+healthy at the same step. At k32/T1 detach had been stable for 20k. So the
+correction is not the villain — it is the *strongest* of the three modes at
+this pressure (kappa outlived detach 4×), and what kills it is the burst
+that transiently strips its window. Consistent with v3.
