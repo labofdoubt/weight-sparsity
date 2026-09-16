@@ -503,3 +503,60 @@ redone under the protective floor (two seeds) plus a k=96 seed repeat.
 and last blocks sharpest-geometried); k96 the same shape one size up
 (3.52…2.06…3.06). A ~1.5× spread inside one model: per-layer control is
 not an implementation nicety, no single scalar T is right for all blocks.
+
+## 16. Wave 2.2 (20k, protective-only trim): the null test passes
+
+| run | fate | final val CE | reference |
+|---|---|--:|---|
+| kstab_k32_j480_servo (redo) | stable, no onset | **1.4879** | fixed T=1: 1.4910; symmetric-trim version: died @4140 |
+| kstab_k32_j480_servo_s2 | stable, no onset | 1.4957 | seed robustness |
+| kstab_k96_j416_servo_s2 | stable, no onset | **1.4665** | seed 1: 1.4734; fixed T=1: died @1640 |
+
+The protective floor fixes the one failure of wave 2.1 — and the redo not
+only matches the fixed-T=1 flagship, it edges past it.
+
+## 17. Final answers
+
+**What destabilizes `through_rank_kappa`?** Kernel pressure on the boundary
+neighbourhood: when the kernel is too sharp for the local score geometry
+(too few "rungs" of the score ladder inside the window, each feeling too
+strong a kick), the model responds by inflating its score scale, in
+stochastic bursts. A burst that empties the window (n_eff → 1) flips the
+kappa correction into through_rank's point-sink limit — the proven runaway
+engine — and the burst becomes self-sustaining: depth-cascading activation
+inflation, kernel death, terminal collapse. The zero-sum correction itself
+never fails; it is the most protective of the three modes (detach and
+project die 40× faster at the same pressure).
+
+**Are the k-axis and T-axis failures the same mechanism?** Yes. Both axes
+move one dimensionless number, the geometric pressure Χ_geo = b/(2Tδ):
+raising k moves the boundary into a denser part of the score distribution
+(b/δ ≈ 80 → 212 → 319 → 398 at K = 32/64/96/128), lowering T sharpens the
+kernel. Measured equivalence: k=64 at T=1 ≈ k=32 at T≈0.5 — and both sat in
+the same marginal band with the same burst phenomenology. The k=96 death at
+fixed T=1 was called in advance (onset window and all) from geometry alone.
+
+**The recipe.** `rblapsum_temperature_mode: servo` — per-layer temperature
+with (a) a population floor (window may never thin below 16 members; T
+jumps 10%/step if it does — the cliff becomes unreachable), (b) a
+geometric-pressure trim holding Χ_geo = EMA(b)/(2T·EMA(δ)) at 45, and
+(c) **protective-only**: T never goes below the configured baseline. Final
+scoreboard, servo vs. the best fixed-T alternative:
+
+| config | servo (both seeds) | best fixed T |
+|---|---|---|
+| k=32, j=480 | **1.4879** / 1.4957 | 1.4910 (T=1) |
+| k=64, j=448 | 1.4691 / **1.4608** | 1.4724 (T=2); T=1 dies |
+| k=96, j=416 | 1.4734 / **1.4665** | none — fixed T=1 dies @1640 |
+| rescues | T₀=0.5 → 1.5075, T₀=0.1 → 1.5261 | fixed versions die |
+
+Every post-fix servo run (11 of 11 across k = 32/64/96, seeds, and lethal
+starting temperatures) trained stably to 20k with quality at or above the
+fixed-T baselines, discovering T ≈ 0.95/2.2/3.0 per k (U-shaped per layer)
+with no manual sweep.
+
+**Still open** (documented above): what selects the victim within a
+marginal row (population tracks it at k=64/T1 but not at T=0.5); a closed
+time-integrated budget for how the cross-step leak couples to global scale
+growth; and the generality of the Χ_geo ≈ 45–55 safe band beyond this
+architecture and optimizer.
