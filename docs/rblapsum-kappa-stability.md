@@ -371,3 +371,40 @@ Two more within-row facts:
   the within-row victim selection at T=0.5 is not explained by population
   alone — plausibly threshold-saturated chaos; the seed-repeat runs speak
   to this.
+
+## 12. Wave 1 results (6k steps, 20k schedules)
+
+| run | predicted | observed | verdict |
+|---|---|---|---|
+| k64 j448 T1 **detach** | dies (raw force is the pump) | died **inside the first 100 steps** (frozen CE 9.06) | ✓✓ — even faster than kappa's 3940 |
+| k64 j448 T1 **project** | between detach and kappa | died < 100 steps (frozen CE 7.09) | ✓ (uniform mean-removal ≈ no protection here) |
+| k64 j448 T1 **seed 1338** | dies at a different step | **survived 6k** (1.687), bursting at the row rate 0.39/1k | ✗ on the letter — ✓ on the substance: with the probe5k replica also surviving to 4800, 2 of 3 trajectories of the killer config live past 4k. Death is a stochastic escape, not a deterministic event |
+| k64 j448 **T=1.5** | edge of safe: survives 6k | survived, **zero bursts** (max excursion 1.5×) | ✓, calmer than predicted |
+| k64 **j320** T1 | roulette at row rate | survived, 0.39 bursts/1k | ✓ |
+| k32 j480 **T=0.75** | safe edge | survived (1.730), 0.19 bursts/1k | ✓ |
+| k32 j96 T05 **seed 1338** | dies at a different onset | died, onset **3680** (seed 1: 6480), one 10⁶× burst | ✓ |
+| probe5k through-death capture | n_eff → O(1) during the fatal burst | no death this time — but two discoveries below | partial |
+
+Two refinements from the gradient-resolved replica (figure below):
+
+![probe5k dip and creep](figures/kstab_probe5k_dip_creep.png)
+
+- **The early transient is a near-miss.** In the first ~100 steps the deep
+  blocks' window population crashes (block 7: 363 → 27) while Χ starts at
+  ~1e-3. This is exactly when T=0.1, detach and project die. Everything
+  that survives does so by squeaking through this phase.
+- **Pressure creeps upward through training.** After recovery, Χ climbs
+  steadily (block 7: 1.2e-4 → 2.7e-4 by step 4800) because the sharpening
+  score geometry shrinks δ faster than the kick decays. Marginal rows drift
+  deeper into burst territory with time — late stochastic deaths (3.7–7.7k)
+  are not just waiting for a rare burst; the burst rate itself grows. A
+  fixed T must be sized for the worst moment of the worst layer; a feedback
+  T pays only where and when pressure exists.
+- **The pressure is layer-heterogeneous**: blocks 5–7 live in the marginal
+  zone, blocks 0–4 relax to safe levels — the servo being per-layer is not
+  an implementation detail but a requirement.
+
+Theory status after wave 1: no surviving contradiction. The one falsified
+letter-prediction (seed 1338 "dies again") sharpened the claim: **a
+marginal row sets a death *rate*, not a death sentence** — consistent with
+the through_rank regen that also refused to re-diverge.
