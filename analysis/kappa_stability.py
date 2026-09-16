@@ -133,16 +133,24 @@ def geom_at_rank(ss: np.ndarray, K: int, m: int = 4) -> dict:
 
 def kernel_stats(ss: np.ndarray, K: int, J: int, T: float) -> dict:
     b = np.maximum(B0, ss[:, K])[:, None]
-    d = ss[:, :K + J] - b
+    sc = ss[:, :K + J]
+    d = sc - b
     kap = np.exp(-np.abs(d) / T) / (2 * T)
     Sk = kap.sum(1)
     Sk2 = (kap ** 2).sum(1)
     n_eff = (Sk ** 2) / np.maximum(Sk2, 1e-30)
     win = (np.abs(d) < T).mean(1)
     cap = (ss[:, K] > B0).mean()
+    # exact surrogate gain Pi = ||L_kappa D_z||_F^2 per token via the
+    # diagonal-minus-rank-one structure (see analysis/scale_dynamics.py)
+    Z = np.maximum(Sk, 1e-30)[:, None]
+    colj = (sc * kap) ** 2 * ((1 - kap / Z) ** 2
+                              + (Sk2[:, None] - kap ** 2) / (Z ** 2))
+    Pi = colj.sum(1)
     return {"sum_kappa": float(Sk.mean()), "n_eff": float(n_eff.mean()),
             "n_eff_med": float(np.median(n_eff)),
-            "in_window_frac": float(win.mean()), "cap_frac": float(cap)}
+            "in_window_frac": float(win.mean()), "cap_frac": float(cap),
+            "Pi": float(Pi.mean()), "Pi_med": float(np.median(Pi))}
 
 
 def cmd_ladder(args) -> None:
