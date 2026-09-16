@@ -364,28 +364,25 @@ def test_servo_population_guard_raises_T():
 
 
 def test_servo_trim_raises_T_under_kernel_pressure():
-    torch.manual_seed(0)
+    # dense boundary: delta = 1e-3, b ~ 1 -> chi_geo ~ 500 >> 45 -> T rises
     g = make_servo_gate(T=1.0)
-    a = tight_batch()
+    a = tight_batch(spacing=1e-3)
     g.train()
     for _ in range(30):
-        x = a.clone().requires_grad_(True)
-        y = g(x)
-        y.backward(torch.ones_like(y))  # big upstream -> big kick -> chi >> target
+        g(a)
     assert 1.2 < float(g.rb_temp) <= 1.02 ** 30 + 1e-6
     assert float(g.rb_temp) <= g.rblapsum_t_max
 
 
-def test_servo_trim_lowers_T_when_quiet():
-    torch.manual_seed(0)
+def test_servo_trim_lowers_T_when_geometry_is_wide():
+    # wide boundary: delta = 0.05, b ~ 2.6 -> chi_geo ~ 26 < 45 -> T falls,
+    # window stays populated (guard must not fire)
     g = make_servo_gate(T=1.0)
-    a = tight_batch()
+    a = tight_batch(spacing=0.05, base=1.0)
     g.train()
     for _ in range(30):
-        x = a.clone().requires_grad_(True)
-        y = g(x)
-        y.backward(1e-12 * torch.ones_like(y))  # negligible kick -> chi << target
-    assert g.rblapsum_t_min <= float(g.rb_temp) < 0.9
+        g(a)
+    assert g.rblapsum_t_min <= float(g.rb_temp) < 0.95
 
 
 def test_servo_state_roundtrip():
@@ -395,7 +392,7 @@ def test_servo_state_roundtrip():
     g.train()
     g(a)
     sd = g.state_dict()
-    assert "rb_temp" in sd and "rb_kick_ema" in sd and "rb_delta_ema" in sd
+    assert "rb_temp" in sd and "rb_b_ema" in sd and "rb_delta_ema" in sd
     g2 = make_servo_gate(T=1.0)
     g2.load_state_dict(sd)
     assert torch.isclose(g2.rb_temp, g.rb_temp)

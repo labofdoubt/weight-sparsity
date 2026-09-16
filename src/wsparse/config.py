@@ -596,15 +596,18 @@ class ActivationBottleneckConfig:
     #     divergence cliff is the window emptying: the kappa zero-sum then
     #     lands on one feature (= through_rank's point sink) and the boundary
     #     runs away.  The guard makes that state unreachable.
-    # (b) kick-to-spacing trim -- otherwise T moves (<= 2%/step) to hold
-    #     EMA(mean |g_s| in window) / EMA(local rank spacing at the boundary)
-    #     at rblapsum_chi_target.  8e-5 is the measured "safe and best
-    #     quality" operating point (k=32, T=1); the runs that destabilised sat
-    #     at 1.5-2e-4; T=2 rows sat at 3-5e-5 with zero boundary bursts.
+    # (b) geometric-pressure trim -- otherwise T moves (<= 2%/step) to hold
+    #     chi_geo = EMA(b) / (2 T EMA(delta)) at rblapsum_chi_target, where
+    #     delta is the per-rank score spacing at the boundary.  Dimensionless
+    #     pure forward geometry: no gradient units, so it transfers across
+    #     batch sizes (a kick-based trim was falsified by its own telemetry).
+    #     Campaign calibration: every run that kept chi_geo <= ~55 survived;
+    #     every death carried >= ~58 somewhere; >= ~110 is seed-roulette
+    #     territory.  45 sits just below the proven k32/T1 operating point.
     # Servo state (T and both EMAs) is a persistent per-layer buffer, so
     # checkpoints carry it and resumes continue the trajectory.
     rblapsum_temperature_mode: str = "fixed"
-    rblapsum_chi_target: float = 8e-5
+    rblapsum_chi_target: float = 45.0
     rblapsum_window_floor: float = 16.0
     rblapsum_t_min: float = 0.25
     rblapsum_t_max: float = 8.0

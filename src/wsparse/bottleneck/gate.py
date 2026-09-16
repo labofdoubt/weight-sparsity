@@ -235,7 +235,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
                         " side of the boundary: needs k > 4 and j >= 8")
                 self.register_buffer(
                     "rb_temp", torch.tensor(float(self.rblapsum_temperature)))
-                self.register_buffer("rb_kick_ema", torch.zeros(()))
+                self.register_buffer("rb_b_ema", torch.zeros(()))
                 self.register_buffer("rb_delta_ema", torch.zeros(()))
             # the (K+1)-st score is the rank boundary, so J>=1 (already required
             # by validate_gate_shapes for every non-hard mode) guarantees it
@@ -552,8 +552,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         if servo and self.training:
             self._rb_servo_update(score_c, b)
         t = float(self.rb_temp) if servo else self.rblapsum_temperature
-        sink = (self._grad_sink
-                if (self.log_diagnostics or servo) and self.training else None)
+        sink = self._grad_sink if self.log_diagnostics and self.training else None
         y_c = rblapsum_gate(value_c, active_c, score_c, sign_c, b, t,
                             self.rblapsum_boundary_grad_mode, self.k, cap_active, sink)
         y = torch.zeros_like(value).scatter(-1, cand_idx, y_c.to(value.dtype))
@@ -578,10 +577,18 @@ class AdaptiveLapSumTopKGate(nn.Module):
           The divergence cliff is the window emptying -- the kappa zero-sum
           then concentrates onto one feature (through_rank's point sink) and
           the boundary runs away -- so the window is never allowed to empty.
-        - kick-to-spacing trim (at most 2%/step): hold
-          EMA(mean |g_s| in window) / EMA(local rank spacing at the boundary)
-          at ``rblapsum_chi_target``.  The kick estimate arrives from the
-          previous backward through the grad sink (one-step lag).
+        - geometric-pressure trim (at most 2%/step): hold
+
+              chi_geo = EMA(b) / (2 * T * EMA(delta(b)))
+
+          at ``rblapsum_chi_target``, where delta(b) is the local score
+          spacing per rank at the boundary.  chi_geo is dimensionless pure
+          forward geometry -- no gradient units, so no dependence on batch
+          size or loss normalisation (a kick-based trim was tried first and
+          falsified by its own telemetry: gradient-unit targets do not
+          transfer across batch sizes).  Measured chi_geo of the campaign:
+          every run that stayed <= ~55 survived; every death carried >= ~58
+          somewhere; >= ~110 is seed-roulette territory.
 
         Uses local batches only -- under DDP each rank servos its own copy.
         """
@@ -590,28 +597,34 @@ class AdaptiveLapSumTopKGate(nn.Module):
         delta = (score_c[..., self.k - 1 - m_sp]
                  - score_c[..., self.k - 1 + m_sp]) / (2 * m_sp)
         delta_b = delta.mean()
+        b_mean = b.mean()
         n_win = ((score_c - b).abs() < t).sum(-1).to(torch.float32).mean()
         ema = 0.95
-        self.rb_delta_ema.mul_(ema).add_((1 - ema) * delta_b)
-        kick = self._grad_sink.get("rb_kick_win")
-        if kick is not None:
-            self.rb_kick_ema.mul_(ema).add_(
-                (1 - ema) * kick.to(self.rb_kick_ema.dtype))
+        # init-on-first-use, then EMA
+        if float(self.rb_delta_ema) == 0:
+            self.rb_delta_ema.fill_(float(delta_b))
+            self.rb_b_ema.fill_(float(b_mean))
+        else:
+            self.rb_delta_ema.mul_(ema).add_((1 - ema) * delta_b)
+            self.rb_b_ema.mul_(ema).add_((1 - ema) * b_mean)
+        chi_geo = float(self.rb_b_ema) / max(
+            2 * t * float(self.rb_delta_ema), 1e-30)
         if float(n_win) < self.rblapsum_window_floor:
             self.rb_temp.mul_(1.10)
-        elif float(self.rb_kick_ema) > 0 and float(self.rb_delta_ema) > 0:
-            chi = float(self.rb_kick_ema) / float(self.rb_delta_ema)
+        else:
             step = self.rblapsum_servo_rate * math.log(
-                chi / self.rblapsum_chi_target)
+                max(chi_geo, 1e-30) / self.rblapsum_chi_target)
             self.rb_temp.mul_(math.exp(max(-0.0198, min(0.0198, step))))
         self.rb_temp.clamp_(self.rblapsum_t_min, self.rblapsum_t_max)
-        self._rb_servo_diag = {
+        diag = {
             "rb_temp": self.rb_temp.detach().clone(),
             "rb_win_count": n_win.detach(),
-            "rb_chi": delta_b.new_tensor(
-                float(self.rb_kick_ema)
-                / max(float(self.rb_delta_ema), 1e-30)),
+            "rb_chi": delta_b.new_tensor(chi_geo),
         }
+        kick = self._grad_sink.get("rb_kick_win")
+        if kick is not None:
+            diag["rb_kick"] = kick
+        self._rb_servo_diag = diag
 
     @torch.no_grad()
     def _record_rblapsum(self, active_c, cap_active, b_rank, b) -> None:
