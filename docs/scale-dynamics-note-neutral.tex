@@ -1,0 +1,1736 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{caption}
+
+\emergencystretch=1.5em
+\captionsetup{font=small,labelfont=bf,width=.92\textwidth}
+\setlength{\parskip}{4pt plus 1pt}
+\setlength{\parindent}{0pt}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\neff}{n_{\mathrm{eff}}}
+\newcommand{\chigeo}{\chi_{\mathrm{geo}}}
+\newcommand{\Pisurr}{\Pi}
+\newcommand{\EMA}{\operatorname{EMA}}
+
+\title{
+Order parameter and mechanism of the RBLapSum
+\code{through\_rank\_kappa} instability\\[2pt]
+\large Research note: one-step score-scale dynamics
+}
+
+\author{}
+\date{2026-09-16/17. Follow-up to the kappa stability investigation.}
+
+\begin{document}
+
+\maketitle
+\vspace{-2em}
+\tableofcontents
+
+% ============================================================
+\section{Purpose and summary of conclusions}
+% ============================================================
+
+The previous investigation
+(\code{docs/rblapsum-kappa-stability-neutral.tex})
+introduced the geometric quantity
+
+\[
+\chigeo
+=
+\frac{b}{2T\delta}
+\]
+
+as an empirical indicator of instability.
+
+The purpose of the present investigation is to test whether
+\(\chigeo\) is a fundamental control parameter or only a useful proxy,
+and to identify the mechanism that produces the observed
+score-inflation bursts.
+
+Four hypotheses are considered:
+
+\begin{itemize}[leftmargin=1.4em]
+
+\item \textbf{H1:}
+\(\chigeo\) is an empirical proxy rather than a fundamental order parameter.
+
+\item \textbf{H2:}
+the dimensionless surrogate gain
+
+\[
+\Pisurr
+=
+\left\|L_\kappa D_z\right\|_F^2
+\]
+
+is a more appropriate measure of the strength of the support-gradient
+mechanism.
+
+\item \textbf{H3:}
+large surrogate gain destabilizes the model by coupling to the score-scale
+degree of freedom.
+
+\item \textbf{H4:}
+the collapse of the effective kernel population,
+\(\neff\to1\), is primarily a late-stage feature of the instability rather
+than its initial cause.
+
+\end{itemize}
+
+The main results are as follows.
+
+\begin{itemize}[leftmargin=1.4em]
+
+\item \textbf{H1 is supported.}
+A score-unit reparameterization leaves the forward computation and training
+dynamics unchanged while changing \(\chigeo\) by an arbitrary multiplicative
+factor. In addition, within a fixed \((K,T)\) row, \(\chigeo\) has essentially
+no prospective predictive power for future bursts
+(AUC approximately \(0.46\)).
+Therefore a universal numerical threshold in \(\chigeo\) cannot be
+fundamental.
+
+\item \textbf{H2 is supported as a statement about surrogate gain.}
+The quantity
+
+\[
+\Pisurr
+=
+\left\|L_\kappa D_z\right\|_F^2
+\]
+
+is dimensionless and invariant under the score-unit reparameterization.
+Across the measured states it predicts the realized gradient gain with rank
+correlation \(0.97\), compared with \(0.52\) for \(\chigeo\).
+The approximation
+
+\[
+\Pisurr
+\approx
+\frac{b^2}{4T\delta}
+\]
+
+is reasonably accurate in healthy, locally dense boundary regions, but can
+fail badly when the score geometry becomes degenerate.
+
+\item \textbf{H3 is supported, but the dominant mechanism is not a positive
+first-order radial force.}
+At the dangerous states, the signed task and surrogate contributions to the
+score scale are generally restoring.
+The destabilizing contribution is instead a second-order increase in score
+scale caused by large parameter updates.
+We refer to this contribution as \emph{heating}.
+It is even under reversal of the gradient direction and scales approximately
+quadratically with the learning-rate multiplier.
+At the most dangerous states it is largely deterministic rather than a
+consequence of minibatch variance.
+Instability begins when this heating becomes comparable to or larger than the
+restoring signed drift.
+
+\item \textbf{H4 is supported with an important qualification.}
+In the strict one-feature limit,
+\(\neff=1\), the kappa-corrected surrogate vanishes:
+the measured \(\Pisurr\) is exactly zero.
+However, neighboring blocks with
+\(\neff\approx2\) and very large activations can retain enormous surrogate
+gain and continue to increase the score scale.
+Post-collapse growth stops when the support gradient is disabled, while
+broadening the kernel after collapse can make the instability substantially
+worse.
+
+\item \textbf{The resulting controller picture has two relevant variables.}
+The effective kernel population \(\neff\) provides the strongest measured
+within-row early warning of a burst, while \(\Pisurr\) measures the strength
+of the surrogate coupling.
+After a block has already entered the collapsed regime, the appropriate
+emergency intervention is to suppress the support gradient rather than to
+increase \(T\).
+
+\end{itemize}
+
+
+% ============================================================
+\section{Definitions}
+% ============================================================
+
+All gate quantities below are computed per layer from the candidate set,
+consisting of the top \(K+J\) features by score.
+
+\subsection*{Scores, boundary, and kernel}
+
+The pre-gate feature value is \(z_i\), and the score used for ranking is
+
+\[
+s_i=|z_i|.
+\]
+
+The rank boundary is
+
+\[
+b
+=
+\max\left(b_0,s_{(K+1)}\right),
+\]
+
+where \(s_{(K+1)}\) is the largest inactive score.
+
+The exponential kernel is
+
+\[
+\kappa_i
+=
+\frac{e^{-|s_i-b|/T}}{2T},
+\qquad
+Z=\sum_i\kappa_i.
+\]
+
+The effective kernel population is
+
+\[
+\neff
+=
+\frac{Z^2}{\sum_i\kappa_i^2}.
+\]
+
+A local rank-spacing estimate is
+
+\[
+\delta
+=
+\frac{s_{(K-3)}-s_{(K+5)}}{8}.
+\]
+
+Small \(\delta\) corresponds to a locally dense score distribution near the
+support boundary.
+
+\subsection*{Gradient chain}
+
+It is useful to make the backward path explicit.
+Let \(p_i\) denote the surrogate gate variable and let the bottleneck output be
+
+\[
+y_i=p_i z_i.
+\]
+
+The gradient arriving from the rest of the network is
+
+\[
+u_i
+=
+\frac{\partial L}{\partial y_i}.
+\]
+
+At fixed \(z_i\),
+
+\[
+\frac{\partial y_i}{\partial p_i}
+=
+z_i,
+\]
+
+so
+
+\[
+\frac{\partial L}{\partial p}
+=
+D_z u,
+\qquad
+D_z=\operatorname{diag}(z).
+\]
+
+For the kappa-corrected surrogate, define
+
+\[
+D_\kappa
+=
+\operatorname{diag}(\kappa)
+\]
+
+and
+
+\[
+L_\kappa
+=
+D_\kappa
+-
+\frac{\kappa\kappa^\top}{Z}.
+\]
+
+The surrogate score-to-gate Jacobian is represented by \(L_\kappa\).
+The support-gradient contribution with respect to the scores is therefore
+
+\[
+g_s
+=
+L_\kappa D_z u.
+\]
+
+Equivalently, with
+
+\[
+w_i=-u_i z_i,
+\]
+
+one may write
+
+\[
+g_s=-L_\kappa w,
+\]
+
+up to the sign convention used for the reported update direction.
+
+Because
+
+\[
+L_\kappa \mathbf 1=0,
+\]
+
+the kappa correction removes the common score-translation mode from the
+surrogate gradient.
+
+\subsection*{Exact surrogate gain}
+
+The dimensionless gain of the surrogate Jacobian is defined as
+
+\[
+\boxed{
+\Pisurr
+=
+\left\|L_\kappa D_z\right\|_F^2.
+}
+\]
+
+Using the diagonal-minus-rank-one form of \(L_\kappa\), this can be computed
+without constructing a dense matrix:
+
+\[
+\Pisurr
+=
+\sum_j
+z_j^2\kappa_j^2
+\left[
+\left(1-\frac{\kappa_j}{Z}\right)^2
++
+\frac{
+\sum_i\kappa_i^2-\kappa_j^2
+}{
+Z^2
+}
+\right].
+\]
+
+The quantity \(\kappa_j z_j\) is dimensionless, so \(\Pisurr\) is also
+dimensionless.
+
+By contrast,
+
+\[
+\chigeo
+=
+\frac{b}{2T\delta}
+\]
+
+has units of inverse score.
+
+For a locally dense and approximately uniform score distribution near the
+boundary,
+
+\[
+\Pisurr
+\approx
+\frac{b^2}{4T\delta}.
+\]
+
+This approximation is tested below rather than assumed to hold generally.
+
+The realized empirical gain is measured as
+
+\[
+G_{\mathrm{emp}}
+=
+\frac{\|g_s\|^2}{\|u\|^2}
+\]
+
+over the candidate features.
+
+\subsection*{Score-scale statistics}
+
+On a fixed evaluation batch, three scale statistics are monitored:
+
+\[
+R_{\mathrm{all}}
+=
+\operatorname{RMS}_i(s_i),
+\]
+
+the mean top-\(K\) score \(R_K\), and the boundary \(b\).
+
+The logarithmic scale coordinate is
+
+\[
+x=\log R.
+\]
+
+Using \(\log R\) makes multiplicative changes in score scale additive.
+
+\subsection*{One-step drift and heating decomposition}
+
+Counterfactual optimizer steps are evaluated from the same saved model and
+optimizer state.
+
+The branches are:
+
+\begin{itemize}[leftmargin=1.4em]
+
+\item \emph{null}: zero current gradient;
+\item \emph{task}: support-surrogate gradient disabled;
+\item \emph{full}: ordinary task gradient plus support-surrogate gradient;
+\item the corresponding antithetic branches in which the current gradient is
+reversed.
+
+\end{itemize}
+
+The saved Adam-type optimizer state is retained in every branch, so previously
+accumulated momentum and second moments are replayed identically.
+
+For a gradient \(G\), define the signed, or odd, component of the one-step
+scale change as
+
+\[
+\mu(G)
+=
+\frac12
+\mathbb E
+\left[
+\Delta x(+G)-\Delta x(-G)
+\right].
+\]
+
+This isolates the part that changes sign when the current gradient direction
+is reversed.
+
+The support contribution to the signed drift is obtained from
+
+\[
+\mu_{\mathrm{supp}}
+=
+\mu_{\mathrm{full}}
+-
+\mu_{\mathrm{task}}.
+\]
+
+The even component relative to the null branch measures the
+sign-independent change in scale.
+At second order, parameter displacements contribute positively to squared
+activation norms even when their first-order radial contribution changes
+sign.
+This even contribution is referred to below as \emph{heating}.
+
+The raw gradients themselves satisfy the exact decomposition
+
+\[
+G_{\mathrm{full}}
+=
+G_{\mathrm{task}}
++
+G_{\mathrm{supp}},
+\]
+
+which was verified using identical random-number states and in a model with
+no stochastic layers.
+Optimizer updates are not additive in the same way, because the Adam-type
+update is nonlinear in the current gradient and optimizer state.
+For this reason the optimizer branches are measured separately.
+
+
+% ============================================================
+\section{Experiments performed}
+% ============================================================
+
+The investigation used the following experiments.
+
+\begin{enumerate}[leftmargin=1.6em]
+
+\item \textbf{Checkpoint library.}
+Thirteen model states were selected to cover several regimes:
+
+\begin{itemize}[leftmargin=1.4em]
+
+\item calm \(T=2\) states;
+\item stable \(K=32,T=1\) states;
+\item a marginal surviving \(K=32,J=224,T=0.5\) run around a recoverable
+burst, using checkpoints at steps 2000, 4000, and 6000;
+\item marginal checkpoints from runs that later collapsed,
+including \(K=32,J=480,T=0.5\) and \(K=64,J=448,T=1\);
+\item a post-collapse \(K=32,J=480,T=0.1\) state.
+
+\end{itemize}
+
+All checkpoints include the full optimizer state.
+
+The state labels describe the eventual fate of the corresponding run.
+Except for the explicitly post-collapse checkpoint, the model is still in a
+healthy state at the time of measurement.
+For example, the \(K=64,T=1\) ``pre-collapse'' checkpoint is taken at step
+2000, while the original run destabilizes at approximately step 3940.
+
+\item \textbf{One-step drift and heating.}
+For each state, 16 batches were evaluated.
+Five counterfactual optimizer branches were measured per batch, and the
+per-layer change in \(\log R\) was evaluated on a fixed evaluation batch.
+
+\item \textbf{Surrogate gain and radial structure.}
+For each state and layer, the analysis measured
+
+\[
+\Pisurr,\qquad
+\frac{b^2}{4T\delta},\qquad
+\chigeo,\qquad
+\neff,\qquad
+G_{\mathrm{emp}},
+\]
+
+as well as the support radial projection
+
+\[
+r_{\mathrm{supp}}
+=
+-\frac{s^\top g_s^{(z)}}{s^\top s},
+\]
+
+the quantity
+
+\[
+(s-b\mathbf1)^\top L_\kappa w,
+\]
+
+and
+
+\[
+\operatorname{Cov}_q(s-b,w).
+\]
+
+A permutation control was also performed using 48 random shuffles of \(w\)
+among candidates for each token.
+
+\item \textbf{Scale-response curves.}
+A function-preserving gate-level intervention rescales
+
+\[
+z\rightarrow\alpha z
+\]
+
+while dividing the gate output by \(\alpha\).
+This keeps the forward function and ordinary task-gradient path unchanged,
+while the support surrogate sees scores multiplied by \(\alpha\) at fixed
+temperature \(T\).
+
+The intervention was unit-tested and verified numerically.
+Drift was measured for
+
+\[
+\alpha
+\in
+\{0.5,0.75,1,1.25,1.5,2,3\}
+\]
+
+at four reference states.
+
+\item \textbf{Score-unit reparameterization.}
+The transformation
+
+\[
+z\rightarrow cz,
+\qquad
+s\rightarrow cs,
+\qquad
+b\rightarrow cb,
+\qquad
+T\rightarrow cT,
+\]
+
+together with the corresponding output compensation, should leave the gate
+and parameter gradients invariant.
+
+Under this transformation,
+
+\[
+\chigeo
+\rightarrow
+\frac{\chigeo}{c}.
+\]
+
+This provides a direct test of whether a numerical threshold in
+\(\chigeo\) can be fundamental.
+
+\item \textbf{Learning-rate and batch-size tests.}
+Learning-rate multipliers
+
+\[
+\{0.5,1,2\}
+\]
+
+and a half-batch condition were evaluated at three representative states in
+order to distinguish first-order signed drift from second-order or stochastic
+effects.
+
+\item \textbf{Counterfactual continuations.}
+Longer continuations were run from a marginal \(K=96,T=1\) state and from the
+post-collapse \(T=0.1\) state.
+
+The interventions included:
+
+\begin{itemize}[leftmargin=1.4em]
+
+\item normal continuation with three random seeds;
+\item disabling the support gradient from the start;
+\item disabling the support gradient after a boundary-inflation trigger;
+\item increasing \(T\) by a factor of 3 in the marginal state;
+\item increasing \(T\) by a factor of 30 in the post-collapse state;
+\item applying the temperature intervention either immediately or only after
+the trigger.
+
+\end{itemize}
+
+\item \textbf{Prospective comparison of candidate order parameters.}
+A dataset of 148 checkpoint states from 18 earlier fixed-\(T\) runs was used
+to test whether a quantity measured at step \(r\) predicts a boundary burst
+during
+
+\[
+(r,r+H].
+\]
+
+Predictions were evaluated both after pooling all configurations and within
+fixed \((K,T)\) rows.
+
+\end{enumerate}
+
+
+% ============================================================
+\section{Results 1: reparameterization test (H1)}
+% ============================================================
+
+Consider the gate-level transformation
+
+\[
+(s,z,b,T)
+\rightarrow
+(cs,cz,cb,cT).
+\]
+
+With the corresponding output compensation, this transformation leaves the
+forward computation and parameter gradients invariant.
+
+This invariance is exact in the float32 single-gate unit tests.
+It is also reproduced at full checkpoints.
+
+For
+
+\[
+c=0.5
+\qquad\text{and}\qquad
+c=2,
+\]
+
+which are exactly representable binary rescalings, the training loss is
+unchanged to all reported digits.
+The largest relative parameter-gradient difference is approximately
+
+\[
+2\times10^{-3}
+\text{--}
+6\times10^{-3},
+\]
+
+consistent with differences in bf16 accumulation order.
+
+For \(c=3\), which is not an exact power-of-two scaling, some nearly tied
+scores change ordering in bf16.
+This changes candidate membership and produces a loss shift of order
+
+\[
+10^{-3}.
+\]
+
+This effect is attributed to finite-precision ranking rather than to a
+violation of the underlying reparameterization symmetry.
+
+Under exactly the same transformation,
+
+\[
+\chigeo
+\rightarrow
+\frac{\chigeo}{c}.
+\]
+
+For example, in layer 4 the measured values are
+
+\[
+54.1
+\quad(c=1),
+\]
+
+\[
+27.0
+\quad(c=2),
+\]
+
+and
+
+\[
+18.1
+\quad(c=3).
+\]
+
+In contrast, \(\Pisurr\) is invariant.
+
+Therefore functionally equivalent gate parameterizations can have different
+values of \(\chigeo\).
+This rules out a universal numerical instability threshold based directly on
+\(\chigeo\).
+
+The prospective analysis in Section~\ref{sec:prospective} gives a second,
+independent limitation: within a fixed \((K,T)\) row,
+\(\chigeo\) has approximately chance-level predictive performance.
+
+\paragraph{H1 conclusion.}
+The measurements support interpreting \(\chigeo\) as an empirical
+configuration-level proxy rather than a fundamental order parameter.
+It distinguishes some \((K,T)\) regimes because it co-varies with the local
+kernel geometry, but it is neither reparameterization-invariant nor a useful
+within-row temporal warning signal.
+
+
+% ============================================================
+\section{Results 2: surrogate gain \texorpdfstring{$\Pi$}{Pi} (H2)}
+% ============================================================
+
+Across 96 layer states
+(12 checkpoints \(\times\) 8 blocks, excluding the post-collapse state),
+the exact quantity
+
+\[
+\Pisurr
+=
+\|L_\kappa D_z\|_F^2
+\]
+
+predicts the realized gradient gain
+
+\[
+G_{\mathrm{emp}}
+=
+\frac{\|g_s\|^2}{\|u\|^2}
+\]
+
+with rank correlation
+
+\[
+0.97.
+\]
+
+For comparison, the rank correlation with \(\chigeo\) is
+
+\[
+0.52.
+\]
+
+This strongly supports the interpretation of \(\Pisurr\) as the relevant
+surrogate-Jacobian gain.
+
+The dense-boundary approximation
+
+\[
+\Pisurr
+\approx
+\frac{b^2}{4T\delta}
+\]
+
+is typically accurate within a factor of approximately two in mid-depth
+blocks of healthy states.
+
+Its accuracy deteriorates as the local score distribution becomes
+nonuniform or degenerate.
+The discrepancy reaches approximately a factor of 10 during late inflation
+and approximately \(10^4\) after collapse.
+
+The approximation can also overestimate the gain by orders of magnitude in
+individual blocks where several rank scores become nearly tied.
+In that case,
+
+\[
+\delta\rightarrow0
+\]
+
+even though the exact kernel geometry and exact \(\Pisurr\) remain finite.
+
+This is an important limitation of any order parameter based directly on the
+single local-spacing statistic \(\delta\).
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=.9\textwidth]{figures/sdn\_Pi.png}
+\caption{
+Left: exact surrogate gain \(\Pisurr\) versus the realized gradient gain
+\(\|g_s\|^2/\|u\|^2\).
+Right: exact \(\Pisurr\) versus the dense-boundary approximation
+\(b^2/(4T\delta)\).
+Each point corresponds to one checkpoint and one block.
+The checkpoint classes are calm (\(T=2\)), stable (\(K=32,T=1\)),
+marginal (\(T=0.5\)), pre-collapse (\(K=64,T=1\)), and post-collapse
+(\(T=0.1\)).
+The class denotes the eventual fate of the run, not necessarily its condition
+at the measured checkpoint.
+In particular, the pre-collapse checkpoint is still healthy at step 2000 and
+destabilizes approximately 1900 steps later.
+Only the post-collapse points are measured after a collapse.
+No averaging over blocks is performed.
+Most checkpoints are taken at step 2000, with additional \(T=0.5\) states at
+steps 4000 and 6000 and one calm and one stable checkpoint at step 10000.
+Within each point, \(\Pisurr\) is averaged over tokens on the fixed evaluation
+batch, while \(G_{\mathrm{emp}}\) is averaged over tokens on one training
+microbatch.
+}
+\end{figure}
+
+The earlier comparison between the \(K\)- and \(T\)-axes is approximately
+reproduced by the dense-boundary formula.
+At step 2000,
+
+\[
+\frac{
+\Pi_{\mathrm{approx}}(K=64,T=1)
+}{
+\Pi_{\mathrm{approx}}(K=32,T=1)
+}
+=
+1.66,
+\]
+
+within the previously predicted range \(1.6\)--\(2.25\).
+
+However, for the exact gain the corresponding ratio is only
+
+\[
+1.09.
+\]
+
+The difference arises because the approximation replaces the actual kernel
+and \(z\)-profile by a locally uniform-density model, whereas the exact
+\(\Pisurr\) uses the full candidate geometry.
+
+\paragraph{H2 conclusion.}
+The data support \(\Pisurr\) as the appropriate measure of the instantaneous
+gain of the support-surrogate Jacobian.
+It is dimensionless, reparameterization-invariant, and closely predicts the
+realized surrogate gradient gain.
+
+This does \emph{not} by itself imply that a large \(\Pisurr\) is unstable.
+Whether the injected gradient produces score-scale growth is a separate
+dynamical question.
+
+
+% ============================================================
+\section{Results 3: signed drift and second-order heating (H3)}
+% ============================================================
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figures/sdn\_decomposition.png}
+\caption{
+One-step change in \(\log R_{\mathrm{all}}\), decomposed into signed task
+drift, signed support-surrogate drift, and the even heating contribution.
+The signed terms are obtained from the antithetic gradient branches.
+Results are pooled over blocks at thirteen checkpoint states.
+}
+\end{figure}
+
+The decomposition gives three main results.
+
+\subsection*{Signed surrogate drift is not the primary runaway term}
+
+At the \(K=64,T=1\) checkpoint measured approximately 1940 steps before
+collapse, the signed surrogate contribution is strongly restoring:
+
+\[
+\mu_{\mathrm{supp}}
+\approx
+-5.7\times10^{-2}
+\]
+
+per step when pooled over blocks, and approximately
+
+\[
+-0.10
+\]
+
+at the most extreme block.
+
+The ordinary task contribution is also restoring:
+
+\[
+\mu_{\mathrm{task}}
+\approx
+-2.2\times10^{-2}.
+\]
+
+A similar pattern occurs during late inflation in the unstable \(T=0.5\)
+run.
+
+Thus the instability is not explained by a first-order support force that
+directly pushes all scores outward.
+At the measured dangerous states, the signed contribution tends to reduce
+rather than increase the scale.
+
+\subsection*{The dominant destabilizing contribution is second-order heating}
+
+The even component of the update increases the activation scale independently
+of the sign of the current gradient.
+
+At the pre-collapse \(K=64,T=1\) state, this contribution reaches
+
+\[
++9.2\times10^{-2}
+\]
+
+per step after pooling over blocks, and approximately
+
+\[
++0.18
+\]
+
+at the most strongly affected block.
+
+This exceeds the restoring signed drift.
+
+At calm and stable checkpoints, the same heating term is approximately
+30--300 times smaller.
+
+The learning-rate sweep supports the interpretation as a second-order effect:
+the signed odd terms scale approximately linearly with the learning-rate
+multiplier, while the even contribution scales approximately quadratically.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figures/sdn\_lr\_scaling.png}
+\caption{\label{fig:lr}
+Signed drift and heating as functions of the learning-rate multiplier at
+three checkpoint states.
+Reference linear and quadratic scalings are shown for comparison.
+}
+\end{figure}
+
+\subsection*{Dangerous-state heating is mostly deterministic}
+
+At the pre-collapse state, halving the batch size changes the measured heating
+only from approximately
+
+\[
+9.2\times10^{-2}
+\]
+
+to
+
+\[
+9.3\times10^{-2}.
+\]
+
+The variation across batches is also small.
+
+Therefore the large heating at this checkpoint is not primarily caused by
+minibatch-gradient noise.
+It is better interpreted as deterministic second-order scale inflation caused
+by a large structured optimizer step.
+
+At the stable \(K=32,T=1\) state, the much smaller heating contribution
+approximately doubles when the batch size is halved.
+In that regime, stochastic gradient variance appears to make a substantial
+contribution.
+
+\subsection*{Scale-response curves}
+
+The scale-response experiment isolates the signed support component.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figures/sdn\_Falpha.png}
+\caption{\label{fig:falpha}
+Signed surrogate and task drift as functions of an imposed
+function-preserving scale factor \(\alpha\) at four checkpoint states.
+}
+\end{figure}
+
+At the calm \(K=64,T=2\) state, the support-surrogate drift crosses zero near
+
+\[
+\alpha\approx1.4.
+\]
+
+Below this point it tends to increase scale, while above it the sign becomes
+restoring.
+Within this gate-level intervention, the surrogate therefore behaves
+approximately like a restoring force around a preferred scale.
+
+At the stable \(K=32,T=1\) state, the signed surrogate contribution remains
+positive throughout the measured range, but decreases in magnitude as
+\(\alpha\) increases.
+
+The task contribution is independent of \(\alpha\) by construction of the
+intervention, and the measurements reproduce this property.
+This provides an internal validation that the experiment isolates the
+surrogate scale dependence as intended.
+
+\subsection*{Rank structure of the signed force}
+
+The permutation test asks whether the relationship between the task preference
+\(w_i\) and feature rank matters, rather than only the overall magnitude of
+\(w\).
+
+In most measured states, the true signed radial component differs
+significantly from the rank-shuffled null distribution, typically by
+
+\[
+|z\text{-score}|
+\gtrsim
+3\text{--}20.
+\]
+
+At the pre-collapse state, the alignment is outward relative to the shuffled
+null,
+
+\[
++19.8\sigma,
+\]
+
+whereas late calm states show inward alignment.
+
+The absolute magnitude of this signed component is nevertheless small
+compared with the heating term at the dangerous checkpoints.
+
+The data therefore suggest that the rank structure of \(w\) determines the
+signed scale response, which is often restoring, while the main
+destabilization at high pressure is associated with the even second-order
+term.
+
+\paragraph{H3 conclusion.}
+Large surrogate gain does not destabilize the model primarily through a
+positive first-order radial force.
+
+The measurements instead support the following local picture:
+
+\[
+\text{large support-gradient step}
+\quad\longrightarrow\quad
+\text{second-order score-scale heating},
+\]
+
+while the signed task and support components provide an opposing restoring
+contribution.
+
+A block becomes locally unstable when the heating contribution becomes
+comparable to or larger than this restoration.
+
+
+% ============================================================
+\section{Results 4: counterfactual interventions and collapse dynamics (H4)}
+% ============================================================
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figures/sdn\_interventions.png}
+\caption{
+Left: continuations from the marginal \(K=96,T=1\) state at step 2000,
+comparing three normal seeds with support-off and \(T\times3\) interventions,
+applied either immediately or after a boundary-inflation trigger.
+Middle: continuations from the collapsed \(T=0.1\) state; solid lines show
+scale and dotted lines show evaluation CE.
+Right: one-step drift/heating decomposition along a densely sampled
+\(K=96,T=0.75\) collapse trajectory, with checkpoints every 100 steps and
+collapse near step 960.
+}
+\end{figure}
+
+\subsection*{Interventions from a marginal state}
+
+Starting from the \(K=96,T=1\) checkpoint, three normal 1500-step
+continuations were run.
+
+All three show repeated score-scale excursions of approximately one to three
+orders of magnitude.
+Most excursions recover, but one of the three replicas reaches terminal
+divergence.
+
+When the support gradient is disabled, the trajectory becomes calm and the
+score scale decreases.
+This is consistent with the one-step measurements showing that the ordinary
+task gradient is restoring at this state.
+
+Increasing the temperature by a factor of three also suppresses the bursts
+while keeping the scale approximately constant.
+This branch obtains evaluation CE \(1.505\), compared with \(1.552\)--\(1.634\)
+for the normal branches.
+
+Both interventions remain effective when activated only at the first
+boundary-inflation trigger, defined by the boundary exceeding three times its
+rolling median.
+
+These experiments show that, for this marginal checkpoint, the support
+surrogate is necessary for the observed burst dynamics.
+
+\subsection*{Interventions from an already collapsed state}
+
+The post-collapse \(T=0.1\) checkpoint begins at a score scale of approximately
+
+\[
+10^6.
+\]
+
+Under normal continuation, the scale increases by another factor of
+approximately \(25\) over 1200 steps, while CE remains near \(5.8\).
+
+Increasing the temperature by a factor of 30 does not rescue this state.
+Instead, the scale grows by approximately a factor of \(500\).
+
+The reason is visible in the gate geometry.
+Broadening the kernel repopulates candidate regions in a state where some
+blocks already have extremely large surrogate gain,
+
+\[
+\Pisurr
+\sim
+10^{12}.
+\]
+
+At the same time, one block is exactly in the single-feature limit,
+
+\[
+\neff=1,
+\qquad
+\Pisurr=0.
+\]
+
+Thus the strict one-feature limit itself has zero corrected surrogate gain,
+as predicted by
+
+\[
+L_\kappa\rightarrow0.
+\]
+
+Other near-degenerate blocks, however, still contain more than one
+significantly weighted feature and have very large \(z\).
+Their surrogate gain can therefore remain extremely large.
+
+Disabling the support gradient stops the continued inflation.
+The model then begins to recover, with evaluation CE decreasing from
+
+\[
+5.93
+\]
+
+to
+
+\[
+4.44
+\]
+
+over 1200 steps.
+
+Therefore post-collapse inflation in this experiment is not maintained by
+the task gradient alone.
+It requires the remaining support-surrogate contribution.
+
+\subsection*{Dense sampling of a collapse}
+
+A separate \(K=96,T=0.75\) trajectory was sampled every 100 steps around its
+collapse near step 960.
+
+Approximately 200 steps before collapse, the one-step decomposition is still
+moderate:
+
+\[
+\text{restoring drift}
+\approx
+-1.3\times10^{-2},
+\]
+
+\[
+\text{heating}
+\approx
++2.4\times10^{-3}.
+\]
+
+The heating is already approximately an order of magnitude larger than in
+calm states, but restoration still dominates.
+
+Around 60--100 steps before collapse, both contributions increase by roughly
+two orders of magnitude:
+
+\[
+\text{surrogate signed drift}
+\approx
+-0.50,
+\]
+
+\[
+\text{heating}
+\approx
++0.37
+\]
+
+per step after pooling over blocks.
+
+The model is therefore not experiencing a simple unopposed outward force.
+Instead, very large restoring and destabilizing contributions coexist, and
+their balance differs across layers.
+
+After collapse, both measured terms become small again because much of the
+kernel has effectively disappeared.
+
+\paragraph{H4 conclusion.}
+The measurements support treating \(\neff\to1\) as a late-stage consequence
+of the instability rather than its initial trigger.
+
+The exact \(\neff=1\) limit eliminates the corrected support gradient.
+However, the approach to this limit is not harmless:
+blocks with \(\neff\approx2\) and very large activations can retain extremely
+large surrogate gain and continue to drive scale growth.
+
+Thus two observations are simultaneously true:
+
+\begin{enumerate}[leftmargin=1.6em]
+
+\item the distributed character of the correction is lost as the kernel
+population collapses;
+
+\item the residual surrogate in neighboring near-degenerate blocks can remain
+strongly destabilizing until it is disabled or the kernel becomes fully
+inactive.
+
+\end{enumerate}
+
+
+% ============================================================
+\section{Results 5: prospective comparison of candidate indicators}
+\label{sec:prospective}
+% ============================================================
+
+The candidate quantities were evaluated prospectively on 148 checkpoint
+states from 18 earlier fixed-\(T\) runs.
+Post-collapse checkpoints were excluded.
+
+For each checkpoint at step \(r\), the target variable is whether a
+boundary-inflation burst occurs during
+
+\[
+(r,r+H].
+\]
+
+The results are:
+
+\begin{center}
+\small
+\begin{tabular}{lcccccc}
+\toprule
+& \multicolumn{3}{c}{pooled AUC}
+& \multicolumn{3}{c}{within-row AUC} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+\(H\)
+& \(\chigeo\)
+& \(\Pi_{\mathrm{approx}}\)
+& \(1/\neff\)
+& \(\chigeo\)
+& \(\Pi_{\mathrm{approx}}\)
+& \(1/\neff\) \\
+\midrule
+1000 & 0.81 & \textbf{0.88} & 0.77 & 0.46 & 0.63 & \textbf{0.75} \\
+2000 & 0.78 & \textbf{0.86} & 0.71 & 0.48 & 0.68 & \textbf{0.75} \\
+4000 & 0.80 & \textbf{0.85} & 0.68 & 0.44 & 0.69 & \textbf{0.76} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+When all configurations are pooled,
+\(\Pi_{\mathrm{approx}}\) gives the best predictive performance.
+
+This comparison, however, includes large differences between
+\((K,T)\) configurations.
+A more informative test of temporal warning within a given operating regime
+is obtained by evaluating AUC separately within fixed \((K,T)\) rows.
+
+Under this comparison, \(\chigeo\) falls to approximately chance level:
+
+\[
+\mathrm{AUC}
+\approx
+0.44\text{--}0.48.
+\]
+
+The strongest within-row predictor is low effective kernel population:
+
+\[
+1/\neff,
+\]
+
+with AUC approximately
+
+\[
+0.75\text{--}0.76.
+\]
+
+The approximate surrogate gain remains informative but is weaker, with AUC
+approximately
+
+\[
+0.63\text{--}0.69.
+\]
+
+Only three marginal \((K,T)\) rows contribute both positive and negative
+outcomes to this within-row comparison.
+The numerical AUC values should therefore be viewed as preliminary rather
+than definitive.
+
+Nevertheless, the qualitative distinction is clear:
+\(\chigeo\) mainly separates different operating regimes, while decreasing
+kernel population contains additional temporal information about an
+approaching burst.
+
+
+% ============================================================
+\section{Results 5b: surrogate-gain fate map}
+% ============================================================
+
+The earlier dose--response analysis was repeated using the new surrogate-gain
+quantities and resolving the results by block and training checkpoint.
+
+Only pre-collapse checkpoints are included.
+The trajectory panel follows the block with the largest gain in each run over
+training.
+The dose--response panel compares the pre-onset burst rate with the earliest
+healthy value of the worst-block gain.
+
+The current dataset includes eighteen fixed-\(T\) campaign runs with
+checkpointed score ladders for
+
+\[
+K=32,64.
+\]
+
+A separate boundary-bracketing campaign over
+
+\[
+K=32\text{--}128
+\]
+
+and sixteen configurations was not yet complete at the time of this report.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=.94\textwidth]{figures/sdn\_pi\_fate\_map.png}
+\caption{
+Exact surrogate gain \(\Pisurr\) as a function of run outcome, block, and
+training step.
+The upper panels compare surviving and eventually collapsing trajectories
+within individual blocks.
+In the lower-left panel, the worst-block \(\Pisurr\) rises toward collapse in
+the runs that eventually fail, while it generally decreases in surviving
+runs.
+The surviving trajectory that briefly rises and then returns corresponds to
+the recoverable burst in the \(T=0.5\) survivor.
+The lower-right panel compares pre-onset burst rate with the early
+worst-block value of \(\Pisurr\).
+}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=.94\textwidth]{figures/sdn\_piapprox\_fate\_map.png}
+\caption{
+The same analysis using the dense-boundary approximation
+\(b^2/(4T\delta)\).
+The broad dose--response ordering remains visible, but separation within
+individual blocks is weaker than for the exact \(\Pisurr\).
+Blocks with nearly vanishing local rank spacing can also produce extreme
+outliers because \(\delta\to0\), even when the exact surrogate gain remains
+finite.
+The exact \(\Pisurr\) is therefore preferable whenever the underlying kernel
+tensors are available.
+}
+\end{figure}
+
+
+% ============================================================
+\section{Results 6: drift, heating, and the escape picture}
+% ============================================================
+
+The learning-rate and batch-size experiments distinguish two contributions to
+the scale dynamics.
+
+The signed drift scales approximately linearly with the learning-rate
+multiplier.
+
+The even heating contribution scales approximately quadratically with the
+learning-rate multiplier.
+
+At the stable \(K=32,T=1\) state, halving the batch size approximately doubles
+the heating contribution.
+This indicates a substantial stochastic-gradient component in that regime.
+
+At the pre-collapse \(K=64,T=1\) state, halving the batch leaves the heating
+essentially unchanged.
+The dominant heating there therefore appears to be deterministic
+second-order overshoot from a large structured update.
+
+The earlier observation of stochastic-looking score excursions is reproduced
+directly by the marginal continuation experiment:
+among three replicas from the same marginal state, one reaches terminal
+collapse while two undergo bursts and recover.
+
+These observations are consistent with a metastable escape picture, but the
+available measurements do not yet support a quantitative reduction to a
+single Kramers-like escape parameter.
+
+For example, at the calm \(K=64,T=2\) state, the restoring scale-response
+curve crosses zero near
+
+\[
+\alpha\approx1.4,
+\]
+
+with an estimated local slope
+
+\[
+\lambda
+\approx
+7\times10^{-3}
+\]
+
+per unit \(\log R\) per training step.
+
+Comparable estimates of the restoring slope, effective excitation, and
+distance to the collapse boundary are not yet available across enough
+marginal configurations.
+
+The qualitative picture supported by the current data is therefore:
+
+\[
+\text{restoring scale dynamics}
+\;+\;
+\text{second-order excitation}
+\;+\;
+\text{kernel-population collapse}.
+\]
+
+The task gradient generally supplies a restoring contribution.
+The support surrogate can also provide a signed restoring contribution around
+its scale-dependent operating point.
+
+At the same time, large support-induced parameter updates generate
+second-order heating.
+If an excursion becomes sufficiently large, the effective kernel population
+decreases and the distributed correction enters a near-degenerate regime.
+
+This provides a mechanism for recoverable bursts as well as rare terminal
+escapes without requiring a persistent positive first-order radial force.
+
+
+% ============================================================
+\section{Proposed causal sequence for a burst}
+% ============================================================
+
+The following sequence summarizes the present interpretation.
+Statements directly established by the measurements are marked
+\textbf{(M)}; steps that remain interpretive are marked \textbf{(I)}.
+
+\begin{enumerate}[leftmargin=1.6em]
+
+\item
+In marginal configurations, the support surrogate has substantially larger
+gain than in calm configurations:
+the measured \(\Pisurr\) is approximately 3--10 times larger.
+The resulting optimizer step produces second-order heating that is comparable
+to, or exceeds, the restoring signed drift in the most affected blocks.
+\textbf{(M)}
+
+\item
+This heating can produce temporary increases in score scale.
+Both the task and signed support contributions generally oppose the scale
+increase at the measured dangerous states.
+Most observed excursions therefore recover.
+\textbf{(M)}
+
+\item
+During a sufficiently large excursion, the effective kernel population
+decreases.
+This is observed directly in the \(T=0.1\) collapse trajectory, and low
+\(\neff\) is the strongest prospective within-row predictor of future bursts.
+\textbf{(M)}
+
+As the population becomes small, the correction is concentrated among fewer
+features, potentially increasing the gain carried by each remaining
+nondegenerate direction.
+\textbf{(I)}
+
+\item
+In the exact single-feature limit,
+
+\[
+\neff=1,
+\]
+
+the corrected support Jacobian vanishes and
+
+\[
+\Pisurr=0.
+\]
+
+This limit is observed in one post-collapse block.
+At the same time, neighboring blocks with
+\(\neff\approx2\) and very large \(z\) can have
+
+\[
+\Pisurr
+\sim
+10^{12}.
+\]
+
+Disabling the support gradient stops post-collapse scale growth, showing that
+these remaining surrogate contributions are causally important.
+\textbf{(M)}
+
+\item
+Once several blocks have entered the high-scale regime, scale amplification
+propagates through depth in the residual-replacement architecture, as observed
+in the earlier investigation.
+The trajectory eventually reaches a high-scale state in which most of the
+kernel is effectively inactive.
+\textbf{(M)}
+
+\end{enumerate}
+
+
+% ============================================================
+\section{Recommended controller variables}
+% ============================================================
+
+The experiments suggest separating two functions that were previously
+combined in the \(\chigeo\)-based controller.
+
+\subsection*{Fast warning variable: effective kernel population}
+
+The strongest prospective within-row warning signal is the effective
+population
+
+\[
+\neff.
+\]
+
+Low \(\neff\) reaches within-row AUC approximately \(0.75\), and population
+collapse is directly associated with entry into the near-degenerate regime.
+
+The existing temperature controller already contains a related population
+floor based on the number of candidates occupying the kernel window.
+The present results support keeping such a fast population-based guard.
+
+However, the intervention should depend on the stage of the instability.
+
+Before collapse, broadening the kernel can restore a healthy distributed
+correction.
+
+After a block has already entered the extremely high-scale, near-degenerate
+regime, increasing \(T\) can repopulate the kernel while \(z\) is enormous,
+producing very large surrogate gain.
+The post-collapse intervention shows that this can accelerate rather than
+suppress the runaway.
+
+At that stage, the measured safe emergency action is to disable or strongly
+reduce the support-gradient contribution until the scale has recovered.
+
+\subsection*{Pressure variable: exact surrogate gain}
+
+The natural measure of support-surrogate strength is
+
+\[
+\Pisurr
+=
+\|L_\kappa D_z\|_F^2.
+\]
+
+It is dimensionless, invariant to score-unit reparameterization, and closely
+tracks the realized support-gradient gain.
+
+When the exact candidate tensors are unavailable, the forward-only
+approximation
+
+\[
+\Pi_{\mathrm{approx}}
+=
+\frac{b^2}{4T\delta}
+\]
+
+provides a useful coarse proxy, although it becomes unreliable near
+degenerate score geometries.
+
+A controller based directly on \(\Pisurr\) would therefore be a more
+principled replacement for the current \(\chigeo\)-based pressure trim.
+
+The existing \(\chigeo\) controller works in the tested regime because
+\(\chigeo\) co-varies with surrogate gain across configurations, but
+\(\chigeo\) itself has no invariant interpretation and should be treated as a
+configuration-level heuristic.
+
+\subsection*{Direct dynamical indicator}
+
+The quantity most directly related to imminent scale instability is not
+\(\Pisurr\) or \(\neff\) alone, but the competition between heating and
+restoration in the most affected block.
+
+The antithetic one-step probe measures both terms directly.
+
+A useful diagnostic ratio is schematically
+
+\[
+\mathcal R_{\mathrm{heat}}
+=
+\frac{
+\text{second-order heating}
+}{
+|\text{restoring signed drift}|
+}.
+\]
+
+The measured values are approximately
+
+\[
+\mathcal R_{\mathrm{heat}}
+\approx
+0.02
+\]
+
+at calm states,
+
+\[
+\mathcal R_{\mathrm{heat}}
+\approx
+0.7\text{--}1.8
+\]
+
+at states whose runs collapse within approximately 2000 steps, and
+
+\[
+\mathcal R_{\mathrm{heat}}
+\sim
+2
+\]
+
+roughly 100 steps before collapse.
+
+Thus the direct dynamical criterion suggested by the measurements is
+
+\[
+\boxed{
+\text{heating becomes comparable to or larger than restoration}.
+}
+\]
+
+The practical forward-only indicators are the pair
+
+\[
+(\Pisurr,\neff)
+\]
+
+evaluated per block.
+
+Here \(\Pisurr\) measures the squared gain of the surrogate Jacobian.
+At fixed upstream-gradient scale and optimizer response, a larger
+\(\Pisurr\) therefore tends to increase the squared parameter-step magnitude,
+which is the quantity relevant to second-order heating.
+
+This point is worth stating carefully:
+heating is quadratic in the \emph{parameter-step amplitude}.
+Because \(\Pisurr\) is already a squared gain, one should not generally expect
+heating to scale as \(\Pisurr^2\).
+Under otherwise fixed conditions, a roughly linear relation between heating
+and \(\Pisurr\) is the more natural leading expectation.
+
+The second quantity, \(\neff\), measures how close the kernel is to the
+near-degenerate regime where the distributed correction is lost.
+
+Together these variables provide a mechanistically clearer description than
+\(\chigeo\):
+
+\[
+\boxed{
+\Pisurr
+\;\text{measures support-surrogate gain},
+\qquad
+\neff
+\;\text{measures proximity to kernel degeneracy}.
+}
+\]
+
+
+% ============================================================
+\section{Remaining uncertainties and next experiments}
+% ============================================================
+
+Several important questions remain open.
+
+\begin{itemize}[leftmargin=1.4em]
+
+\item
+The destabilizing heating contribution has been identified locally, but the
+transfer of scale between successive blocks has not yet been measured
+directly.
+A block-resolved intervention measuring how a scale perturbation in one block
+changes the next block within the same optimizer step would test the proposed
+depth-propagation mechanism.
+
+\item
+The present drift/heating decomposition is based primarily on one-step
+counterfactuals.
+These are not identical to sustained closed-loop dynamics because Adam's
+second-moment adaptation changes the effective response to repeated large
+gradients.
+Matched 10--50 step branch continuations from the same checkpoints would
+measure this attenuation directly.
+
+\item
+The within-row prospective comparison currently contains only three
+\((K,T)\) rows with both outcomes.
+The interrupted boundary-bracketing campaign, covering sixteen additional
+configurations, would substantially strengthen the comparison between
+\(\Pisurr\), \(\neff\), and other candidate warning variables.
+
+\item
+A controller targeting the exact \(\Pisurr\) has not yet been tested.
+The present analysis predicts that such a controller should be more portable
+than the \(\chigeo\)-based controller under changes of score units and
+parameterization.
+This remains an experimental prediction.
+
+\item
+The metastable-escape interpretation remains qualitative.
+A quantitative escape parameter would require matched estimates of the
+restoring slope, excitation strength, and effective collapse boundary,
+for example quantities analogous to
+
+\[
+(\lambda,D,x_c),
+\]
+
+across a larger number of marginal configurations.
+
+\end{itemize}
+
+\end{document}
