@@ -147,11 +147,13 @@ def load_run(key: str):
 
 @st.cache_data(show_spinner=False, ttl=30)
 def available_runs(kind: str):
-    """Run names for one kind, ordered by (k, effective j) rather than by name.
+    """Run names for one kind, grouped and ordered by metadata, not by name.
 
-    Alphabetical order puts ``..._j128`` first, which is the worst default for
-    the checkpoint ladder: that is the run that diverges, so the app would open
-    on a collapsed model.
+    Order: gate type (hard, soft/LapSum, swap, jumprelu, rblapsum, reinforce)
+    -> temperature (relative before absolute at equal value) -> k -> effective
+    j -> name.  Metadata-driven so new families slot in without name parsing,
+    and the first entry stays a safe default (hard, smallest k) rather than
+    whichever diverged run sorts first alphabetically.
     """
     if kind == "probe":
         # The .json is written only when a probe run finishes, so it -- not the
@@ -167,13 +169,27 @@ def available_runs(kind: str):
                  for p in glob.glob(os.path.join(SCORES_DIR, "*.npy"))]
         meta_dir = SCORES_DIR
 
+    GROUP = ("hard", "lapsum", "swap_gibbs", "jumprelu", "rblapsum",
+             "reinforce_topk")
+
     def sort_key(n):
         try:
             m = json.load(open(os.path.join(meta_dir, f"{n}.json")))
-            jj = 0 if m.get("surrogate_mode") == "hard" else int(m["j"])
-            return (0, int(m["k"]), jj, n)
+            mode = str(m.get("surrogate_mode", ""))
+            base = "lapsum" if mode.startswith("lapsum") else mode
+            g = GROUP.index(base) if base in GROUP else len(GROUP)
+            tc = m.get("temperature") or {}
+            if mode == "rblapsum":
+                t = float(m.get("rblapsum_temperature") or 0.0)
+            elif mode == "hard":
+                t = 0.0
+            else:
+                t = float(tc.get("fixed") or tc.get("start") or 0.0)
+            rel = 0 if tc.get("scale_mode", "relative") == "relative" else 1
+            jj = 0 if mode == "hard" else int(m.get("j", 0))
+            return (0, g, t, rel, int(m.get("k", 0)), jj, n)
         except Exception:
-            return (1, 0, 0, n)
+            return (1, 9, 0.0, 0, 0, 0, n)
 
     return sorted(names, key=sort_key)
 
