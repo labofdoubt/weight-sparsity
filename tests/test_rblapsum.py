@@ -450,3 +450,89 @@ def test_servo_through_model_and_stats():
                 "bottleneck/rb_chi"):
         assert key in stats, key
     assert stats["bottleneck/rb_temp"] > 0
+
+
+# --------------------------------------------------------------------------- #
+# experiment knobs: support_scale and view_scale
+# --------------------------------------------------------------------------- #
+
+
+def _zgrad(gate, a, upstream):
+    x = a.clone().requires_grad_(True)
+    gate.train()
+    y = gate(x)
+    y.backward(upstream)
+    return x.grad.clone()
+
+
+def test_support_scale_zero_is_pure_hard_path():
+    torch.manual_seed(3)
+    g = make_gate(mode="through_rank_kappa", b0=0.0, T=1.0)
+    a = torch.randn(4, 16)
+    u = torch.randn(4, 16)
+    g.rblapsum_support_scale = 0.0
+    grad = _zgrad(g, a, u)
+    with torch.no_grad():
+        hard = (g(a) != 0).to(a.dtype)
+    assert torch.allclose(grad, u * hard, atol=1e-6)
+
+
+def test_support_scale_is_linear_in_the_surrogate():
+    torch.manual_seed(4)
+    g = make_gate(mode="through_rank_kappa", b0=0.0, T=1.0)
+    a = torch.randn(4, 16)
+    u = torch.randn(4, 16)
+    grads = {}
+    for sc in (0.0, 1.0, 2.0):
+        g.rblapsum_support_scale = sc
+        grads[sc] = _zgrad(g, a, u)
+    lhs = grads[2.0] - grads[0.0]
+    rhs = 2 * (grads[1.0] - grads[0.0])
+    assert torch.allclose(lhs, rhs, atol=1e-6)
+
+
+def test_view_scale_forward_and_task_grad_invariant():
+    torch.manual_seed(5)
+    g = make_gate(mode="through_rank_kappa", b0=0.0, T=1.0)
+    a = torch.randn(4, 16)
+    u = torch.randn(4, 16)
+    g.rblapsum_view_scale = 1.0
+    y1 = g(a.clone())
+    g.rblapsum_support_scale = 0.0
+    t1 = _zgrad(g, a, u)
+    g.rblapsum_view_scale = 2.0
+    y2 = g(a.clone())
+    t2 = _zgrad(g, a, u)
+    assert torch.allclose(y1, y2, atol=1e-6)   # forward function preserved
+    assert torch.allclose(t1, t2, atol=1e-6)   # task gradient preserved
+
+
+def test_view_scale_changes_surrogate_geometry():
+    # at fixed T, alpha=2 doubles margins: the kernel sees a 2x score
+    # excursion, so the surrogate gradient must NOT be invariant
+    torch.manual_seed(6)
+    g = make_gate(mode="through_rank_kappa", b0=0.0, T=1.0)
+    a = torch.randn(4, 16)
+    u = torch.randn(4, 16)
+    g.rblapsum_view_scale = 1.0
+    g1 = _zgrad(g, a, u)
+    g.rblapsum_view_scale = 2.0
+    g2 = _zgrad(g, a, u)
+    assert not torch.allclose(g1, g2, atol=1e-7)
+
+
+def test_view_scale_with_matched_T_is_exact_reparameterization():
+    # (s, z, b, T) -> (c s, c z, c b, c T) leaves every gradient invariant
+    torch.manual_seed(7)
+    c = 3.0
+    a = torch.randn(4, 16)
+    u = torch.randn(4, 16)
+    g1 = make_gate(mode="through_rank_kappa", b0=0.0, T=1.0)
+    ref = _zgrad(g1, a, u)
+    y_ref = g1(a.clone())
+    g2 = make_gate(mode="through_rank_kappa", b0=0.0, T=c)
+    g2.rblapsum_view_scale = c
+    rep = _zgrad(g2, a, u)
+    y_rep = g2(a.clone())
+    assert torch.allclose(y_ref, y_rep, atol=1e-6)
+    assert torch.allclose(ref, rep, atol=1e-5)

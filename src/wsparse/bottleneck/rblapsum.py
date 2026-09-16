@@ -66,12 +66,13 @@ class _RBLapSumGate(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, value_c, active_c, score_c, sign_c, b, t, mode_id, k,
-                cap_active, sink):  # type: ignore[override]
+                cap_active, sink, supp_scale=1.0):  # type: ignore[override]
         ctx.save_for_backward(value_c, active_c, score_c, sign_c, b, cap_active)
         ctx.t = float(t)
         ctx.mode_id = int(mode_id)
         ctx.k = int(k)
         ctx.sink = sink
+        ctx.supp_scale = float(supp_scale)
         return value_c * active_c
 
     @staticmethod
@@ -107,7 +108,7 @@ class _RBLapSumGate(torch.autograd.Function):
                 torch.finfo(kappa.dtype).tiny)
             a = torch.where(cap_active, a - q.to(a.dtype) * total, a)
 
-        g_s = a
+        g_s = a if ctx.supp_scale == 1.0 else a * ctx.supp_scale
         grad_value = grad_value + sign_c * g_s
 
         sink = ctx.sink
@@ -135,17 +136,21 @@ class _RBLapSumGate(torch.autograd.Function):
                     bmag = gs[:, k].abs().mean()
                     omag = gs.abs().mean()
                     sink["rb_boundary_grad_ratio"] = (bmag / (omag + eps)).detach()
-        return (grad_value, None, None, None, None, None, None, None, None, None)
+        return (grad_value, None, None, None, None, None, None, None, None, None, None)
 
 
 def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
-                  cap_active, sink=None):
+                  cap_active, sink=None, supp_scale=1.0):
     """Apply the rank-boundary support gate; see :class:`_RBLapSumGate`.
 
     ``value_c`` (signed z at the sorted Top(K+J) candidates) carries gradient;
     all other tensors are detached inputs.  ``mode`` is one of :data:`GRAD_MODES`.
+    ``supp_scale`` multiplies the surrogate support gradient in the backward
+    (1.0 = normal; 0.0 = hard task path only) -- an experiment knob used by
+    analysis/scale_dynamics.py for gradient-decomposition counterfactuals.
     """
     return _RBLapSumGate.apply(
         value_c, active_c, score_c.detach(), sign_c.detach(), b.detach(),
         float(t), _MODE_ID[mode], int(k), cap_active.detach(), sink,
+        float(supp_scale),
     )

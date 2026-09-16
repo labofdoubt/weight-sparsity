@@ -195,6 +195,19 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self.rblapsum_t_min = float(rblapsum_t_min)
         self.rblapsum_t_max = float(rblapsum_t_max)
         self.rblapsum_servo_rate = float(rblapsum_servo_rate)
+        # Experiment-only knobs, set programmatically (analysis/scale_dynamics.py),
+        # deliberately not config fields.  support_scale multiplies the surrogate
+        # support gradient g_s in the backward (0 = pure hard task path).
+        # view_scale alpha rescales the gate's VIEW of the activations
+        # (z -> alpha z at the gate input, output divided by alpha): the forward
+        # function and the task gradient are exactly unchanged, while the
+        # surrogate sees scores, boundary and spacings scaled by alpha at fixed
+        # kernel width T -- a function-preserving emulation of an
+        # activation-scale excursion.  Setting view_scale = c together with
+        # temperature * c is an exact score-units reparameterization (all
+        # gradients invariant).
+        self.rblapsum_support_scale = 1.0
+        self.rblapsum_view_scale = 1.0
         if surrogate_mode == "rblapsum":
             if selection_mode not in ("topk", "abs_topk"):
                 raise ValueError(
@@ -536,6 +549,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
         three grad modes share this forward exactly (see :mod:`.rblapsum`).
         """
         b0 = self.rblapsum_boundary_floor
+        alpha = float(self.rblapsum_view_scale)
+        if alpha != 1.0:
+            scores = scores * alpha
+            value = value * alpha
         cand_scores, cand_idx = torch.topk(scores, self.m, dim=-1, largest=True, sorted=True)
         value_c = torch.gather(value, -1, cand_idx)          # signed z, carries grad
         score_c = cand_scores.detach()                       # s = |z| or z, sorted desc
@@ -554,8 +571,11 @@ class AdaptiveLapSumTopKGate(nn.Module):
         t = float(self.rb_temp) if servo else self.rblapsum_temperature
         sink = self._grad_sink if self.log_diagnostics and self.training else None
         y_c = rblapsum_gate(value_c, active_c, score_c, sign_c, b, t,
-                            self.rblapsum_boundary_grad_mode, self.k, cap_active, sink)
+                            self.rblapsum_boundary_grad_mode, self.k, cap_active, sink,
+                            supp_scale=float(self.rblapsum_support_scale))
         y = torch.zeros_like(value).scatter(-1, cand_idx, y_c.to(value.dtype))
+        if alpha != 1.0:
+            y = y / alpha
 
         if self.log_diagnostics and self.training:
             with torch.no_grad():
