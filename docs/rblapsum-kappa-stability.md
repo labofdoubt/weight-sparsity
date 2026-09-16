@@ -279,6 +279,15 @@ correction is not the villain — it is the *strongest* of the three modes at
 this pressure (kappa outlived detach 4×), and what kills it is the burst
 that transiently strips its window. Consistent with v3.
 
+![cascade and geometry](figures/kstab_cascade_and_geometry.png)
+
+Left: once past the point of no return the inflation is a clean depth
+cascade — each block amplifies the scale handed up by the one below
+(residual_out replaces the residual, so scale multiplies through depth),
+ending in bf16-saturation plateaux. Right: the pressure factor b/δ grows
+near-linearly with K — this is why "just pick a bigger fixed T" always
+fails eventually.
+
 ![dose response](figures/kstab_dose_response.png)
 
 ![t01 anatomy](figures/kstab_t01_anatomy.png)
