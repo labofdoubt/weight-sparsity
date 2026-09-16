@@ -403,7 +403,11 @@ def test_servo_state_roundtrip():
 
 def test_servo_validation():
     with pytest.raises(ValueError):
-        make_servo_gate(T=1.0, rblapsum_temperature_mode="auto")  # unknown mode
+        AdaptiveLapSumTopKGate(
+            n_features=64, k=8, j=24, n_eff=3.0, selection_mode="abs_topk",
+            surrogate_mode="rblapsum",
+            rblapsum_boundary_grad_mode="through_rank_kappa",
+            rblapsum_temperature_mode="auto")  # unknown mode
     with pytest.raises(ValueError):
         make_servo_gate(T=10.0)                     # T0 above t_max
     with pytest.raises(ValueError):
