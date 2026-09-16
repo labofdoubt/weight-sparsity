@@ -278,3 +278,60 @@ healthy at the same step. At k32/T1 detach had been stable for 20k. So the
 correction is not the villain — it is the *strongest* of the three modes at
 this pressure (kappa outlived detach 4×), and what kills it is the burst
 that transiently strips its window. Consistent with v3.
+
+![dose response](figures/kstab_dose_response.png)
+
+![t01 anatomy](figures/kstab_t01_anatomy.png)
+
+The anatomy figure shows the causal order within one collapse: the window
+population n_eff falls to 1 (step ~350) *while CE is still fine*; the
+boundary score is already climbing exponentially; the kick dies as the
+kernel loses everyone (step ~450); CE only breaks visibly at ~800. Loss is
+the last thing to know.
+
+## 10. The recipe: a temperature servo
+
+The theory says the failure needs two things: sustained kernel pressure Χ
+above ~1e-4 (sets burst rate), and a burst that empties the window (the
+cliff). Both are properties the gate can *measure about itself*, so the
+principled fix is feedback rather than a fixed-T schedule or a k-lookup
+table:
+
+**`rblapsum_temperature_mode: servo`** (implemented in
+`src/wsparse/bottleneck/{gate,rblapsum}.py`, per-layer scalar T, state in
+persistent buffers):
+
+1. **Population floor** (the cliff guard): if fewer than
+   `rblapsum_window_floor`=16 candidates sit inside the kernel window on a
+   batch, T grows 10% *that step*. A window that cannot empty cannot hand
+   the zero-sum correction to a single feature, so the through_rank
+   degenerate limit — the runaway engine in every observed death — becomes
+   unreachable. During a burst the boundary runs, the window thins, and the
+   servo chases it up within tens of steps (×1.1ⁿ compounding).
+2. **Kick-to-spacing trim** (the operating point): otherwise T moves at
+   most 2%/step to hold EMA(kick)/EMA(δ) at `rblapsum_chi_target`=8e-5 —
+   the measured k32/T1 point, which is simultaneously the best-quality and
+   the calmest stable configuration. This automatically delivers T ≈ 1 at
+   k=32, T ≈ 2+ at k=64, and whatever k=96+ needs, with no manual sweep.
+
+Why not simpler rules that were considered and rejected:
+- *T proportional to the local band spread* is scale-invariant (good under
+  inflation) but moves the **wrong way in k**: the k=64 boundary region is
+  denser, so spread-following would *lower* T where more T is needed.
+- *A fixed T=2 everywhere* works for k ≤ 64 but the pressure grows with k
+  (measured b/δ: 80 → 212 → 319 → 398 for K = 32/64/96/128), so any fixed
+  choice fails at some k — and overpays quality at small k.
+
+## 11. Wave 2 (pre-registered, running)
+
+Geometry measured at checkpoint-2000 of two stable campaign models
+*before* these runs (b/δ above) fixes the predictions:
+
+| run | prediction |
+|---|---|
+| kstab_k96_j416_t1 (fixed T=1) | Χ ≈ 1.5× the level that killed k64/j448 → **dies**, onset earlier than 3940 (roughly 1.5–6k; death probability ~0.8+) |
+| kstab_k96_j416_servo | survives 20k; settled T above the k64 servo's settled T |
+| kstab_k64_j448_servo (+seed 1338) | survives past 3940 both seeds; final CE ≈ the T=2 twin's 1.472 or better |
+| kstab_k32_j480_t05_servo (T₀=0.5) | rescued: servo lifts T out of the marginal zone; final CE ≈ 1.49 |
+| kstab_k32_j96_t01_servo (T₀=0.1) | rescued from the 150-step collapse by the population guard (T must climb ~10× within ~100 steps) |
+| kstab_k32_j480_servo (T₀=1.0) | null test: servo holds T ≈ 1, quality matches the 1.491 flagship |
