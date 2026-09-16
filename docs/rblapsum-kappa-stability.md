@@ -493,3 +493,9 @@ asymmetric by nature: rising above the baseline prevents deaths (proven at
 k=64/96); dipping below it only chases quality that the fixed baseline
 already delivers, at documented risk. Wave 2.2 (running): the null test
 redone under the protective floor (two seeds) plus a k=96 seed repeat.
+
+**Per-layer temperatures the servo discovered** (final checkpoints, blocks
+0→7): k64: 2.74 2.48 2.11 1.83 1.82 1.99 1.97 2.21 — a U over depth (first
+and last blocks sharpest-geometried); k96 the same shape one size up
+(3.52…2.06…3.06). A ~1.5× spread inside one model: per-layer control is
+not an implementation nicety, no single scalar T is right for all blocks.
