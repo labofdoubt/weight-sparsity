@@ -303,6 +303,21 @@ def run_drift(args):
     dx = {br: [[] for _ in bctl.layers] for br in branches}
     clip = float(cfg.train.grad_clip)
 
+    # null branch: a zero-gradient optimizer step.  The saved optimizer state
+    # carries momentum from the original run, so every counterfactual step
+    # includes a momentum-replay component shared by all branches; the null
+    # step measures exactly that baseline.  Deterministic, so computed once.
+    G_zero = {n: torch.zeros_like(p) for n, p in model.named_parameters()}
+    assign_grads(model, G_zero)
+    opt.step()
+    R1 = eval_scale(model, bctl, ex, ey)
+    dx_null = [{st: math.log(max(R1[li][st], 1e-30))
+                    - math.log(max(R0[li][st], 1e-30)) for st in stats}
+               for li in range(len(bctl.layers))]
+    model.load_state_dict(snap_m)
+    opt.load_state_dict(copy.deepcopy(snap_o))
+    set_lr(opt, lr * args.lr_mult)
+
     for bi in range(args.batches):
         micros = [train_stream.batch(micro, device, deterministic_offset=1000 + bi * accum + a)
                   for a in range(accum)]
@@ -311,6 +326,11 @@ def run_drift(args):
             set_knob(bctl, "rblapsum_support_scale", supp)
             opt.zero_grad(set_to_none=True)
             model.train()
+            # identical RNG for both passes so any stochastic layer produces
+            # the same masks and G_full - G_task is exactly the surrogate term
+            torch.manual_seed(9000 + bi)
+            if device.type == "cuda":
+                torch.cuda.manual_seed_all(9000 + bi)
             for (x, y) in micros:
                 with autocast_context(device, dtype):
                     _, loss = model(x, y)
@@ -336,7 +356,7 @@ def run_drift(args):
         opt.zero_grad(set_to_none=True)
 
     for li, rec in enumerate(layers_out):
-        rec["drift"] = {}
+        rec["drift"] = {"null": {st: dx_null[li][st] for st in stats}}
         for br in branches:
             rec["drift"][br] = {}
             for st in stats:
@@ -346,6 +366,20 @@ def run_drift(args):
                     "D": float(0.5 * v.var()),
                     "n": int(v.size),
                     "samples": [float(t) for t in v]}
+        # paired effects: task_effect = task - null (per batch, null constant);
+        # supp_effect = full - task (per batch, cancels shared batch noise)
+        rec["drift"]["task_effect"] = {}
+        rec["drift"]["supp_effect"] = {}
+        for st in stats:
+            t = np.array([d[st] for d in dx["task"][li]]) - dx_null[li][st]
+            f = np.array([d[st] for d in dx["full"][li]])
+            k = np.array([d[st] for d in dx["task"][li]])
+            e = f - k
+            rec["drift"]["task_effect"][st] = {
+                "mu": float(t.mean()), "D": float(0.5 * t.var()), "n": int(t.size)}
+            rec["drift"]["supp_effect"][st] = {
+                "mu": float(e.mean()), "D": float(0.5 * e.var()), "n": int(e.size),
+                "samples": [float(v) for v in e]}
 
     out = {"ckpt": args.ckpt, "step": step, "lr": lr, "lr_mult": args.lr_mult,
            "alpha": args.alpha, "temp_mult": args.temp_mult,
@@ -356,10 +390,11 @@ def run_drift(args):
            "R0": R0, "layers": layers_out}
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     json.dump(out, open(args.out, "w"), indent=1)
-    mu_f = np.mean([r["drift"]["full"]["R_all"]["mu"] for r in layers_out])
-    mu_s = np.mean([r["drift"]["supp"]["R_all"]["mu"] for r in layers_out])
+    mu_n = np.mean([r["drift"]["null"]["R_all"] for r in layers_out])
+    mu_t = np.mean([r["drift"]["task_effect"]["R_all"]["mu"] for r in layers_out])
+    mu_e = np.mean([r["drift"]["supp_effect"]["R_all"]["mu"] for r in layers_out])
     print(f"[drift] {os.path.basename(args.ckpt)} alpha={args.alpha} "
-          f"mu_full={mu_f:+.3e} mu_supp={mu_s:+.3e} -> {args.out}")
+          f"null={mu_n:+.3e} task_eff={mu_t:+.3e} supp_eff={mu_e:+.3e} -> {args.out}")
 
 
 # --------------------------------------------------------------------------- #
