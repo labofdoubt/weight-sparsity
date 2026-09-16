@@ -73,7 +73,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         rblapsum_temperature: float = 1.0,
         rblapsum_kernel: str = "exponential",
         rblapsum_temperature_mode: str = "fixed",
-        rblapsum_chi_target: float = 8e-5,
+        rblapsum_chi_target: float = 45.0,
         rblapsum_window_floor: float = 16.0,
         rblapsum_t_min: float = 0.25,
         rblapsum_t_max: float = 8.0,
