@@ -458,3 +458,38 @@ Meanwhile **kstab_k96_j416_t1 (fixed T=1) died on schedule** — loss ≈ 6.0
 by step 3800, inside the pre-registered 1.5–6k window. That is the
 theory's sharpest confirmed prediction: a never-tried K, called in advance
 from score geometry alone.
+
+## 15. Wave 2.1 results (20k): four hits, two rescues — and the null test failed
+
+| run | fate | final val CE | reference |
+|---|---|--:|---|
+| kstab_k64_j448_servo | stable | **1.4691** | fixed T=2: 1.4724; fixed T=1: died 3940 |
+| kstab_k64_j448_servo_s2 | stable | **1.4608** | best k=64 result of the project |
+| kstab_k96_j416_servo | stable | **1.4734** | fixed T=1: died at 1640 — k=96 had never trained |
+| kstab_k32_j480_t05_servo (T₀=0.5) | stable (one survived burst @~8.9k) | 1.5075 | fixed T=0.5: died 7760 |
+| kstab_k32_j96_t01_servo (T₀=0.1) | stable (one survived burst @~5.1k, guard visibly spiked T to 2.2 and rode it out) | 1.5261 | fixed T=0.1: dead in 640 steps; fixed T=1 same j: 1.525 |
+| **kstab_k32_j480_servo (T₀=1, the null test)** | **destabilised @4140** | 3.945 | fixed T=1: 1.491 stable |
+
+![servo headline](figures/kstab_servo_headline.png)
+
+**The null-test failure is the most instructive result of the wave.**
+Post-mortem (left panel below): the symmetric trim, holding Χ_geo = 45,
+walked T *down* to 0.49–0.70 by steps 4–8k — inside the proven-marginal
+T≈0.5–0.75 band — because the safe operating line is not a constant: the
+stable fixed k32/T1 flagship runs at Χ_geo ≈ 39 falling to ~30 over
+training (right panel). Holding 45 therefore means *sharpening beyond the
+proven-safe point exactly where the geometry is calmest*. The boundary
+inflated silently for thousands of steps, and a late giant burst (b → 2500)
+outran the guard. Meanwhile the two k32 runs that started from lethal
+temperatures survived — the k32 servo family was collectively operating in
+the marginal band and the roulette picked the null test. A cruel but
+perfect demonstration of the theory's own dose–response claim.
+
+![null-test post-mortem](figures/kstab_nulltest_postmortem.png)
+
+**Fix (implemented, tested): the trim is now protective-only** — T never
+goes below the configured `rblapsum_temperature`. The servo's mandate is
+asymmetric by nature: rising above the baseline prevents deaths (proven at
+k=64/96); dipping below it only chases quality that the fixed baseline
+already delivers, at documented risk. Wave 2.2 (running): the null test
+redone under the protective floor (two seeds) plus a k=96 seed repeat.
