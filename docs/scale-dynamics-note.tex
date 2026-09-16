@@ -196,9 +196,14 @@ Across 96 layer-states (12 checkpoints \(\times\) 8 blocks, excluding the
 post-collapse state), the exact \(\Pisurr\) predicts the realized gradient
 gain \(G_{\mathrm{emp}}\) with rank correlation \(0.97\); \(\chigeo\)
 reaches \(0.52\). The dense-boundary approximation
-\(\Pisurr \approx b^2/(4T\delta)\) holds within a factor of about two in
-healthy states and fails, as expected, when the boundary region degenerates
-(factor 10 during late inflation; factor \(10^{4}\) post-collapse).
+\(\Pisurr \approx b^2/(4T\delta)\) holds within a factor of about two at
+the mid-depth blocks of healthy states and fails, as expected, when the
+boundary region degenerates (factor 10 during late inflation; factor
+\(10^{4}\) post-collapse). It can also \emph{over}estimate by orders of
+magnitude at individual blocks whose local rank spacing collapses
+(near-tied scores make \(\delta \to 0\) while the exact \(\Pisurr\)
+stays moderate) --- visible as the rightmost points of
+Fig.~1; where it matters, the exact \(\Pisurr\) should be used.
 
 \begin{figure}[h]\centering
 \includegraphics[width=.9\textwidth]{figures/sdn_Pi.png}
