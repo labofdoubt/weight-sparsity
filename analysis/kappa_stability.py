@@ -49,7 +49,8 @@ def parse_run(name: str) -> dict:
         return {}
     tcode = m.group(3)
     T = {None: 1.0, "2": 2.0, "05": 0.5, "01": 0.1, "15": 1.5, "125": 1.25,
-         "075": 0.75}.get(tcode, float(tcode) if tcode else 1.0)
+         "075": 0.75, "06": 0.6, "065": 0.65, "085": 0.85, "175": 1.75,
+         "3": 3.0, "4": 4.0}.get(tcode, float(tcode) if tcode else 1.0)
     return {"k": int(m.group(1)), "j": int(m.group(2)), "T": T}
 
 
