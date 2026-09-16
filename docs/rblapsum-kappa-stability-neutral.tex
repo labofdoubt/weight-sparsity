@@ -2150,46 +2150,157 @@ determine how broadly the rule generalizes.
 
 
 % ============================================================
-\section{Summary}
+\section{Final conclusions and performance summary}
 % ============================================================
 
-The original question was why
-\code{through\_rank\_kappa} can be stable and high-performing at
-\(K=32,T=1\), yet fail when either \(K\) is increased or \(T\) is decreased.
+The original investigation had three main questions: what causes the
+instability of \code{through\_rank\_kappa}, whether the failures obtained by
+increasing \(K\) and by decreasing \(T\) have the same origin, and whether the
+failure can be avoided without manually choosing a different temperature for
+each value of \(K\).
 
-The measurements support a common explanation.
+\paragraph{Mechanism.}
+The measurements are consistent with instability being controlled by how sharp
+the kernel is relative to the local spacing of scores near the
+\(K/(K+1)\) boundary. In the tested setup, higher pressure is associated with
+more frequent boundary-score inflation events. If one such event becomes large
+enough, the effective kernel population can fall toward
 
-The relevant control parameter is not \(K\) or \(T\) separately, but the
-sharpness of the kernel relative to the local score spacing near the
-\(K/(K+1)\) boundary.
+\[
+\neff = O(1).
+\]
 
-Increasing \(K\) moves the boundary into a denser part of the score
-distribution.
-Reducing \(T\) sharpens the kernel.
-Both therefore increase the pressure exerted on the near-boundary region.
+At that point the kappa-distributed correction is no longer meaningfully
+spread over many candidates and approaches the single-boundary-feature
+\code{through\_rank} limit, which was previously observed to be unstable.
+Activation scale can then grow rapidly through depth, while the fixed-width
+kernel eventually assigns negligible weight to almost all candidates and the
+support-learning signal disappears.
 
-At sufficiently high pressure, score-scale excursions become frequent.
-A severe excursion can reduce the effective kernel population toward one,
-at which point the distributed correction loses its main stabilizing
-advantage and approaches the previously unstable single-boundary-feature
-limit.
+The available evidence does not indicate that the zero-sum correction itself
+numerically fails. The measured common-mode residual remains near zero during
+collapse. Moreover, at the high-pressure \(K=64,J=448,T=1\) setting, the
+\code{detach} and \code{project} variants fail within roughly the first 100
+steps, whereas the kappa-distributed version can remain stable for thousands of
+steps. This suggests that the distributed correction is stabilizing, although
+it does not by itself prevent failure when the local kernel pressure becomes
+too large.
 
-A forward-only diagnostic,
+\paragraph{Relation between the \(K\)- and \(T\)-axis failures.}
+The experiments support a common explanation for both. The forward-only
+geometric diagnostic
 
 \[
 \chigeo
 =
-\frac{b}{2T\delta},
+\frac{b}{2T\delta}
 \]
 
-captures the observed \(K\)- and \(T\)-dependence and predicts the temperature
-scale required at previously untested \(K\).
+increases when \(T\) is reduced, because the kernel becomes sharper, and also
+increases when \(K\) moves the boundary into a more densely packed part of the
+score distribution, where \(\delta\) is smaller. The measured values
 
-An adaptive, per-layer controller can use this geometry to increase \(T\) when
-necessary.
-The controller should be protective rather than symmetric: it may broaden the
-kernel when the local geometry becomes unsafe, but should not sharpen the
-kernel below a known-safe configured temperature merely to maintain a fixed
-target value of \(\chigeo\).
+\[
+\frac{b}{\delta}
+\approx
+80,\ 212,\ 319,\ 398
+\qquad
+\text{for}
+\qquad
+K=32,64,96,128
+\]
+
+show that the relevant score geometry changes substantially with \(K\).
+Quantitatively, \(K=64,T=1\) was found to have approximately the same pressure
+as \(K=32,T\approx0.5\), and both occupy the same empirically marginal regime.
+The subsequent fixed-\(T=1\), \(K=96\) failure was predicted in advance from
+this geometry, providing an additional test of the same interpretation.
+
+\paragraph{Adaptive-temperature rule.}
+The final controller uses a separate temperature for each layer and has three
+components:
+
+\begin{enumerate}[leftmargin=1.6em]
+
+\item A population guard increases \(T\) by 10\% on a step when the effective
+kernel window becomes too sparsely populated, using a floor of 16 candidates
+in the current implementation.
+
+\item A geometric-pressure controller adjusts \(T\) using
+
+\[
+\chigeo
+=
+\frac{\EMA(b)}{2T\,\EMA(\delta)},
+\]
+
+with a target value of 45 in the present experiments.
+
+\item The controller is protective-only:
+
+\[
+T \ge T_{\mathrm{configured}}.
+\]
+
+It may broaden the kernel when the local geometry becomes unsafe, but it does
+not reduce the temperature below a baseline already known to train stably.
+This constraint was added after the symmetric controller reduced \(T\) into the
+empirically marginal range and caused the \(K=32\) null-test failure.
+
+\end{enumerate}
+
+The value 45 should be treated as an empirical operating point for the current
+architecture and optimizer rather than a universal threshold.
+
+\paragraph{Final performance.}
+The final campaign summary compares the adaptive controller with the best
+fixed-temperature alternatives as follows:
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+configuration & adaptive temperature (two seeds) & best fixed temperature \\
+\midrule
+\(K=32,\ J=480\)
+& \textbf{1.4879} / 1.4957
+& 1.4910 (\(T=1\)) \\
+
+\(K=64,\ J=448\)
+& 1.4691 / \textbf{1.4608}
+& 1.4724 (\(T=2\)); \(T=1\) diverges \\
+
+\(K=96,\ J=416\)
+& 1.4734 / \textbf{1.4665}
+& no stable fixed-\(T=1\) result; divergence at step 1640 \\
+
+rescued initializations
+& \(T_0=0.5\to1.5075\), \quad \(T_0=0.1\to1.5261\)
+& corresponding fixed-temperature runs diverge \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Across the 11 adaptive-temperature runs included in the final post-revision
+summary, spanning \(K=32,64,96\), multiple seeds, and starting temperatures
+from 0.1 to 1.0, all completed 20k steps without the instability observed in
+the corresponding unsafe fixed-temperature settings. The controller selected
+characteristic temperatures of approximately
+
+\[
+T\approx0.95,\ 2.2,\ 3.0
+\qquad
+\text{for}
+\qquad
+K=32,64,96,
+\]
+
+with substantial layer-to-layer variation, rather than requiring a separate
+manual temperature sweep for each value of \(K\).
+
+The remaining uncertainties are those listed above: the detailed mechanism
+that selects which trajectory fails within a marginal regime, the accumulated
+effect of the small cross-step asymmetry on global score scale, and the extent
+to which the observed \(\chigeo\) range generalizes beyond the current
+architecture and optimizer.
 
 \end{document}
