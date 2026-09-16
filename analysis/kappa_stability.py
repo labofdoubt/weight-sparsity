@@ -67,6 +67,8 @@ TB_TAGS = [
     "bottleneck/rb_support_grad_norm", "bottleneck/rb_common_mode",
     "bottleneck/rb_common_mode_raw", "bottleneck/rb_cap_active_frac",
     "bottleneck/in_window_frac", "bottleneck/active_count",
+    "bottleneck/rb_temp", "bottleneck/rb_chi", "bottleneck/rb_win_count",
+    "bottleneck/rb_kick",
 ]
 
 
