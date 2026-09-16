@@ -1951,6 +1951,61 @@ additional stability risk.
 Wave 2.2 repeats the null test with this lower temperature bound using two
 random seeds, together with a repeated \(K=96\) run.
 
+% ============================================================
+\section{Wave 2.2 results: the protective controller passes the null test}
+% ============================================================
+
+All three runs completed 20k steps with no destabilization onset.
+
+\begin{center}\small
+\begin{tabular}{p{4.6cm}p{3.0cm}rp{4.2cm}}
+\toprule
+run & outcome & final CE & reference \\
+\midrule
+
+\code{kstab\_k32\_j480\_servo} (null test, redone)
+&
+stable
+&
+\textbf{1.4879}
+&
+fixed \(T=1\): 1.4910;
+symmetric controller: diverged at 4140
+\\
+
+\code{kstab\_k32\_j480\_servo\_s2}
+&
+stable
+&
+1.4957
+&
+seed repeat
+\\
+
+\code{kstab\_k96\_j416\_servo\_s2}
+&
+stable
+&
+\textbf{1.4665}
+&
+seed 1: 1.4734;
+fixed \(T=1\): diverged at 1640
+\\
+
+\bottomrule
+\end{tabular}
+\end{center}
+
+The protective lower bound resolves the one failure observed in wave 2.1.
+The redone null test now slightly exceeds the fixed-\(T=1\) reference
+quality, and the \(K=96\) result is reproduced across seeds.
+
+After this revision, all eleven adaptive-temperature runs launched with the
+protective controller or unaffected by the symmetric-trim flaw completed 20k
+steps stably, across \(K=32,64,96\), two seeds, and starting temperatures
+from 0.1 to 1.0, with final quality at or above the corresponding fixed-\(T\)
+baselines.
+
 
 % ============================================================
 \section{Per-layer temperatures}
