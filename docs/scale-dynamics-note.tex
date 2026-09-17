@@ -408,10 +408,15 @@ parameter replaced according to the present findings, and broken down over
 blocks and training steps. Points are taken from pre-collapse checkpoints
 only; the trajectory panel tracks the worst block of each run over
 training; the dose--response panel plots the pre-onset burst rate against
-the earliest healthy worst-block value. Currently the eighteen fixed-\(T\)
-campaign runs with checkpointed ladders are included (\(K = 32, 64\)); the
-running boundary-bracketing campaign (\(K = 32\)--\(128\), sixteen
-configurations) will extend it.
+the earliest healthy worst-block value. The dataset combines the eighteen original fixed-\(T\) campaign runs
+(\(K = 32, 64\); 20k horizon) with the sixteen boundary-bracketing
+configurations (\(K = 32\)--\(128\); 10k horizon, open circles) and the
+densely sampled \(k96/T0.75\) collapse arc --- 34 runs in total. Two of
+the new configurations (\(k32\), \(T = 0.60/0.65\)) destabilized and then
+recovered; they enter as high-burst-rate survivors and sit between the calm
+survivors and the deaths in the dose--response panel, as the picture
+predicts. The one new terminal death (\(k48\), \(T = 0.75\)) lands among
+the high-\(\Pisurr\) deaths.
 
 \begin{figure}[h]\centering
 \includegraphics[width=.94\textwidth]{figures/sdn_pi_fate_map.png}
