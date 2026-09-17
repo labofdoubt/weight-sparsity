@@ -390,7 +390,7 @@ Only three marginal \((K,T)\) rows contain both positive and negative outcomes, 
 \section{Results 5b: surrogate-gain fate map}
 % ============================================================
 
-The earlier dose--response analysis was repeated using the surrogate-gain quantities, resolved by block and checkpoint. Only pre-collapse checkpoints are included. The trajectory panel follows the highest-gain block of each run over training, while the dose--response panel compares pre-onset burst rate with the earliest healthy worst-block gain, measured at step 2000 for the 20k-horizon runs and step 1000 for the 10k-horizon runs, i.e.\ thousands of steps before the earliest observed collapse.
+The earlier dose--response analysis was repeated using the surrogate-gain quantities, resolved by block and checkpoint. Only pre-collapse checkpoints are included. The trajectory panel follows the highest-gain block of each run over training, while two dose--response panels compare the pre-onset burst rate with the worst-block gain measured at a common reference step 2000, thousands of steps before the earliest observed collapse, and at initialization (step 0, before any gradient update). The initialization values are computed from a single untrained forward pass: at fixed seed the initial weights are identical across configurations, so only \((K,J,T)\) vary. The step-0 dose--response shows that the initialization value of the surrogate gain already separates the configurations that later collapse (all observed collapses have worst-block \(\Pisurr(0)\gtrsim250\)); this provides a configuration-screening rule that requires no training, although, being configuration-level, it carries no within-run temporal information.
 
 
 The swept configurations are summarized below. All runs use the hard
@@ -441,6 +441,22 @@ The dataset includes eighteen fixed-\(T\) campaign runs with checkpointed score 
 \includegraphics[width=.94\textwidth]{figures/sdn\_piapprox\_fate\_map.png}
 \caption{The same analysis using \(b^2/(4T\delta)\). The broad ordering remains, but within-block separation is weaker and near-zero \(\delta\) produces extreme outliers. The exact \(\Pisurr\) is preferable when the kernel tensors are available.}
 \end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=.97\textwidth]{figures/sdn_dose_by_block_pi.png}
+\caption{Per-block dose--response: each panel plots the run-level pre-onset
+burst rate against that block's exact \(\Pisurr\) at step 2000. The
+monotone relation holds in every block; blocks 0--4 separate the eventual
+deaths most sharply, while blocks 6--7 carry a higher baseline gain in all
+runs and overlap more.}
+\end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=.97\textwidth]{figures/sdn_dose_by_block_approx.png}
+\caption{The same per-block dose--response using the approximation
+\(b^2/(4T\delta)\).}
+\end{figure}
+
 
 % ============================================================
 \section{Results 6: drift, heating, and the escape picture}

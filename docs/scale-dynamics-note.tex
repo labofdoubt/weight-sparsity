@@ -407,10 +407,14 @@ The analogue of the earlier report's dose--response figure, with the order
 parameter replaced according to the present findings, and broken down over
 blocks and training steps. Points are taken from pre-collapse checkpoints
 only; the trajectory panel tracks the worst block of each run over
-training; the dose--response panel plots the pre-onset burst rate against
-the earliest healthy worst-block value (step 2000 for the 20k-horizon
-runs, step 1000 for the 10k-horizon runs --- thousands of steps before the
-earliest observed collapse). 
+training; two dose--response panels plot the pre-onset burst rate against
+the worst-block value at a common reference step 2000 (thousands of steps
+before the earliest observed collapse) and at initialization (step 0,
+before any gradient update). The step-0 values come from one untrained
+forward pass: at fixed seed the initial weights are identical across
+configurations, so the initialization tensor is shared and only
+\((K, J, T)\) vary.
+
 The swept configurations are summarized below. All runs use the hard
 Top-\(K\) forward with \code{through\_rank\_kappa}, \code{abs\_topk}
 selection, \(b_0 = 0.1\), the same 8\(\times\)768 architecture, optimizer,
@@ -478,6 +482,22 @@ the step-2000 panels), and individual blocks with collapsing rank spacing
 produce far-right outliers; the exact \(\Pisurr\) should be preferred
 where the tensors are available.}
 \end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=.97\textwidth]{figures/sdn_dose_by_block_pi.png}
+\caption{Per-block dose--response: each panel plots the run-level pre-onset
+burst rate against that block's exact \(\Pisurr\) at step 2000. The
+monotone relation holds in every block; blocks 0--4 separate the eventual
+deaths most sharply, while blocks 6--7 carry a higher baseline gain in all
+runs and overlap more.}
+\end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=.97\textwidth]{figures/sdn_dose_by_block_approx.png}
+\caption{The same per-block dose--response using the approximation
+\(b^2/(4T\delta)\).}
+\end{figure}
+
 
 \section{Results 6: drift versus diffusion, and the escape picture}
 
@@ -552,6 +572,14 @@ architecture the two co-move (which is why the \(\chigeo\)-servo works),
 but \(\Pisurr\) is the quantity with a mechanistic meaning.
 \item \(\chigeo\) should be treated as a convenient row-level heuristic
 only.
+\item \textbf{Initialization-time screening.} The worst-block \(\Pisurr\)
+of a candidate \((K, J, T)\) is computable from one untrained forward
+pass, and in the fate maps this step-0 value already separates the eventual
+deaths (all observed deaths have worst-block \(\Pisurr(0) \gtrsim 250\)),
+with a dose--response as clean as the step-2000 one. A configuration can
+therefore be screened before spending any training compute. Being
+configuration-level, the step-0 value carries no within-run temporal
+signal; \(\neff\) remains the temporal early warning.
 \end{itemize}
 
 The central question --- what measurable quantity directly indicates that
