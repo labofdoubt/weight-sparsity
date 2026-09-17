@@ -423,9 +423,12 @@ excluded from the fate maps \\[2pt]
 In every configuration \(K + J = 512\) candidates out of 1536 features,
 except the \(K{=}64\) row-membership runs (\(J = 96, 224\)) and the original
 \(K{=}32\)/\(K{=}64\) \(J\)-sweeps, where \(J\) itself is the swept variable.
-In total 39 training runs; 34 contribute pre-collapse points to the fate
-maps (the four \(T{=}0.1\) runs and, pending a checkpoint repair, the dense
-arc are excluded).
+In total 39 training runs; 35 contribute pre-collapse points to the fate
+maps (the four \(T{=}0.1\) runs are excluded --- they died before their
+first checkpoint). The dense arc appears in the trajectory panel at
+100-step resolution (nine pre-collapse rungs before its collapse near step
+960) but not in the burst-rate panel, whose pre-onset window is too short
+there for a rate estimate.
 
 The dataset includes eighteen fixed-\(T\) campaign runs with checkpointed score ladders for \(K=32,64\) (20k-step horizon), the sixteen-configuration boundary-bracketing campaign over \(K=32\)--128 (10k-step horizon, shown as open circles), and a densely sampled \(K=96,T=0.75\) collapse trajectory; 34 runs in total. Among the new configurations, one (\(K=48,T=0.75\)) collapsed terminally, and two (\(K=32\), \(T=0.60\) and \(0.65\)) underwent large excursions that later recovered; the latter appear as high-burst-rate survivors between the calm survivors and the collapses in the dose--response panel.
 
