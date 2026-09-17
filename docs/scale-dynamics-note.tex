@@ -408,7 +408,42 @@ parameter replaced according to the present findings, and broken down over
 blocks and training steps. Points are taken from pre-collapse checkpoints
 only; the trajectory panel tracks the worst block of each run over
 training; the dose--response panel plots the pre-onset burst rate against
-the earliest healthy worst-block value. The dataset combines the eighteen original fixed-\(T\) campaign runs
+the earliest healthy worst-block value. 
+The swept configurations are summarized below. All runs use the hard
+Top-\(K\) forward with \code{through\_rank\_kappa}, \code{abs\_topk}
+selection, \(b_0 = 0.1\), the same 8\(\times\)768 architecture, optimizer,
+and 20k-step schedules; shorter horizons stop early without changing the
+schedules.
+
+\begin{center}\small
+\begin{tabular}{rrp{2.6cm}lp{5.6cm}}
+\toprule
+\(K\) & \(J\) & \(T\) values & horizon & note \\
+\midrule
+32  & 32, 96, 224, 480 & 0.1, 0.5, 1.0, 2.0 & 20k & original campaign (16
+runs); the \(T{=}0.1\) row died before its first checkpoint and is
+excluded from the fate maps \\[2pt]
+32  & 480 & 0.60, 0.65, 0.85 & 10k & bracketing runs \\
+48  & 464 & 0.75, 1.0, 1.5 & 10k & bracketing runs \\
+64  & 64, 192, 448 & 1.0, 2.0 & 20k & original campaign (6 runs) \\
+64  & 96, 224 & 1.0 & 10k & extra members of the marginal row \\
+64  & 448 & 1.25, 1.75 & 10k & bracketing runs \\
+96  & 416 & 1.5, 2.0, 3.0 & 10k & bracketing runs \\
+96  & 416 & 0.75 & \(\sim\)2.6k & densely checkpointed collapse arc (every
+100 steps) \\
+128 & 384 & 2.0, 3.0, 4.0 & 10k & bracketing runs \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+In every configuration \(K + J = 512\) candidates out of 1536 features,
+except the \(K{=}64\) row-membership runs (\(J = 96, 224\)) and the original
+\(K{=}32\)/\(K{=}64\) \(J\)-sweeps, where \(J\) itself is the swept variable.
+In total 39 training runs; 34 contribute pre-collapse points to the fate
+maps (the four \(T{=}0.1\) runs and, pending a checkpoint repair, the dense
+arc are excluded).
+
+The dataset combines the eighteen original fixed-\(T\) campaign runs
 (\(K = 32, 64\); 20k horizon) with the sixteen boundary-bracketing
 configurations (\(K = 32\)--\(128\); 10k horizon, open circles) and the
 densely sampled \(k96/T0.75\) collapse arc --- 34 runs in total. Two of
