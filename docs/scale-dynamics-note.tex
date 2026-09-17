@@ -408,7 +408,9 @@ parameter replaced according to the present findings, and broken down over
 blocks and training steps. Points are taken from pre-collapse checkpoints
 only; the trajectory panel tracks the worst block of each run over
 training; the dose--response panel plots the pre-onset burst rate against
-the earliest healthy worst-block value. 
+the earliest healthy worst-block value (step 2000 for the 20k-horizon
+runs, step 1000 for the 10k-horizon runs --- thousands of steps before the
+earliest observed collapse). 
 The swept configurations are summarized below. All runs use the hard
 Top-\(K\) forward with \code{through\_rank\_kappa}, \code{abs\_topk}
 selection, \(b_0 = 0.1\), the same 8\(\times\)768 architecture, optimizer,
