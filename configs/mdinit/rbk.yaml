@@ -1,0 +1,26 @@
+# Family 2: RBLapSum through_rank_kappa (the rout_rblapsum_kappa family),
+# fixed absolute T=1.0, boundary floor 0.1.
+_base_: common.yaml
+
+activation_bottleneck:
+  enabled: true
+  layers: all
+  placement: residual_out
+  n_features: 1536
+  k: 32          # overridden per job
+  j: 480         # overridden per job
+  n_eff: 32.0
+  selection_mode: abs_topk
+  effective_count_metric: ess
+  boundary_mode: both_sides
+  one_sided_weight_mode: true_gradient
+  surrogate_mode: rblapsum
+  rblapsum_boundary_grad_mode: through_rank_kappa
+  rblapsum_boundary_floor: 0.1
+  rblapsum_temperature: 1.0
+  rblapsum_kernel: exponential
+  temperature_schedule: constant
+  temperature_start: 1.0
+  temperature_scale_mode: absolute
+  bias: false
+  hard_inference: true

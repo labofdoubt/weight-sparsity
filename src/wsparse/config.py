@@ -84,6 +84,19 @@ class ModelConfig:
     # their ablation).  "up_down": one-sided -- d_out >= d_in gets the row gain,
     # d_out < d_in the column gain (nGPT-style alternation).
     decouple_gains: str = "row_col"  # row_col | up_down
+    # The MD *initialization* without the MD *optimizer*: apply exactly the
+    # same re-initialization decouple=True applies (md_init_: unit-L2 embedding
+    # rows with the fixed sqrt(d_model) forward upscale, every other >=2-D
+    # weight entrywise N(0, 1/d_model) projected to c_F in Frobenius norm,
+    # biases zeroed), then train with the ordinary AdamW: no per-row/column
+    # gains, no projection back to the sphere after the step, and
+    # train.weight_decay applies as configured.  At the same seed the initial
+    # weights are bitwise identical to a decouple=True run, so the pair
+    # isolates what the norm constraint itself contributes.  Like decouple it
+    # OVERRIDES every other init field and requires pos_encoding="rope" and
+    # logit_scale="none" (the "auto" multiplier is derived from init fields
+    # this mode overrides).  Mutually exclusive with decouple=True.
+    md_init: bool = False
 
     # ---- initialization -------------------------------------------------- #
     # "fixed_std": every weight ~ N(0, init_std**2)
@@ -141,6 +154,19 @@ class ModelConfig:
                 "decouple=True needs logit_scale='none': the 'auto' multiplier is "
                 "derived from init fields that decoupling overrides, and unit-norm "
                 "head rows reading a unit-RMS stream give unit-scale logits already")
+        if self.md_init and self.decouple:
+            raise ValueError(
+                "md_init=True is redundant under decouple=True: decouple already "
+                "applies the MD initialization (and the norm-constrained "
+                "optimizer); set exactly one of the two")
+        if self.md_init and self.pos_encoding != "rope":
+            raise ValueError(
+                "md_init=True requires pos_encoding='rope': the MD initialization "
+                "defines no treatment for a learned position table")
+        if self.md_init and self.logit_scale == "auto":
+            raise ValueError(
+                "md_init=True needs logit_scale='none': the 'auto' multiplier is "
+                "derived from init fields that the MD initialization overrides")
         if self.pos_encoding not in ("learned", "rope"):
             raise ValueError(f"unknown pos_encoding: {self.pos_encoding!r} (learned | rope)")
         if self.pos_encoding == "rope" and self.head_dim % 2 != 0:

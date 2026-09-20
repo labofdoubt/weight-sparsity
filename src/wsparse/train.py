@@ -159,6 +159,23 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
             mask_param_ids=controller.mask_parameter_ids() or None,
         )
     else:
+        if cfg.model.md_init:
+            # The MD initialization without the MD optimizer: the same tensors a
+            # decouple=True run starts from at the same seed (md_init_ is the
+            # same call at the same point in the same construction sequence),
+            # then ordinary AdamW below -- no gains, no re-projection, and
+            # train.weight_decay applies as configured.
+            from .decouple import md_init_
+
+            if cfg.sparsity.enabled:
+                raise ValueError(
+                    "md_init=True is not supported with sparsity.enabled: "
+                    "md_init_ would re-initialize 2-D mask parameters")
+            counts = md_init_(model, cfg.model.decouple_gains)
+            print(f"[train] md_init: re-initialized {counts['matrix']} matrices "
+                  f"to their c_F norms and {counts['embed']} embedding tables to "
+                  f"unit rows; training with plain AdamW "
+                  f"(weight_decay={cfg.train.weight_decay})")
         optimizer = build_optimizer(
             model, cfg.train, cfg.sparsity, mask_param_ids=controller.mask_parameter_ids()
         )

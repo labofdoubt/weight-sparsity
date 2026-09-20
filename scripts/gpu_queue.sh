@@ -47,6 +47,12 @@ fi
 }
 echo "[queue] interpreter: $PYTHON"
 
+# Entry point: the default trains directly; set ENTRY to a wrapper script with
+# the same CLI to change how every job runs, e.g.
+#   ENTRY=scripts/train_guard.py   divergence-guarded campaign runs
+ENTRY="${ENTRY:--m wsparse.train}"
+echo "[queue] entry: $ENTRY"
+
 IFS=, read -ra CARDS <<< "$GPUS"
 # torch spawns one compute thread per *host* core, but a container is capped by
 # a cgroup quota it cannot see; oversubscribing costs more than it buys.
@@ -73,7 +79,7 @@ worker () {
     [ -z "$job" ] && { echo "[gpu$gpu] queue empty $(date -Is)"; return 0; }
     NAME="${job%%|*}"; REST="${job#*|}"; CONF="${REST%%|*}"; EXTRA="${REST#*|}"
     echo "[gpu$gpu] START $NAME  $(date -Is)"
-    CUDA_VISIBLE_DEVICES=$gpu "$PYTHON" -m wsparse.train --config "$CONF" \
+    CUDA_VISIBLE_DEVICES=$gpu "$PYTHON" $ENTRY --config "$CONF" \
         $SHARED $EXTRA --train.run_name="$NAME" > "$OUT/$NAME.log" 2>&1
     rc=$?
     echo "[gpu$gpu] DONE  $NAME rc=$rc  $(date -Is)"

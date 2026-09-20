@@ -1,0 +1,20 @@
+# Family 3: hard AbsTopK, no surrogate gradient (the rout_hard family).
+# The temperature fields are inert under surrogate_mode=hard; they mirror the
+# uk_rout_hard config dumps verbatim.
+_base_: common.yaml
+
+activation_bottleneck:
+  enabled: true
+  layers: all
+  placement: residual_out
+  n_features: 1536
+  k: 32          # overridden per job
+  j: 64          # inert under hard (diagnostics only); mirrors uk_rout_hard
+  n_eff: 32.0
+  selection_mode: abs_topk
+  effective_count_metric: ess
+  boundary_mode: outside_only
+  one_sided_weight_mode: score_softmax
+  surrogate_mode: hard
+  bias: false
+  hard_inference: true

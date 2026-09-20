@@ -192,7 +192,8 @@ class TransformerLM(nn.Module):
         # Under magnitude-direction decoupling the embedding rows are unit-norm
         # (component std 1/sqrt(d)), so a fixed sqrt(d) upscale puts the
         # residual stream at unit RMS on entry.  A constant, not a parameter.
-        self.embed_scale = math.sqrt(cfg.d_model) if cfg.decouple else 1.0
+        # md_init starts from the same unit rows, so it needs the same upscale.
+        self.embed_scale = math.sqrt(cfg.d_model) if (cfg.decouple or cfg.md_init) else 1.0
 
         self.apply(self._init_weights)
         if cfg.init_scale_residual:
