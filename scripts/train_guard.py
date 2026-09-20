@@ -51,8 +51,11 @@ def main() -> None:
     ap.add_argument("--margin-steps", type=int, default=800)
     ap.add_argument("--min-step", type=int, default=1500)
     ap.add_argument("overrides", nargs="*")
-    args = ap.parse_args()
-    cfg = load_config(args.config, args.overrides)
+    # dotted --section.field=value overrides arrive as unknown flags; collect
+    # them like wsparse.train's own main() does (apply_overrides rejects any
+    # stray token without '=', so a mistyped guard flag still fails loudly)
+    args, unknown = ap.parse_known_args()
+    cfg = load_config(args.config, list(unknown) + args.overrides)
     run_dir = os.path.join(cfg.train.out_dir, cfg.train.run_name)
 
     state = {"best": math.inf, "last": None, "over_ceiling_since": None,
