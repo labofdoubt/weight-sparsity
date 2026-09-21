@@ -768,7 +768,19 @@ measurement silently returns the hard-mask geometry. For a configuration that
 was never trained, `Pi` at initialization is one untrained forward pass: build
 the model, splice the bottleneck, run a batch, apply the formula above. At
 fixed seed the initial weights are identical across `(K, J, T)`, so a single
-init tensor per seed screens a whole grid.
+init state dict screens a whole grid -- `analysis/init_pi_grid.py` does exactly
+that (and `scripts/plot_init_pi.py` draws the heatmaps; see
+`docs/init-pi-grid.pdf` for a 16x16 `(K, J)` grid at `T = 1, 2, 3`).
+
+**One trap when sweeping `K` at initialization:** `J` and `T` are backward-only,
+so they can be evaluated from a single forward, but **`K` changes the forward**
+-- under `residual_out` each block replaces the residual stream, so how many
+features the early blocks keep sets the score scale every later block sees.
+Measured at step 0 with `K = 512` the pre-gate score RMS runs 1.67 (block 0) ->
+6.16 (block 4) -> 13.3 (block 7), and `Pi` with it (187 -> 805 -> 2010);
+at `K = 32` it is flat (~1.6 RMS, `Pi` ~ 120 in every block). So take one
+forward *per* `K`, and do not assume init geometry is depth-independent outside
+the small-`K` corner.
 
 ---
 
