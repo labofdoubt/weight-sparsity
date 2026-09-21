@@ -36,6 +36,14 @@ png_prefix = args.png_prefix
 meta = d["meta"]
 VARIANT = ("\nwith an RMSNorm on each bottleneck's output"
            if meta.get("post_norm") else "")
+DTYPE = next((o.split("=", 1)[1] for o in meta.get("overrides", [])
+              if o.startswith("train.dtype=")), "bfloat16")
+# delta is a difference of nearby scores, so in bf16 it collapses onto a
+# ~2^-9 lattice (5-27 distinct values over 8192 tokens) and b^2/(4 T delta)
+# inherits ±30% hops as K moves; exact Pi is insensitive (<0.5%).  Measure the
+# geometry in float32.
+PROVENANCE = (f"{meta.get('tokens', '?')} token positions, seed "
+              f"{meta.get('seed', '?')}, {DTYPE} forward, $b_0=0$")
 Ks = meta["k_values"]
 Js = meta["j_values"]
 Ts = meta["temps"]
@@ -89,6 +97,7 @@ with PdfPages(out_pdf) as pdf:
                  fontsize=14, y=0.995)
     cb = fig.colorbar(im, ax=axes, shrink=0.55, pad=0.02, aspect=30)
     cb.set_label("$\\Pi$ at step 0 (token median, log scale)", fontsize=11)
+    fig.text(0.5, 0.055, PROVENANCE, ha="center", fontsize=9, color="0.35")
     if png_prefix:
         fig.savefig(png_prefix + "_heatmaps.png", dpi=150, bbox_inches="tight")
     pdf.savefig(fig, bbox_inches="tight")
