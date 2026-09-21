@@ -51,12 +51,12 @@ with PdfPages(out_pdf) as pdf:
         for c, blk in enumerate(blocks):  # columns: depth
             ax = axes[r][c]
             M = mats[(T, blk)]
-            im = ax.imshow(M, origin="lower", aspect="auto", cmap="magma",
+            im = ax.imshow(M, origin="lower", aspect="auto", cmap="viridis",
                            norm=norm,
                            extent=[Js[0] - 16, Js[-1] + 16, Ks[0] - 16, Ks[-1] + 16])
             # iso-contours help read the shape off a log colour map
             cs = ax.contour(Js, Ks, M, levels=[100, 250, 500, 1000, 2000, 5000],
-                            colors="white", linewidths=0.7, alpha=0.75)
+                            colors="0.15", linewidths=0.8, alpha=0.8)
             ax.clabel(cs, inline=True, fontsize=7, fmt="%g")
             ax.set_title(f"block {blk} ({BLOCK_LABEL.get(blk, '')}), $T={T:g}$",
                          fontsize=11)
