@@ -20,7 +20,7 @@
 
 \title{Stabilizing RBLapSum \code{through\_rank\_kappa}\\[2pt]
 \large Research note: kernel temperature, learning rate, output
-normalization and support scale}
+normalization and support-gradient scale}
 \author{}
 \date{2026-09-21/22.}
 
@@ -107,13 +107,13 @@ baseline           & 1 & $6\times10^{-4}$ & --- \\
 $T=2$              & 2 & $6\times10^{-4}$ & wider kernel \\
 lr $2\times10^{-4}$ & 1 & $2\times10^{-4}$ & smaller steps \\
 post-norm          & 1 & $6\times10^{-4}$ & RMSNorm on each bottleneck's output \\
-support $0.3$      & 1 & $6\times10^{-4}$ & \code{rblapsum\_support\_scale}$=0.3$ \\
+support grad $0.3$ & 1 & $6\times10^{-4}$ & \code{rblapsum\_support\_scale}$=0.3$ \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 The first four arms ran on one 8-GPU machine (24 runs, names
-\code{ca\_rout\_rblapsum\_kappa\_*\_stab\_*}); the support-scale arm ran on
+\code{ca\_rout\_rblapsum\_kappa\_*\_stab\_*}); the support-gradient-scale arm ran on
 a second machine (6 runs, \code{ko\_rout\_rblapsum\_kappa\_*\_supp03\_*}),
 along with two hard-AbsTopK runs used for the last conclusion above.
 
@@ -121,7 +121,7 @@ Two implementation notes. The output RMSNorm
 (\code{activation\_bottleneck.post\_norm}) is applied inside the bottleneck
 module, and the bottleneck whose output already feeds a norm --
 \code{residual\_out} in the final block, ahead of \code{norm\_f} -- is
-exempt. The support scale multiplies the boundary-exchange term $g_s$
+exempt. The support-gradient scale multiplies the boundary-exchange term $g_s$
 \emph{after} the mode correction, so the zero-sum structure of
 \code{through\_rank\_kappa} is preserved and the term is uniformly
 rescaled; the hard task path is untouched, so the scale interpolates
@@ -141,7 +141,7 @@ penalized for being behind.
 \begin{center}\small
 \begin{tabular}{lccccc}
 \toprule
-$(K,J)$ & baseline & $T=2$ & lr $2\times10^{-4}$ & post-norm & support $0.3$ \\
+$(K,J)$ & baseline & $T=2$ & lr $2\times10^{-4}$ & post-norm & support grad $0.3$ \\
 \midrule
 $(32,32)$   & 1.5521 & 1.5492 & 1.6709 & \bst{1.5310} & 1.5847 \\
 $(32,480)$  & \bst{1.4900} & 1.4943 & 1.6168 & 1.5370 & 1.5419 \\
@@ -157,28 +157,46 @@ Final validation CE after 20k steps, or the step at which the divergence
 guard stopped the run. Best value per configuration in bold.
 
 \begin{figure}[h]\centering
-\includegraphics[width=.82\textwidth]{figures/stab_k32.png}
-\caption{$K=32$: every arm survives, so this row measures cost rather than
-stabilization. The baseline and $T=2$ curves are indistinguishable; the
-output RMSNorm wins at $J=32$ but loses $0.047$ nats at $J=480$, and the
-reduced learning rate is clearly behind throughout. Colour encodes the
-arm, line style the candidate window ($J=K$ dashed, $K+J=512$ solid).}
+\includegraphics[width=\textwidth]{figures/stab_k32.png}
+\caption{$K=32$: smaller candidate window on the left, larger on the
+right; the lower row repeats each panel with the vertical axis capped at
+2.0 nats. Colour encodes the arm. Every arm survives here, so this
+configuration measures cost rather than stabilization: the baseline and
+$T=2$ curves are indistinguishable, the output RMSNorm wins at $J=32$ but
+loses $0.047$ nats at $J=480$, and the reduced learning rate is clearly
+behind throughout.}
 \end{figure}
 
 \begin{figure}[h]\centering
-\includegraphics[width=.82\textwidth]{figures/stab_k64.png}
-\caption{$K=64$: still no divergence, but the interventions begin to
-separate. The output RMSNorm is best at both $J$, by $0.012$--$0.045$ nats
-over the baseline.}
+\includegraphics[width=\textwidth]{figures/stab_k64.png}
+\caption{$K=64$, panels as above. No run diverges, but the baseline
+(blue, $J=64$) leaves the plotted range twice and returns -- the recovered
+excursion discussed in the text. The output RMSNorm is best at both $J$,
+by $0.012$--$0.045$ nats over the baseline; the capped row makes the
+ordering of the four arms legible over the second half of training.}
 \end{figure}
 
 \begin{figure}[h]\centering
-\includegraphics[width=.82\textwidth]{figures/stab_k128.png}
-\caption{$K=128$: the baseline (blue) diverges at both $J$ and leaves the
-plotted range, its stop marked by a cross at the top edge. All four
-interventions converge; the output RMSNorm (red) runs lowest throughout,
-ahead of $T=2$, then support scale $0.3$, then the reduced learning rate.}
+\includegraphics[width=\textwidth]{figures/stab_k128.png}
+\caption{$K=128$, panels as above. The baseline (blue) diverges at both
+$J$ and leaves the plotted range, its stop marked by a cross at the top
+edge of each panel. All four interventions converge, and the ordering is
+the same at both $J$ and stable from about step 3000: the output RMSNorm
+(red) runs lowest throughout, ahead of $T=2$, then the support-gradient
+scale, then the reduced learning rate.}
 \end{figure}
+
+\paragraph{A recovered excursion.}
+The baseline at $(64,64)$ survives but is visibly marginal. Its validation
+CE rises from $1.74$ to $5.12$ at step 6500 and recovers within 500 steps,
+rises again to $5.60$ at step 9000, and decays back below $1.8$ by step
+11000, ending at its own best value, $1.5281$. No other surviving run
+behaves this way: the only other runs above CE $2.0$ after step 3000 are
+the two slowest reduced-learning-rate runs, which are simply behind rather
+than excursing. This is the burst-and-recover behaviour the divergence
+guard's 800-step window is meant to tolerate, and it places the baseline at
+the edge of stability one configuration earlier than the divergences alone
+would suggest.
 
 \paragraph{Where the arms differ.}
 Relative to the output RMSNorm, aggregated over the configurations in which
@@ -191,7 +209,7 @@ arm & gap to post-norm (nats) & configurations \\
 \midrule
 baseline            & $-0.047$ to $+0.045$ & 4 (diverges in 2) \\
 $T=2$               & $-0.043$ to $+0.038$ & 6 \\
-support $0.3$       & $+0.005$ to $+0.063$ & 6 \\
+support grad $0.3$  & $+0.005$ to $+0.063$ & 6 \\
 lr $2\times10^{-4}$ & $+0.080$ to $+0.155$ & 6 \\
 \bottomrule
 \end{tabular}
@@ -243,7 +261,7 @@ leaving the gradient itself intact. The measured costs follow: the three
 attenuating arms pay between $0.03$ and $0.16$ nats, while the norm pays
 nothing and usually gains.
 
-The support-scale result is worth stating explicitly, because it is the
+The support-gradient-scale result is worth stating explicitly, because it is the
 intervention the earlier counterfactual experiments identified as causally
 effective: disabling the support gradient stopped both burst initiation and
 post-collapse inflation. It does stabilize here -- six configurations, no
@@ -268,9 +286,9 @@ individual outcomes should be read as draws from a divergence rate rather
 than as deterministic verdicts; the patterns that repeat across
 configurations -- the baseline being the only arm that diverges, the
 RMSNorm leading in five of six, the reduced learning rate being uniformly
-last -- are the robust part. Only one support-scale value ($0.3$) and one
+last -- are the robust part. Only one support-gradient-scale value ($0.3$) and one
 reduced learning rate ($2\times10^{-4}$) were tested, so neither arm is
-tuned; a milder support scale in particular might retain the stabilization
+tuned; a milder support-gradient scale in particular might retain the stabilization
 at a smaller accuracy cost. Finally, the single configuration in which the
 untouched baseline is best, $(32,480)$, is also the least stressed one, so
 the norm should be read as a fix for stressed configurations rather than a
