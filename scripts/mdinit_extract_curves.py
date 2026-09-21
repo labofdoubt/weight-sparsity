@@ -23,6 +23,10 @@ for run_dir in sorted(glob.glob(os.path.join(runs_dir, "ca_rout_*"))):
         rec["regime"] = ("md" if m.get("decouple") else
                          "mdinit_wd%g" % t["weight_decay"] if m.get("md_init") else "plain")
         rec["weight_decay"] = t["weight_decay"]
+        rec["lr"] = t["lr"]
+        rec["post_norm"] = bool(b.get("post_norm", False))
+        rec["b0"] = b.get("rblapsum_boundary_floor")
+        rec["grad_mode"] = b.get("rblapsum_boundary_grad_mode")
     mj = os.path.join(run_dir, "metrics.jsonl")
     if os.path.exists(mj):
         with open(mj) as f:
