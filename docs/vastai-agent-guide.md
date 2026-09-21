@@ -532,6 +532,49 @@ Worked examples: `lens_1/gainsweep_rope_LMropeMD` and `..._BNropeMD` (1000-step
 dynamics against the `..._LMrope` / `..._BNrope` baselines, identical configs
 apart from the flag; probe JSONs in `/workspace/analysis/gain/`).
 
+#### `md_init` — the MD initialization without the MD optimizer
+
+`model.md_init=true` (added 2026-09-20) applies **exactly** the
+re-initialization `decouple=true` applies — the same `md_init_()` call at the
+same point of the same construction sequence, and the same fixed `sqrt(d)`
+embedding upscale in the forward — then trains with the **ordinary AdamW**: no
+gains, no re-projection after the step, and `train.weight_decay` applies as
+configured (unlike `decouple`, which ignores it). At equal seed the two
+regimes start from bitwise-identical parameters and compute identical forward
+logits; verified at full 8x768 size across all three bottleneck families
+(66/66 tensors, forward max|diff| = 0). The pair therefore isolates what the
+norm-constrained *optimizer* contributes beyond its initialization. Like
+`decouple` it overrides every other init field and requires
+`pos_encoding="rope"` and `logit_scale="none"`; the two flags are mutually
+exclusive (config error) and `sparsity.enabled` is refused.
+
+Result, if you need the summary rather than the note
+(`docs/md-init-vs-decoupling.tex`): the initialization carries most of the
+converged quality (MD's residual edge is 0.001–0.041 nats, 0.001–0.025 at
+`wd=0.1`), while the decoupled optimizer is what buys **stability** — across
+42 runs MD never diverged in a configuration that `md_init` survived, and
+`md_init` lost six additional cells.
+
+### `rblapsum` boundary floor: the default changed
+
+`activation_bottleneck.rblapsum_boundary_floor` (`b0`) enters as
+`b = max(b0, s_(K+1))` and as the hard-support rule `active = TopK AND s > b0`.
+It defaulted to **0.1 for `abs_topk`** (0.0 otherwise) until 2026-09-21, and is
+now **0.0 for every selection mode** (commit `b97d54a`).
+
+The change was made after measuring it: across 18 rblapsum runs the run-mean
+boundary never came within 8x of the old floor (minimum 0.81 against 0.1), the
+floor bound for ~0-7% of token/layer positions only transiently at `T=2` and
+essentially nowhere at `T=1`, and divergence moves the boundary *up* (to 1e5-3e8),
+away from the floor. A 12-run ablation at `b0=0` reproduced its `b0=0.1` twins
+within +-0.005 nats (`docs/rblapsum-kappa-ablation.tex`).
+
+Consequences for reading old data: every run trained before that date carries a
+concrete `0.1` in its dumped `config.json`, so it reproduces unchanged — but
+**do not assume the default when recomputing geometry**, read the run's own
+config (and see `B0` in §9b, which is still hard-coded in
+`analysis/kappa_stability.py`).
+
 ### Every schedule is defined over `train.max_steps`
 
 Both the learning rate (`optim.lr_at`) and the bottleneck temperature
@@ -591,6 +634,141 @@ forcing `temperature_scale_mode=absolute` cuts the activation tail 14.7x.
 
 The hard runs declare `exponential` 0.5 -> 0.02, which is equally inert -- a hard
 gate never solves a barrier and never reads the temperature at all.
+
+---
+
+## 9b. Pi: the surrogate-gain order parameter (and how to compute it)
+
+If you are asked anything about *why an rblapsum run destabilized*, or asked to
+predict whether a configuration will survive, the quantity to measure is
+**Pi**, not the older `chi_geo`. Full derivation and evidence:
+`docs/scale-dynamics-note.tex` (and the user's `-neutral` rewrite); the
+instability itself is `docs/rblapsum-kappa-stability.md`.
+
+### What it is
+
+Per layer, on the top-`K+J` candidate set, with `s_i = |z_i|` the ranking
+score, `b = max(b0, s_(K+1))` the boundary, and the kernel
+`kappa_i = exp(-|s_i - b| / T) / (2T)`, `Z = sum_i kappa_i`:
+
+```
+L_kappa = diag(kappa) - kappa kappa^T / Z        # LapSum rank-one Jacobian
+g_s     = L_kappa D_z u                          # kappa-corrected score gradient
+Pi      = || L_kappa D_z ||_F^2                  # <- the order parameter
+```
+
+where `D_z = diag(z)` and `u_i = dL/dy_i` is the gradient arriving at the gate
+output. `Pi` is the squared gain of the map from upstream gradient to surrogate
+score gradient. Expanded via the diagonal-minus-rank-one structure (this is the
+form both scripts implement, and it costs one pass over candidates):
+
+```
+Pi = sum_j  z_j^2 kappa_j^2 [ (1 - kappa_j/Z)^2 + (sum_i kappa_i^2 - kappa_j^2)/Z^2 ]
+```
+
+**Why it replaced `chi_geo = b / (2 T delta)`** (with
+`delta = (s_(K-3) - s_(K+5)) / 8` the local rank spacing): each `kappa_j z_j`
+is dimensionless, so `Pi` is dimensionless and invariant under the score-unit
+reparameterization `(s, z, b, T) -> c*(s, z, b, T)`, which leaves the forward
+pass and all parameter gradients unchanged while scaling `chi_geo` by `1/c`.
+Measured: `Pi` ranks the realized gain `G_emp = ||g_s||^2 / ||u||^2` with rank
+correlation **0.97**, against **0.52** for `chi_geo`; within a fixed `(K,T)`
+row `chi_geo`'s prospective AUC is ~0.46, i.e. chance.
+
+Two facts that will otherwise mislead you:
+
+* **`Pi -> 0` exactly at `n_eff = 1`** (`n_eff = Z^2 / sum kappa_i^2`), because
+  `L_kappa` annihilates everything in the one-feature limit. A post-collapse
+  block can therefore report `Pi = 0` while its neighbours at `n_eff ~ 2` carry
+  `Pi ~ 1e12`. Always read `Pi` **together with `n_eff`**, and per block --
+  never averaged over blocks.
+* **The cheap proxy `Pi_approx = b^2 / (4 T delta)`** is within ~2x in healthy,
+  locally dense states, but overestimates by orders of magnitude when ranks
+  become nearly tied (`delta -> 0`) and by ~1e4 after collapse. Use it only
+  when the kernel tensors are unavailable.
+
+Operating points measured on the 8x768 campaigns: calm states are ~3-10x lower
+than marginal ones, and **every observed death had worst-block `Pi` >~ 250 at
+initialization** (step 0, one untrained forward) -- a training-free
+configuration screen, though being configuration-level it carries no
+within-run temporal information.
+
+### Computing it: two entry points
+
+**(a) From saved score ladders -- cheap, no GPU, whole checkpoint ladders.**
+`analysis/kappa_stability.py ladder` reads the `.npy` score datasets that
+`analysis/extract_bottleneck_scores.py` writes (§8) and emits per-layer,
+per-checkpoint geometry including `Pi`:
+
+```bash
+python analysis/kappa_stability.py ladder \
+    --scores-dir /workspace/analysis/scores \
+    --glob 'ca_rout_rblapsum_kappa_*' \
+    --out-dir /workspace/analysis/kstab          # -> ladder_geometry.json
+```
+
+Each record carries `Pi`/`Pi_med`, `n_eff`, `sum_kappa`, `in_window_frac`,
+`cap_frac` plus counterfactual ranks (`k32`, `k64`) so one run's geometry can
+be re-read as if it had a different `K`. The same file has `tb` (TensorBoard
+scalar dumps, including the servo tags and a loss-onset detector) and `probe`
+(force reconstruction, permutation nulls) subcommands.
+
+**`B0` is hard-coded at the top of that file** (`B0 = 0.1`, the floor every
+*earlier* kappa run used). The default is now `0.0` (§9's `rblapsum` notes), so
+for runs trained after 2026-09-21 set it from the run's own
+`config.json["activation_bottleneck"]["rblapsum_boundary_floor"]` before
+trusting `b`, `cap_frac` or `Pi` near the floor.
+
+**(b) From a checkpoint, exactly, with gradients -- `analysis/scale_dynamics.py
+drift`.** This is the authoritative implementation: it reconstructs the gate's
+own tensors, so `Pi` comes out of the same kernel the backward used, alongside
+the realized gain and the drift/heating decomposition.
+
+```bash
+python analysis/scale_dynamics.py drift \
+    --ckpt /workspace/runs/<run>/ckpt_step2000.pt \
+    --data-dir /workspace/data/tinystories \
+    --out /workspace/analysis/sd/<run>_s2000.json \
+    --batches 16
+```
+
+Output JSON: `["layers"][i]["state"]` holds `Pi`, `Pi_approx`, `chi_geo`,
+`n_eff`, `b`, `delta`, `sum_kappa` (each as `{mean, p90}` over tokens), and
+`["layers"][i]["force"]` holds `G_emp`, `r_supp`, the permutation null and its
+z-score. Useful flags: `--alpha` (function-preserving score rescale, for the
+`F(alpha)` scale-response curve), `--temp-mult`, `--lr-mult`, `--batch-mult`
+(the lr/batch scaling tests that separate linear signed drift from quadratic
+heating), `--perm-null`. Sibling subcommands: `reparam --c C` (the
+invariance check) and `continue --tag ... --supp-scale/--temp-mult --when
+start|trigger:X` (resume-based interventions).
+
+The minimal standalone version, if you only have scores in hand (`ss` = scores
+sorted descending per token, shape `[tokens, >=K+J]`):
+
+```python
+import numpy as np
+b   = np.maximum(b0, ss[:, K])[:, None]
+sc  = ss[:, :K + J]
+kap = np.exp(-np.abs(sc - b) / T) / (2 * T)
+Z   = np.maximum(kap.sum(1), 1e-30)[:, None]
+S2  = (kap ** 2).sum(1)[:, None]
+Pi  = (((sc * kap) ** 2) * ((1 - kap / Z) ** 2 + (S2 - kap ** 2) / Z ** 2)).sum(1)
+n_eff = (Z[:, 0] ** 2) / np.maximum(S2[:, 0], 1e-30)
+```
+
+`sc` stands in for `|z|` at the candidates because `abs_topk` ranks by `|z|`
+and `Pi` squares the signs away; under signed `topk` use `|z|` explicitly.
+
+### Measuring it in the first place
+
+Both entry points need either score datasets or checkpoints **with optimizer
+state**, and the gradient path needs `train()` mode with grad enabled --
+`surrogate_active()` is False under eval/`no_grad` (§7), so an eval-mode
+measurement silently returns the hard-mask geometry. For a configuration that
+was never trained, `Pi` at initialization is one untrained forward pass: build
+the model, splice the bottleneck, run a batch, apply the formula above. At
+fixed seed the initial weights are identical across `(K, J, T)`, so a single
+init tensor per seed screens a whole grid.
 
 ---
 
