@@ -30,7 +30,7 @@ BLOCK_LABEL = {blocks[0]: "early", blocks[len(blocks) // 2]: "middle",
                blocks[-1]: "deep"}
 
 
-def grid(T, blk, field="Pi_mean"):
+def grid(T, blk, field="Pi_med"):
     M = np.full((len(Ks), len(Js)), np.nan)
     for i, K in enumerate(Ks):
         for j, J in enumerate(Js):
@@ -71,7 +71,7 @@ with PdfPages(out_pdf) as pdf:
     fig.suptitle("Surrogate gain $\\Pi=\\|L_\\kappa D_z\\|_F^2$ at initialization, "
                  "rblapsum through_rank_kappa ($b_0=0$)", fontsize=14, y=0.995)
     cb = fig.colorbar(im, ax=axes, shrink=0.55, pad=0.02, aspect=30)
-    cb.set_label("$\\Pi$ at step 0 (token mean, log scale)", fontsize=11)
+    cb.set_label("$\\Pi$ at step 0 (token median, log scale)", fontsize=11)
     if png_prefix:
         fig.savefig(png_prefix + "_heatmaps.png", dpi=150, bbox_inches="tight")
     pdf.savefig(fig, bbox_inches="tight")
@@ -97,19 +97,20 @@ with PdfPages(out_pdf) as pdf:
     # dependence by construction -- the same curve appears in both panels --
     # so the J=32 panel shows where the proxy stops applying.
     #
-    # The proxy is a token MEDIAN: its mean is unusable at init (delta -> 0 on
-    # near-tied ranks sends b^2/(4 T delta) to 1e9-1e11), while the median
-    # tracks the exact gain, whose own mean and median agree to <1%.
+    # Both curves are token MEDIANS.  The proxy has no usable mean at init
+    # (delta -> 0 on near-tied ranks sends b^2/(4 T delta) to 1e9-1e11), and
+    # comparing a mean against a median would not be like for like; exact Pi's
+    # own mean and median agree to within 1%, so the median costs nothing.
     for ax, J_REF in ((axes[2], Js[-1]), (axes[3], Js[0])):
         for blk in blocks:
-            pi = [d["grid"][f"K{K}_J{J_REF}_T{T_REF:g}_blk{blk}"]["Pi_mean"]
+            pi = [d["grid"][f"K{K}_J{J_REF}_T{T_REF:g}_blk{blk}"]["Pi_med"]
                   for K in Ks]
             pa = [d["approx"][f"K{K}_T{T_REF:g}_blk{blk}"]["Pi_approx_med"]
                   for K in Ks]
             ax.plot(Ks, pi, "-o", color=colors[blk], ms=4)
             ax.plot(Ks, pa, "--", color=colors[blk], lw=1.4, alpha=0.85)
         ax.set_yscale("log")
-        ax.set_ylabel("$\\Pi$ at step 0")
+        ax.set_ylabel("$\\Pi$ at step 0 (token median)")
         ax.set_title(f"$\\Pi$ and $\\Pi_{{\\rm approx}}$ at "
                      f"$T={T_REF:g}$, $J={J_REF}$")
 
@@ -118,9 +119,9 @@ with PdfPages(out_pdf) as pdf:
                           label=f"block {blk} ({BLOCK_LABEL.get(blk, '')})")
                    for blk in blocks]
     kind_handles = [Line2D([0], [0], color="0.3", ls="-", marker="o", ms=4,
-                           label="exact $\\Pi$ (mean)"),
+                           label="exact $\\Pi$"),
                     Line2D([0], [0], color="0.3", ls="--", lw=1.4,
-                           label="$b^2/(4T\\delta)$ (median)")]
+                           label="$b^2/(4T\\delta)$")]
     for ax in (axes[2], axes[3]):
         leg = ax.legend(handles=blk_handles, fontsize=9, loc="lower right")
         ax.add_artist(leg)
