@@ -30,3 +30,4 @@ wandb/
 !docs/md-init-vs-decoupling.pdf
 !docs/rblapsum-kappa-ablation.pdf
 !docs/init-pi-grid.pdf
+!docs/init-pi-grid-postnorm.pdf

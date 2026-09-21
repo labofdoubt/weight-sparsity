@@ -7,9 +7,13 @@ the local rank spacing delta, which depend on K only (not on J or T), then exact
 against the dense-boundary proxy b^2/(4 T delta) at T = 1, once for the widest
 candidate window and once for the narrowest, on one shared vertical range.
 
-Usage: python plot_init_pi.py init_pi_grid.json out.pdf [out_png_prefix]
+Pass --vmin/--vmax to pin the colour scale, so a baseline file and a variant
+file (e.g. with post_norm) can be compared directly across PDFs.
+
+Usage: python plot_init_pi.py init_pi_grid.json out.pdf [--png-prefix P]
+                              [--vmin 19 --vmax 2400]
 """
-import json, sys
+import argparse, json
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -17,11 +21,21 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.colors import LogNorm
 
-d = json.load(open(sys.argv[1]))
-out_pdf = sys.argv[2]
-png_prefix = sys.argv[3] if len(sys.argv) > 3 else None
+ap = argparse.ArgumentParser()
+ap.add_argument("grid_json")
+ap.add_argument("out_pdf")
+ap.add_argument("--png-prefix", default=None)
+ap.add_argument("--vmin", type=float, default=None)
+ap.add_argument("--vmax", type=float, default=None)
+args = ap.parse_args()
+
+d = json.load(open(args.grid_json))
+out_pdf = args.out_pdf
+png_prefix = args.png_prefix
 
 meta = d["meta"]
+VARIANT = ("\nwith an RMSNorm on each bottleneck's output"
+           if meta.get("post_norm") else "")
 Ks = meta["k_values"]
 Js = meta["j_values"]
 Ts = meta["temps"]
@@ -42,7 +56,9 @@ def grid(T, blk, field="Pi_med"):
 
 mats = {(T, b): grid(T, b) for T in Ts for b in blocks}
 finite = np.concatenate([m[np.isfinite(m)].ravel() for m in mats.values()])
-vmin, vmax = float(finite.min()), float(finite.max())
+data_min, data_max = float(finite.min()), float(finite.max())
+vmin = data_min if args.vmin is None else args.vmin
+vmax = data_max if args.vmax is None else args.vmax
 
 with PdfPages(out_pdf) as pdf:
     # ---- page 1: the 9 heatmaps ------------------------------------------ #
@@ -69,7 +85,8 @@ with PdfPages(out_pdf) as pdf:
             if c == 0:
                 ax.set_ylabel("$K$ (active features)")
     fig.suptitle("Surrogate gain $\\Pi=\\|L_\\kappa D_z\\|_F^2$ at initialization, "
-                 "rblapsum through_rank_kappa ($b_0=0$)", fontsize=14, y=0.995)
+                 "rblapsum through_rank_kappa ($b_0=0$)" + VARIANT,
+                 fontsize=14, y=0.995)
     cb = fig.colorbar(im, ax=axes, shrink=0.55, pad=0.02, aspect=30)
     cb.set_label("$\\Pi$ at step 0 (token median, log scale)", fontsize=11)
     if png_prefix:
@@ -136,15 +153,16 @@ with PdfPages(out_pdf) as pdf:
         ax.grid(alpha=0.3)
 
     fig.suptitle("Boundary geometry and surrogate gain at initialization "
-                 "($b$ and $\\delta$ depend on $K$ only, not on $J$ or $T$)",
-                 fontsize=13, y=1.02)
+                 "($b$ and $\\delta$ depend on $K$ only, not on $J$ or $T$)"
+                 + VARIANT, fontsize=13, y=1.02)
     fig.tight_layout()
     if png_prefix:
         fig.savefig(png_prefix + "_geometry.png", dpi=150, bbox_inches="tight")
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
 
-print("wrote", out_pdf, "  Pi range %.3g .. %.3g" % (vmin, vmax))
+print("wrote", out_pdf, "  Pi(data) %.3g .. %.3g   colour scale %.3g .. %.3g"
+      % (data_min, data_max, vmin, vmax))
 for blk in blocks:
     row = [mats[(Ts[0], blk)][i, -1] for i in (0, len(Ks) // 2, len(Ks) - 1)]
     print("  block %d, T=%g, J=%d: Pi at K=%d/%d/%d = %.3g / %.3g / %.3g"
