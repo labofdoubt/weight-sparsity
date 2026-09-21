@@ -140,12 +140,13 @@ excursions before a terminal one at step 16{,}700.
 
 \begin{figure}[h]\centering
 \includegraphics[width=\textwidth]{figures/mdinit_val_soft.png}
-\caption{Validation CE for the basic LapSum family, split into panels
-($K{=}32$, $T{=}1$), ($K{=}128$, $T{=}1$), ($K{=}128$, $T{=}2$). Within a
-panel, color encodes $J$ and line style encodes the regime (full MD solid,
-\code{md\_init} $wd{=}0.1$ dashed, $wd{=}0.01$ dotted). A cross marks the
-point at which a run was stopped as diverged; crosses at the top edge belong
-to curves that left the plotted range.}
+\caption{Validation CE for the basic LapSum family, split into panel
+columns ($K{=}32$, $T{=}1$), ($K{=}128$, $T{=}1$), ($K{=}128$, $T{=}2$).
+Within a panel, color encodes $J$ and line style encodes the regime (full MD
+solid, \code{md\_init} $wd{=}0.1$ dashed, $wd{=}0.01$ dotted). The second
+row repeats each panel with the vertical axis clipped at 1.8 nats. A cross
+marks the point at which a run was stopped as diverged; crosses at a panel's
+top edge belong to curves that left its plotted range.}
 \end{figure}
 
 \begin{center}\small
@@ -214,7 +215,8 @@ $0.023$--$0.035$ nats.
 \begin{figure}[h]\centering
 \includegraphics[width=.94\textwidth]{figures/mdinit_val_hard.png}
 \caption{Validation CE for the hard AbsTopK family (no surrogate
-gradient); color encodes $K$. No run in this family diverged.}
+gradient); color encodes $K$; the lower panel clips the vertical axis at
+1.8 nats. No run in this family diverged.}
 \end{figure}
 
 \begin{center}\small
