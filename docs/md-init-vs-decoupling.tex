@@ -140,9 +140,10 @@ excursions before a terminal one at step 16{,}700.
 % ============================================================
 
 \begin{figure}[h]\centering
-\includegraphics[width=.94\textwidth]{figures/mdinit_val_soft.png}
-\caption{Validation CE for the basic LapSum family. Color encodes the
-$(K,J,T)$ configuration; line style encodes the regime (full MD solid,
+\includegraphics[width=\textwidth]{figures/mdinit_val_soft.png}
+\caption{Validation CE for the basic LapSum family, split into panels
+($K{=}32$, $T{=}1$), ($K{=}128$, $T{=}1$), ($K{=}128$, $T{=}2$). Within a
+panel, color encodes $J$ and line style encodes the regime (full MD solid,
 \code{md\_init} $wd{=}0.1$ dashed, $wd{=}0.01$ dotted). A cross marks the
 point at which a run was stopped as diverged; crosses at the top edge belong
 to curves that left the plotted range.}
@@ -178,10 +179,12 @@ family, while both \code{md\_init} runs diverge.
 % ============================================================
 
 \begin{figure}[h]\centering
-\includegraphics[width=.94\textwidth]{figures/mdinit_val_rblapsum_kappa.png}
-\caption{Validation CE for the RBLapSum \code{through\_rank\_kappa} family.
-Encoding as in the previous figure; an open circle marks the last available
-point of a run still training at the time of this snapshot.}
+\includegraphics[width=\textwidth]{figures/mdinit_val_rblapsum_kappa.png}
+\caption{Validation CE for the RBLapSum \code{through\_rank\_kappa} family,
+panels as in the previous figure. An open circle marks the last available
+point of a run still training at the time of this snapshot. In the middle
+panel every run of both $(K,J)$ pairs diverges within the first
+$\sim$2000 steps.}
 \end{figure}
 
 \begin{center}\small
@@ -213,8 +216,8 @@ $0.023$--$0.035$ nats.
 
 \begin{figure}[h]\centering
 \includegraphics[width=.94\textwidth]{figures/mdinit_val_hard.png}
-\caption{Validation CE for the hard AbsTopK family (no surrogate gradient).
-Encoding as in the previous figures. No run in this family diverged.}
+\caption{Validation CE for the hard AbsTopK family (no surrogate
+gradient); color encodes $K$. No run in this family diverged.}
 \end{figure}
 
 \begin{center}\small
