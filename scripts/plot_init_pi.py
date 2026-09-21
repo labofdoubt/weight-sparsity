@@ -3,8 +3,8 @@
 Page 1: 3x3 grid of log-scaled Pi heatmaps -- rows are kernel temperatures,
 columns are blocks (early / middle / deep), so one row compares depth at fixed
 T and one column compares T at fixed depth.  Page 2: the boundary geometry b and
-the local rank spacing delta, which depend on K only (not on J or T), plus the
-dense-boundary proxy Pi_approx = b^2/(4 T delta).
+the local rank spacing delta, which depend on K only (not on J or T), plus Pi
+itself at T = 1 for the widest and narrowest candidate window.
 
 Usage: python plot_init_pi.py init_pi_grid.json out.pdf [out_png_prefix]
 """
@@ -94,34 +94,36 @@ with PdfPages(out_pdf) as pdf:
     axes[1].set_ylabel("$\\delta$ at step 0")
     axes[1].set_title("rank spacing $\\delta=(s_{(K-4)}-s_{(K+4)})/8$")
     axes[1].set_yscale("log")
-    for T in Ts:
-        for blk in blocks:
-            pa = [d["approx"][f"K{K}_T{T:g}_blk{blk}"]["Pi_approx_med"] for K in Ks]
-            axes[2].plot(Ks, pa, "-" if blk == blocks[0] else
-                         ("--" if blk == blocks[1] else ":"),
-                         color={1.0: "#0173B2", 2.0: "#DE8F05",
-                                3.0: "#029E73"}.get(T, "0.4"),
-                         lw=1.6, label=f"$T={T:g}$" if blk == blocks[0] else None)
+    T_REF = 1.0
+    J_WIDE, J_NARROW = Js[-1], Js[0]
+    for blk in blocks:
+        wide = [d["grid"][f"K{K}_J{J_WIDE}_T{T_REF:g}_blk{blk}"]["Pi_mean"] for K in Ks]
+        narrow = [d["grid"][f"K{K}_J{J_NARROW}_T{T_REF:g}_blk{blk}"]["Pi_mean"]
+                  for K in Ks]
+        axes[2].plot(Ks, wide, "-o", color=colors[blk], ms=4)
+        axes[2].plot(Ks, narrow, "--", color=colors[blk], lw=1.2, alpha=0.8)
     axes[2].set_yscale("log")
-    axes[2].set_ylabel("$b^2/(4T\\delta)$ at step 0 (median)")
-    axes[2].set_title("proxy $\\Pi_{\\rm approx}$")
+    axes[2].set_ylabel("$\\Pi$ at step 0 (token mean)")
+    axes[2].set_title(f"surrogate gain $\\Pi$ at $T={T_REF:g}$")
     for ax in axes[:2]:
         ax.legend(fontsize=9)
     from matplotlib.lines import Line2D
-    t_handles = [Line2D([0], [0], color={1.0: "#0173B2", 2.0: "#DE8F05",
-                                         3.0: "#029E73"}.get(T, "0.4"),
-                        lw=1.8, label=f"$T={T:g}$") for T in Ts]
-    b_handles = [Line2D([0], [0], color="0.3", ls=ls, lw=1.6,
-                        label=f"block {blk} ({BLOCK_LABEL.get(blk, '')})")
-                 for blk, ls in zip(blocks, ["-", "--", ":"])]
-    leg_t = axes[2].legend(handles=t_handles, fontsize=9, loc="upper left")
-    axes[2].add_artist(leg_t)
-    axes[2].legend(handles=b_handles, fontsize=9, loc="lower right")
+    blk_handles = [Line2D([0], [0], color=colors[blk], lw=2.0, marker="o", ms=4,
+                          label=f"block {blk} ({BLOCK_LABEL.get(blk, '')})")
+                   for blk in blocks]
+    j_handles = [Line2D([0], [0], color="0.3", ls="-", marker="o", ms=4,
+                        label=f"$J={J_WIDE}$"),
+                 Line2D([0], [0], color="0.3", ls="--", lw=1.2,
+                        label=f"$J={J_NARROW}$")]
+    leg_b = axes[2].legend(handles=blk_handles, fontsize=9, loc="lower right")
+    axes[2].add_artist(leg_b)
+    axes[2].legend(handles=j_handles, fontsize=9, loc="upper left")
     for ax in axes:
         ax.set_xlabel("$K$")
         ax.grid(alpha=0.3)
-    fig.suptitle("Boundary geometry at initialization ($b$ and $\\delta$ depend on "
-                 "$K$ only, not on $J$ or $T$)", fontsize=13, y=1.02)
+    fig.suptitle("Boundary geometry and surrogate gain at initialization "
+                 "($b$ and $\\delta$ depend on $K$ only, not on $J$ or $T$)",
+                 fontsize=13, y=1.02)
     fig.tight_layout()
     if png_prefix:
         fig.savefig(png_prefix + "_geometry.png", dpi=150, bbox_inches="tight")
