@@ -606,6 +606,15 @@ class ActivationBottleneckConfig:
     # b0: a FIXED bottleneck-level activation floor (never data-dependent).  For
     # abs_topk, b0=0 makes almost every feature eligible, so L0 stays ~K; a
     # positive b0 is needed to get L0 < K on some tokens.  Strict s > b0.
+    # An RMSNorm on each bottleneck's own output, inside the module (so it is
+    # part of the bottleneck's state_dict and the gate hooks are unaffected).
+    # Motivation: under a stream placement the bottleneck's output scale
+    # compounds through depth, so at fixed K the scores a deep block ranks can
+    # be much larger than an early block's; normalizing the output pins that
+    # scale per block.  The bottleneck whose output already feeds a norm --
+    # residual_out in the final block, which feeds norm_f -- does not get one.
+    post_norm: bool = False
+
     # None -> 0.0: no floor.  (Earlier campaigns ran abs_topk with a 0.1
     # default; measurements on those runs showed the floor essentially never
     # binds -- mean boundary 8-40x above it -- so the default is now the

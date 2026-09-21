@@ -141,10 +141,18 @@ class ActivationBottleneckController:
         if not indices:
             raise ValueError(f"bottleneck is enabled but layers={cfg.layers!r} matched nothing")
         d_model = self.model.cfg.d_model
+        norm_eps = float(getattr(self.model.cfg, "norm_eps", 1e-6))
+        last = len(blocks) - 1
         for i in indices:
             block = blocks[i]
             for name in placements:
-                bottleneck = SparseTopKBottleneck(d_model, cfg, bias=cfg.bias)
+                # The final residual_out bottleneck already feeds norm_f, so a
+                # post-norm there would be two norms in a row.
+                already_normed = (name == "residual_out" and i == last)
+                bottleneck = SparseTopKBottleneck(
+                    d_model, cfg, bias=cfg.bias,
+                    post_norm=bool(cfg.post_norm) and not already_normed,
+                    norm_eps=norm_eps)
                 # each selected layer *and* placement gets its own parameters
                 setattr(block, _PLACEMENT_ATTR[name], bottleneck)
                 label = f"blocks.{i}" if len(placements) == 1 else f"blocks.{i}.{name}"

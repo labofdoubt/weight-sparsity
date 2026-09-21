@@ -91,11 +91,15 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--b0", type=float, default=0.0,
                     help="boundary floor; the current default is 0.0")
+    ap.add_argument("--set", dest="sets", action="append", default=[],
+                    metavar="a.b=c",
+                    help="extra config override, repeatable "
+                         "(e.g. --set activation_bottleneck.post_norm=true)")
     args = ap.parse_args()
 
-    base = load_config(args.config, [f"data.data_dir={args.data_dir}",
-                                     "model.decouple=true",
-                                     "train.run_name=init_pi"])
+    common = [f"data.data_dir={args.data_dir}", "model.decouple=true",
+              "train.run_name=init_pi"] + list(args.sets)
+    base = load_config(args.config, list(common))
     base.model.vocab_size = int(load_meta(base.data.data_dir)["vocab_size"])
     device = resolve_device(base.train.device)
     dtype = resolve_dtype(base.train.dtype, device)
@@ -104,9 +108,7 @@ def main() -> None:
     def build(k: int, j: int):
         """Fresh model with this gate geometry; weights come from the state dict."""
         set_seed(args.seed)
-        cfg = load_config(args.config, [
-            f"data.data_dir={args.data_dir}", "model.decouple=true",
-            "train.run_name=init_pi",
+        cfg = load_config(args.config, list(common) + [
             f"activation_bottleneck.k={k}", f"activation_bottleneck.j={j}"])
         cfg.model.vocab_size = base.model.vocab_size
         m = build_model(cfg.model)
@@ -132,7 +134,9 @@ def main() -> None:
                     "b0": args.b0, "n_features": n_features,
                     "tokens": int(x.numel()), "d_model": base.model.d_model,
                     "n_layers": base.model.n_layers,
-                    "surrogate": "through_rank_kappa"},
+                    "surrogate": "through_rank_kappa",
+                    "post_norm": bool(base.activation_bottleneck.post_norm),
+                    "overrides": list(args.sets)},
            "grid": {}, "boundary": {}, "approx": {}, "score_scale": {}}
 
     t0 = time.time()

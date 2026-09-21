@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ..model import RMSNorm
 from .gate import AdaptiveLapSumTopKGate
 
 INIT_MODES = (
@@ -78,7 +79,8 @@ class SparseTopKBottleneck(nn.Module):
     per layer.  No nonlinearity is applied to ``v``, so values stay signed.
     """
 
-    def __init__(self, d_model: int, cfg, bias: bool = True):
+    def __init__(self, d_model: int, cfg, bias: bool = True,
+                 post_norm: bool = False, norm_eps: float = 1e-6):
         super().__init__()
         self.d_model = int(d_model)
         self.n_features = int(cfg.n_features)
@@ -156,6 +158,11 @@ class SparseTopKBottleneck(nn.Module):
             self.register_buffer("output_scale", torch.ones((), dtype=torch.float32))
         else:
             self.output_scale = None
+        # An optional RMSNorm on this bottleneck's output.  It lives inside the
+        # module so the gate hooks and `_PLACEMENT_ATTR` lookups are unchanged,
+        # and Identity costs nothing when the option is off.
+        self.post_norm = (RMSNorm(self.d_model, norm_eps) if post_norm
+                          else nn.Identity())
         self.reconstruction_coef = float(cfg.reconstruction_coef)
         self.reconstruction_normalize = bool(cfg.reconstruction_normalize)
         self._reconstruction = None
@@ -216,6 +223,9 @@ class SparseTopKBottleneck(nn.Module):
             y = self.out_proj(self.gate(value))
         if self.output_scale is not None:
             y = y * self.output_scale.to(y.dtype)
+        # Identity unless post_norm was requested; Identity holds no parameters
+        # or buffers, so state_dicts are unchanged when the option is off.
+        y = self.post_norm(y)
         if self.reconstruction_coef and self.training and torch.is_grad_enabled():
             # Held for the controller to collect after this forward.  It has to
             # be produced here rather than recomputed later: the term depends on

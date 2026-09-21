@@ -2265,3 +2265,60 @@ def test_project_scale_gradient_config_and_plumbing():
     apply_activation_bottleneck(model, cfg, max_steps=10)
     gates = [blk.residual_out_bottleneck.gate for blk in model.blocks]
     assert gates and all(g.project_scale_gradient for g in gates)
+
+
+# --------------------------------------------------------------------------- #
+# post_norm: an RMSNorm on each bottleneck's own output
+# --------------------------------------------------------------------------- #
+
+
+def _post_norm_model(post_norm: bool, placement: str = "residual_out",
+                     n_layers: int = 3):
+    torch.manual_seed(0)
+    model = build_model(ModelConfig(
+        vocab_size=53, max_seq_len=16, n_layers=n_layers, d_model=32, n_heads=4,
+        mlp_ratio=2.0))
+    ctl = apply_activation_bottleneck(model, ActivationBottleneckConfig(
+        enabled=True, layers="all", placement=placement, n_features=64,
+        k=4, j=8, n_eff=4.0, surrogate_mode="hard", selection_mode="abs_topk",
+        bias=False, post_norm=post_norm), max_steps=10)
+    return model, ctl
+
+
+def test_post_norm_installs_everywhere_but_the_final_residual_out():
+    _, ctl = _post_norm_model(True)
+    kinds = [type(mod.post_norm).__name__ for _, mod in ctl.layers]
+    # the last bottleneck feeds norm_f, so it keeps Identity
+    assert kinds == ["RMSNorm", "RMSNorm", "Identity"], kinds
+
+
+def test_post_norm_off_adds_no_parameters_or_state():
+    _, ctl_off = _post_norm_model(False)
+    _, ctl_on = _post_norm_model(True)
+    assert all(type(m.post_norm).__name__ == "Identity" for _, m in ctl_off.layers)
+    n_off = sum(p.numel() for _, m in ctl_off.layers for p in m.parameters())
+    n_on = sum(p.numel() for _, m in ctl_on.layers for p in m.parameters())
+    # two norms of width d_model added, and nothing else
+    assert n_on - n_off == 2 * 32
+    assert not any("post_norm" in k for k in
+                   dict(ctl_off.layers)["blocks.0"].state_dict())
+
+
+def test_post_norm_pins_the_output_rms():
+    _, ctl = _post_norm_model(True)
+    mod = dict(ctl.layers)["blocks.0"]
+    x = torch.randn(2, 5, 32) * 7.0          # deliberately large input scale
+    y = mod(x)
+    rms = y.float().pow(2).mean(-1).sqrt()
+    assert torch.allclose(rms, torch.ones_like(rms), atol=1e-3), rms
+    # ... and the un-normed variant does not pin it
+    _, ctl_off = _post_norm_model(False)
+    y_off = dict(ctl_off.layers)["blocks.0"](x)
+    rms_off = y_off.float().pow(2).mean(-1).sqrt()
+    assert (rms_off - 1.0).abs().max() > 1e-2
+
+
+def test_post_norm_applies_at_every_layer_for_a_branch_placement():
+    # pre_mlp never feeds norm_f, so no layer is exempt
+    _, ctl = _post_norm_model(True, placement="pre_mlp")
+    assert all(type(m.post_norm).__name__ == "RMSNorm" for _, m in ctl.layers)
