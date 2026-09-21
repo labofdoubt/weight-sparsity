@@ -81,18 +81,14 @@ with PdfPages(out_pdf) as pdf:
     colors = {blk: c for blk, c in zip(blocks, ["#0173B2", "#DE8F05", "#029E73"])}
     for blk in blocks:
         b = [d["boundary"][f"K{K}_blk{blk}"]["b_mean"] for K in Ks]
-        bmed = [d["boundary"][f"K{K}_blk{blk}"]["b_med"] for K in Ks]
         dl = [d["boundary"][f"K{K}_blk{blk}"]["delta_mean"] for K in Ks]
-        dlmed = [d["boundary"][f"K{K}_blk{blk}"]["delta_med"] for K in Ks]
         lab = f"block {blk} ({BLOCK_LABEL.get(blk, '')})"
         axes[0].plot(Ks, b, "-o", color=colors[blk], ms=4, label=lab)
-        axes[0].plot(Ks, bmed, "--", color=colors[blk], lw=1, alpha=0.7)
         axes[1].plot(Ks, dl, "-o", color=colors[blk], ms=4, label=lab)
-        axes[1].plot(Ks, dlmed, "--", color=colors[blk], lw=1, alpha=0.7)
     axes[0].set_ylabel("$b$ at step 0")
-    axes[0].set_title("boundary $b=s_{(K+1)}$  (solid mean, dashed median)")
+    axes[0].set_title("boundary $b=s_{(K+1)}$ (token mean)")
     axes[1].set_ylabel("$\\delta$ at step 0")
-    axes[1].set_title("rank spacing $\\delta=(s_{(K-4)}-s_{(K+4)})/8$")
+    axes[1].set_title("rank spacing $\\delta=(s_{(K-4)}-s_{(K+4)})/8$ (token mean)")
     axes[1].set_yscale("log")
     T_REF = 1.0
     J_WIDE, J_NARROW = Js[-1], Js[0]
