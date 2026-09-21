@@ -2,21 +2,15 @@
 # Mirror another machine's TensorBoard events in, under sortable names AND in a
 # controlled position in TensorBoard's run list.
 #
-# Two things govern what you see in TensorBoard 2.x:
-#   * the run NAME is its path relative to --logdir;
-#   * the run ORDER is ascending by event-file modification time -- NOT by name
-#     (measured on TB 2.21: 60 of 85 adjacent pairs ascending, oldest first).
-# So zero-padding the names is necessary but not sufficient: while the local box
-# is still training, a live mirror interleaves with the local runs because both
-# sets are being written continuously.
+# TensorBoard names a run by its path relative to --logdir, so this relabels
+# each mirrored run as k%03d_j%03d_<family>_<tag>: zero-padded, hence readable
+# and correctly ordered anywhere the names are sorted (TB's own run list is NOT
+# sorted -- measured on 2.21, the order is its internal parallel load order and
+# is not affected by names, mtimes or directory order, and there is no sort
+# flag; so keep a mirror in its OWN logdir / TB instance rather than inside a
+# still-training box's logdir, where the two sets interleave).
 #
-# Hence stage, then publish:
-#   remote --rclone--> STAGE/<real name>      (true mtimes; rclone's sync state)
-#          --copy---->  DST/<k032_j032_...>   (synthetic mtimes; what TB sees)
-# The published copies get mtimes far in the future (base = now + 30 days),
-# increasing in label order, so the mirrored runs appear *after* every local run
-# and in (K, J) order among themselves.  rclone never sees the touched copies,
-# so its size/mtime comparison against the remote stays correct.
+# The remote keeps the real run names, so provenance is unaffected.
 #
 #   scripts/tb_mirror_sorted.sh gdrive:bucket/runs_korea /workspace/runs/korea 300
 set -uo pipefail
@@ -25,8 +19,6 @@ SRC="${1:?usage: tb_mirror_sorted.sh <remote:path> <dest_dir> [interval_s] [stag
 DST="${2:?missing destination}"
 INTERVAL="${3:-300}"
 STAGE="${4:-/workspace/mirror_$(basename "$DST")}"
-# far enough ahead that a still-training local run can never overtake it
-FUTURE_OFFSET=$((30 * 86400))
 
 label_for () {
   # k / j with leading zeros, plus a short family + variant tag.  Bash regex
@@ -64,16 +56,14 @@ while :; do
         --transfers 8 --checkers 16 --stats 0 2>&1 | tail -1
   done
 
-  # publish in label order, stamping increasing future mtimes
-  base=$(( $(date +%s) + FUTURE_OFFSET ))
+  # publish under the sortable label (plain copy: no mtime games -- TB does
+  # not order by mtime, and touching files here would confuse anything that
+  # syncs this tree)
   i=0
   while IFS=$'\t' read -r lab real; do
     [ -d "$STAGE/$real" ] || continue
     mkdir -p "$DST/$lab"
     cp -rf "$STAGE/$real/." "$DST/$lab/" 2>/dev/null
-    ts=$(( base + i * 60 ))
-    find "$DST/$lab" -type f -exec touch -d "@$ts" {} + 2>/dev/null
-    find "$DST/$lab" -type d -exec touch -d "@$ts" {} + 2>/dev/null
     i=$((i + 1))
   done < <(for r in $(rclone lsf --dirs-only "$SRC" 2>/dev/null | sed 's:/$::'); do
              printf "%s\t%s\n" "$(label_for "$r")" "$r"
