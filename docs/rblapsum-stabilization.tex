@@ -160,7 +160,11 @@ guard stopped the run. Best value per configuration in bold.
 \includegraphics[width=\textwidth]{figures/stab_k32.png}
 \caption{$K=32$: smaller candidate window on the left, larger on the
 right; the lower row repeats each panel with the vertical axis capped at
-2.0 nats. Colour encodes the arm. Every arm survives here, so this
+2.0 nats. Colour encodes the arm and line style its kind: the untouched
+baseline is dashed, the two arms that stabilize without an accuracy cost
+($T=2$ and the output RMSNorm) are solid, and the two attenuating arms
+(reduced learning rate, support-gradient scale) are dash-dotted and
+slightly transparent. Every arm survives here, so this
 configuration measures cost rather than stabilization: the baseline and
 $T=2$ curves are indistinguishable, the output RMSNorm wins at $J=32$ but
 loses $0.047$ nats at $J=480$, and the reduced learning rate is clearly

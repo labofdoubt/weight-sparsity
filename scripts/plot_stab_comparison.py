@@ -22,35 +22,47 @@ curves = {}
 for p in jsons:
     curves.update(json.load(open(p)))
 
-# (match token, colour, label) -- fixed order, so a colour always means the
-# same intervention across all three figures
-ARMS = [("stab_base",  "#0173B2", "baseline: $T{=}1$, lr $6{\\times}10^{-4}$"),
-        ("stab_t2",    "#DE8F05", "$T{=}2$"),
-        ("stab_lr2e4", "#029E73", "lr $2{\\times}10^{-4}$"),
-        ("stab_pnorm", "#CC3311", "post-bottleneck RMSNorm"),
-        ("supp03",     "#8856A7", "support grad scale $0.3$")]
+# (match token, colour, label, linestyle, linewidth, alpha) -- fixed order, so
+# a colour always means the same intervention across all three figures.  The
+# line style carries the grouping: the untouched baseline is dashed, the two
+# arms that stabilize without an accuracy cost are solid, and the two
+# attenuating arms are dash-dotted and slightly transparent.
+ARMS = [("stab_base",  "#0173B2", "baseline: $T{=}1$, lr $6{\\times}10^{-4}$",
+         "--",  2.0, 1.00),
+        ("stab_t2",    "#DE8F05", "$T{=}2$",
+         "-",   2.1, 1.00),
+        ("stab_lr2e4", "#029E73", "lr $2{\\times}10^{-4}$",
+         "-.",  1.9, 0.75),
+        ("stab_pnorm", "#CC3311", "post-bottleneck RMSNorm",
+         "-",   2.1, 1.00),
+        ("supp03",     "#8856A7", "support grad scale $0.3$",
+         "-.",  1.9, 0.75)]
 YLIM_FULL = (1.40, 3.1)
 YLIM_CAP = (1.40, 2.0)
 
 
+STYLE = {a: (ls, lw, al) for a, _, _, ls, lw, al in ARMS}
+COLOUR = {a: c for a, c, _, _, _, _ in ARMS}
+
+
 def arm_of(name):
-    for a, _, _ in ARMS:
+    for a, *_ in ARMS:
         if a in name:
             return a
     return None
 
 
 def draw(ax, runs, ylim, xlabel):
-    colour = {a: c for a, c, _ in ARMS}
     deaths, present = [], set()
     for name, rec in sorted(runs.items()):
         arm = arm_of(name)
+        ls, lw, al = STYLE[arm]
         s = [p[0] for p in rec["val"]]
         v = [p[1] for p in rec["val"]]
-        ax.plot(s, v, "-", color=colour[arm], lw=2.0)
+        ax.plot(s, v, ls, color=COLOUR[arm], lw=lw, alpha=al)
         present.add(arm)
         if "diverged" in rec:
-            deaths.append((s[-1], v[-1], colour[arm]))
+            deaths.append((s[-1], v[-1], COLOUR[arm]))
     span = ylim[1] - ylim[0]
     for sx, vy, c in deaths:
         ax.plot(sx, min(vy, ylim[1] - 0.02 * span), "x", color=c, ms=11, mew=2.6)
@@ -80,8 +92,8 @@ for K in (32, 64, 128):
         axes[0][c].set_title(f"$J={J}$", fontsize=12)
     axes[0][0].set_ylabel("validation CE (nats)")
     axes[1][0].set_ylabel("validation CE (nats), capped at 2.0")
-    handles = [Line2D([0], [0], color=c, lw=2.4, label=lab)
-               for a, c, lab in ARMS if a in present]
+    handles = [Line2D([0], [0], color=c, lw=lw, ls=ls, alpha=al, label=lab)
+               for a, c, lab, ls, lw, al in ARMS if a in present]
     if any_death:
         handles.append(Line2D([0], [0], color="0.3", ls="", marker="x", ms=9,
                               mew=2.2, label="stopped as diverged"))
