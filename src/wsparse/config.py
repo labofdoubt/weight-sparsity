@@ -606,9 +606,11 @@ class ActivationBottleneckConfig:
     # b0: a FIXED bottleneck-level activation floor (never data-dependent).  For
     # abs_topk, b0=0 makes almost every feature eligible, so L0 stays ~K; a
     # positive b0 is needed to get L0 < K on some tokens.  Strict s > b0.
-    # None -> a mode default: 0.1 for abs_topk (a small positive floor so the
-    # cap can actually leave L0 < K), 0.0 for topk (where 0 already excludes
-    # negative scores).  Resolved to that concrete float in __post_init__.
+    # None -> 0.0: no floor.  (Earlier campaigns ran abs_topk with a 0.1
+    # default; measurements on those runs showed the floor essentially never
+    # binds -- mean boundary 8-40x above it -- so the default is now the
+    # neutral 0.0.  Set explicitly to reproduce the old behaviour.)
+    # Resolved to a concrete float in __post_init__.
     rblapsum_boundary_floor: Optional[float] = None
     # CONSTANT kernel temperature -- deliberately not score-scaled, to avoid a
     # second score-dependent quantity while testing rblapsum.
@@ -847,10 +849,8 @@ class ActivationBottleneckConfig:
                 "(relative | absolute)"
             )
         if self.rblapsum_boundary_floor is None:
-            # concrete float in the dumped config; 0.1 gives abs_topk a real cap
-            self.rblapsum_boundary_floor = (
-                0.1 if self.selection_mode == "abs_topk" else 0.0
-            )
+            # concrete float in the dumped config
+            self.rblapsum_boundary_floor = 0.0
         if self.surrogate_mode == "rblapsum":
             if self.selection_mode not in ("topk", "abs_topk"):
                 raise ValueError(

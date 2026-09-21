@@ -283,14 +283,14 @@ def test_controller_diagnostics_and_backward():
 
 def test_boundary_floor_default_is_mode_dependent():
     # abs_topk -> 0.1, topk -> 0.0, explicit value honored either way
-    assert bn_cfg(selection_mode="abs_topk").rblapsum_boundary_floor == 0.1
+    assert bn_cfg(selection_mode="abs_topk").rblapsum_boundary_floor == 0.0
     assert bn_cfg(selection_mode="topk").rblapsum_boundary_floor == 0.0
     assert bn_cfg(selection_mode="abs_topk",
                   rblapsum_boundary_floor=0.5).rblapsum_boundary_floor == 0.5
     assert bn_cfg(selection_mode="abs_topk",
                   rblapsum_boundary_floor=0.0).rblapsum_boundary_floor == 0.0
     # the directly-constructed gate resolves the same way
-    assert make_gate(sel="abs_topk", b0=None).rblapsum_boundary_floor == 0.1
+    assert make_gate(sel="abs_topk", b0=None).rblapsum_boundary_floor == 0.0
     assert make_gate(sel="topk", b0=None).rblapsum_boundary_floor == 0.0
 
 
