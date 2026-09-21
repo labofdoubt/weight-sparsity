@@ -79,7 +79,9 @@ def style_legend(target, any_death, any_live, **kw):
 
 
 def family_runs(prefix):
-    return {n: r for n, r in curves.items() if n.startswith(prefix)}
+    # the _b00_ runs belong to the kappa-ablation campaign, not this comparison
+    return {n: r for n, r in curves.items()
+            if n.startswith(prefix) and "_b00_" not in n}
 
 
 all_finals = []

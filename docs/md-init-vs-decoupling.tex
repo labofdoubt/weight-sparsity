@@ -21,8 +21,7 @@
 \title{Magnitude--direction decoupling versus its initialization\\[2pt]
 \large Research note: attributing the advantage of MD training}
 \author{}
-\date{2026-09-21. Interim: 38 of 42 runs finished; in-progress cells are
-marked and will be updated when the remaining runs complete.}
+\date{2026-09-21. Final: all 42 runs finished.}
 
 \begin{document}
 \maketitle
@@ -181,10 +180,8 @@ family, while both \code{md\_init} runs diverge.
 \begin{figure}[h]\centering
 \includegraphics[width=\textwidth]{figures/mdinit_val_rblapsum_kappa.png}
 \caption{Validation CE for the RBLapSum \code{through\_rank\_kappa} family,
-panels as in the previous figure. An open circle marks the last available
-point of a run still training at the time of this snapshot. In the middle
-panel every run of both $(K,J)$ pairs diverges within the first
-$\sim$2000 steps.}
+panels as in the previous figure. In the middle panel every run of both
+$(K,J)$ pairs diverges within the first $\sim$2000 steps.}
 \end{figure}
 
 \begin{center}\small
@@ -195,9 +192,9 @@ $(K,J)$ & $T$ & MD & \code{md\_init}, $wd{=}0.1$ & \code{md\_init}, $wd{=}0.01$ 
 $(32,32)$   & 1 & 1.5482 & \dv{13{,}860} & 1.5833 \\
 $(32,480)$  & 1 & 1.4923 & 1.5155 & \dv{5000} \\
 $(128,128)$ & 1 & \dv{1760} & \dv{1720} & \dv{1540} \\
-$(128,128)$ & 2 & 1.4778 & 1.538 at 14k (running) & \dv{6460} \\
+$(128,128)$ & 2 & 1.4778 & 1.4867 & \dv{6460} \\
 $(128,384)$ & 1 & \dv{1880} & \dv{1800} & \dv{1640} \\
-$(128,384)$ & 2 & 1.590 at 9.5k (running) & 1.748 at 4.5k (running) & 1.826 at 3.5k (running) \\
+$(128,384)$ & 2 & 1.4602 & 1.4671 & 1.4874 \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -268,8 +265,7 @@ this project showed that divergence at marginal configurations is
 stochastic, so individual cell outcomes should be read as draws from a
 divergence rate; the row-level patterns (all-regime deaths at $K{=}128$,
 $T{=}1$; the systematic death ordering; MD never diverging alone) are the
-robust part. Four runs (marked ``running'') had not finished at the time of
-writing; the tables and figures will be updated when they complete.
+robust part.
 \end{enumerate}
 
 \end{document}

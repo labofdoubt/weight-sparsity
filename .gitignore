@@ -28,3 +28,4 @@ wandb/
 !docs/scale-dynamics-note.pdf
 !docs/scale-dynamics-note-neutral.pdf
 !docs/md-init-vs-decoupling.pdf
+!docs/rblapsum-kappa-ablation.pdf
