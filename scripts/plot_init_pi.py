@@ -3,8 +3,9 @@
 Page 1: 3x3 grid of log-scaled Pi heatmaps -- rows are kernel temperatures,
 columns are blocks (early / middle / deep), so one row compares depth at fixed
 T and one column compares T at fixed depth.  Page 2: the boundary geometry b and
-the local rank spacing delta, which depend on K only (not on J or T), plus Pi
-itself at T = 1 for the widest and narrowest candidate window.
+the local rank spacing delta, which depend on K only (not on J or T), then Pi
+itself at T = 1 for the widest and narrowest candidate window, and finally the
+dense-boundary proxy b^2/(4 T delta) on the same vertical range.
 
 Usage: python plot_init_pi.py init_pi_grid.json out.pdf [out_png_prefix]
 """
@@ -77,7 +78,7 @@ with PdfPages(out_pdf) as pdf:
     plt.close(fig)
 
     # ---- page 2: b, delta, Pi_approx ------------------------------------- #
-    fig, axes = plt.subplots(1, 3, figsize=(14.6, 4.4))
+    fig, axes = plt.subplots(1, 4, figsize=(19.4, 4.4))
     colors = {blk: c for blk, c in zip(blocks, ["#0173B2", "#DE8F05", "#029E73"])}
     for blk in blocks:
         b = [d["boundary"][f"K{K}_blk{blk}"]["b_mean"] for K in Ks]
@@ -114,6 +115,25 @@ with PdfPages(out_pdf) as pdf:
     leg_b = axes[2].legend(handles=blk_handles, fontsize=9, loc="lower right")
     axes[2].add_artist(leg_b)
     axes[2].legend(handles=j_handles, fontsize=9, loc="upper left")
+
+    # ---- panel 4: the dense-boundary proxy, same colour scheme ----------- #
+    # The proxy's token MEAN is unusable: delta -> 0 on near-tied ranks sends
+    # b^2/(4 T delta) to 1e9-1e11.  Its median tracks the exact gain closely,
+    # and exact Pi's own mean and median agree to <1%, so the comparison below
+    # is like for like.
+    for blk in blocks:
+        pa = [d["approx"][f"K{K}_T{T_REF:g}_blk{blk}"]["Pi_approx_med"] for K in Ks]
+        axes[3].plot(Ks, pa, "-o", color=colors[blk], ms=4,
+                     label=f"block {blk} ({BLOCK_LABEL.get(blk, '')})")
+    axes[3].set_yscale("log")
+    axes[3].set_ylabel("$b^2/(4T\\delta)$ at step 0 (token median)")
+    axes[3].set_title(f"proxy $\\Pi_{{\\rm approx}}$ at $T={T_REF:g}$")
+    axes[3].legend(fontsize=9, loc="lower right")
+    # one shared vertical range makes panels 3 and 4 directly comparable
+    lo = min(axes[2].get_ylim()[0], axes[3].get_ylim()[0])
+    hi = max(axes[2].get_ylim()[1], axes[3].get_ylim()[1])
+    axes[2].set_ylim(lo, hi)
+    axes[3].set_ylim(lo, hi)
     for ax in axes:
         ax.set_xlabel("$K$")
         ax.grid(alpha=0.3)
