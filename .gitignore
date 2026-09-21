@@ -31,3 +31,4 @@ wandb/
 !docs/rblapsum-kappa-ablation.pdf
 !docs/init-pi-grid.pdf
 !docs/init-pi-grid-postnorm.pdf
+!docs/rblapsum-stabilization.pdf
