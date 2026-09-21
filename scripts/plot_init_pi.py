@@ -1,7 +1,8 @@
 """Heatmaps of the initialization surrogate gain Pi over the (K, J) grid.
 
-Page 1: 3x3 grid of log-scaled Pi heatmaps -- rows are blocks (early / middle
-/ deep), columns are kernel temperatures.  Page 2: the boundary geometry b and
+Page 1: 3x3 grid of log-scaled Pi heatmaps -- rows are kernel temperatures,
+columns are blocks (early / middle / deep), so one row compares depth at fixed
+T and one column compares T at fixed depth.  Page 2: the boundary geometry b and
 the local rank spacing delta, which depend on K only (not on J or T), plus the
 dense-boundary proxy Pi_approx = b^2/(4 T delta).
 
@@ -44,10 +45,10 @@ vmin, vmax = float(finite.min()), float(finite.max())
 
 with PdfPages(out_pdf) as pdf:
     # ---- page 1: the 9 heatmaps ------------------------------------------ #
-    fig, axes = plt.subplots(len(blocks), len(Ts), figsize=(14.6, 13.2))
+    fig, axes = plt.subplots(len(Ts), len(blocks), figsize=(14.6, 13.2))
     norm = LogNorm(vmin=vmin, vmax=vmax)
-    for r, blk in enumerate(blocks):
-        for c, T in enumerate(Ts):
+    for r, T in enumerate(Ts):           # rows: temperature
+        for c, blk in enumerate(blocks):  # columns: depth
             ax = axes[r][c]
             M = mats[(T, blk)]
             im = ax.imshow(M, origin="lower", aspect="auto", cmap="magma",
@@ -62,7 +63,7 @@ with PdfPages(out_pdf) as pdf:
             ax.set_xticks(Js[1::2])
             ax.set_yticks(Ks[1::2])
             ax.tick_params(labelsize=8)
-            if r == len(blocks) - 1:
+            if r == len(Ts) - 1:
                 ax.set_xlabel("$J$ (candidate window)")
             if c == 0:
                 ax.set_ylabel("$K$ (active features)")
