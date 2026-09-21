@@ -3,9 +3,9 @@
 Page 1: 3x3 grid of log-scaled Pi heatmaps -- rows are kernel temperatures,
 columns are blocks (early / middle / deep), so one row compares depth at fixed
 T and one column compares T at fixed depth.  Page 2: the boundary geometry b and
-the local rank spacing delta, which depend on K only (not on J or T), then Pi
-itself at T = 1 for the widest and narrowest candidate window, and finally the
-dense-boundary proxy b^2/(4 T delta) on the same vertical range.
+the local rank spacing delta, which depend on K only (not on J or T), then exact Pi
+against the dense-boundary proxy b^2/(4 T delta) at T = 1, once for the widest
+candidate window and once for the narrowest, on one shared vertical range.
 
 Usage: python plot_init_pi.py init_pi_grid.json out.pdf [out_png_prefix]
 """
@@ -92,44 +92,40 @@ with PdfPages(out_pdf) as pdf:
     axes[1].set_title("rank spacing $\\delta=(s_{(K-4)}-s_{(K+4)})/8$ (token mean)")
     axes[1].set_yscale("log")
     T_REF = 1.0
-    J_WIDE, J_NARROW = Js[-1], Js[0]
-    for blk in blocks:
-        wide = [d["grid"][f"K{K}_J{J_WIDE}_T{T_REF:g}_blk{blk}"]["Pi_mean"] for K in Ks]
-        narrow = [d["grid"][f"K{K}_J{J_NARROW}_T{T_REF:g}_blk{blk}"]["Pi_mean"]
+    # Panels 3 and 4: exact Pi (solid) against the dense-boundary proxy
+    # (dashed) at a wide and a narrow candidate window.  Pi_approx has no J
+    # dependence by construction -- the same curve appears in both panels --
+    # so the J=32 panel shows where the proxy stops applying.
+    #
+    # The proxy is a token MEDIAN: its mean is unusable at init (delta -> 0 on
+    # near-tied ranks sends b^2/(4 T delta) to 1e9-1e11), while the median
+    # tracks the exact gain, whose own mean and median agree to <1%.
+    for ax, J_REF in ((axes[2], Js[-1]), (axes[3], Js[0])):
+        for blk in blocks:
+            pi = [d["grid"][f"K{K}_J{J_REF}_T{T_REF:g}_blk{blk}"]["Pi_mean"]
                   for K in Ks]
-        axes[2].plot(Ks, wide, "-o", color=colors[blk], ms=4)
-        axes[2].plot(Ks, narrow, "--", color=colors[blk], lw=1.2, alpha=0.8)
-    axes[2].set_yscale("log")
-    axes[2].set_ylabel("$\\Pi$ at step 0 (token mean)")
-    axes[2].set_title(f"surrogate gain $\\Pi$ at $T={T_REF:g}$")
-    for ax in axes[:2]:
-        ax.legend(fontsize=9)
+            pa = [d["approx"][f"K{K}_T{T_REF:g}_blk{blk}"]["Pi_approx_med"]
+                  for K in Ks]
+            ax.plot(Ks, pi, "-o", color=colors[blk], ms=4)
+            ax.plot(Ks, pa, "--", color=colors[blk], lw=1.4, alpha=0.85)
+        ax.set_yscale("log")
+        ax.set_ylabel("$\\Pi$ at step 0")
+        ax.set_title(f"$\\Pi$ and $\\Pi_{{\\rm approx}}$ at "
+                     f"$T={T_REF:g}$, $J={J_REF}$")
+
     from matplotlib.lines import Line2D
     blk_handles = [Line2D([0], [0], color=colors[blk], lw=2.0, marker="o", ms=4,
                           label=f"block {blk} ({BLOCK_LABEL.get(blk, '')})")
                    for blk in blocks]
-    j_handles = [Line2D([0], [0], color="0.3", ls="-", marker="o", ms=4,
-                        label=f"$J={J_WIDE}$"),
-                 Line2D([0], [0], color="0.3", ls="--", lw=1.2,
-                        label=f"$J={J_NARROW}$")]
-    leg_b = axes[2].legend(handles=blk_handles, fontsize=9, loc="lower right")
-    axes[2].add_artist(leg_b)
-    axes[2].legend(handles=j_handles, fontsize=9, loc="upper left")
-
-    # ---- panel 4: the dense-boundary proxy, same colour scheme ----------- #
-    # The proxy's token MEAN is unusable: delta -> 0 on near-tied ranks sends
-    # b^2/(4 T delta) to 1e9-1e11.  Its median tracks the exact gain closely,
-    # and exact Pi's own mean and median agree to <1%, so the comparison below
-    # is like for like.
-    for blk in blocks:
-        pa = [d["approx"][f"K{K}_T{T_REF:g}_blk{blk}"]["Pi_approx_med"] for K in Ks]
-        axes[3].plot(Ks, pa, "-o", color=colors[blk], ms=4,
-                     label=f"block {blk} ({BLOCK_LABEL.get(blk, '')})")
-    axes[3].set_yscale("log")
-    axes[3].set_ylabel("$b^2/(4T\\delta)$ at step 0 (token median)")
-    axes[3].set_title(f"proxy $\\Pi_{{\\rm approx}}$ at $T={T_REF:g}$")
-    axes[3].legend(fontsize=9, loc="lower right")
-    # one shared vertical range makes panels 3 and 4 directly comparable
+    kind_handles = [Line2D([0], [0], color="0.3", ls="-", marker="o", ms=4,
+                           label="exact $\\Pi$ (mean)"),
+                    Line2D([0], [0], color="0.3", ls="--", lw=1.4,
+                           label="$b^2/(4T\\delta)$ (median)")]
+    for ax in (axes[2], axes[3]):
+        leg = ax.legend(handles=blk_handles, fontsize=9, loc="lower right")
+        ax.add_artist(leg)
+        ax.legend(handles=kind_handles, fontsize=9, loc="upper left")
+    # one shared vertical range makes the two panels directly comparable
     lo = min(axes[2].get_ylim()[0], axes[3].get_ylim()[0])
     hi = max(axes[2].get_ylim()[1], axes[3].get_ylim()[1])
     axes[2].set_ylim(lo, hi)
@@ -137,6 +133,7 @@ with PdfPages(out_pdf) as pdf:
     for ax in axes:
         ax.set_xlabel("$K$")
         ax.grid(alpha=0.3)
+
     fig.suptitle("Boundary geometry and surrogate gain at initialization "
                  "($b$ and $\\delta$ depend on $K$ only, not on $J$ or $T$)",
                  fontsize=13, y=1.02)
