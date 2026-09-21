@@ -70,6 +70,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         jumprelu_count_one_sided: bool = False,
         rblapsum_boundary_grad_mode: str = "detach",
         rblapsum_boundary_floor=None,
+        rblapsum_support_scale: float = 1.0,
         rblapsum_temperature: float = 1.0,
         rblapsum_kernel: str = "exponential",
         rblapsum_temperature_mode: str = "fixed",
@@ -205,7 +206,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
         # activation-scale excursion.  Setting view_scale = c together with
         # temperature * c is an exact score-units reparameterization (all
         # gradients invariant).
-        self.rblapsum_support_scale = 1.0
+        # config-settable (see ActivationBottleneckConfig.rblapsum_support_scale);
+        # analysis/scale_dynamics.py still overwrites it in place for its
+        # counterfactual branches, which is why it stays a plain attribute.
+        self.rblapsum_support_scale = float(rblapsum_support_scale)
         self.rblapsum_view_scale = 1.0
         if surrogate_mode == "rblapsum":
             if selection_mode not in ("topk", "abs_topk"):

@@ -536,3 +536,42 @@ def test_view_scale_with_matched_T_is_exact_reparameterization():
     y_rep = g2(a.clone())
     assert torch.allclose(y_ref, y_rep, atol=1e-6)
     assert torch.allclose(ref, rep, atol=1e-5)
+
+
+# --------------------------------------------------------------------------- #
+# rblapsum_support_scale as a config field (it used to be analysis-only)
+# --------------------------------------------------------------------------- #
+
+
+def test_support_scale_reaches_the_gate_from_the_config():
+    from wsparse.bottleneck.module import SparseTopKBottleneck
+
+    cfg = bn_cfg(rblapsum_support_scale=0.3)
+    assert cfg.rblapsum_support_scale == 0.3
+    mod = SparseTopKBottleneck(32, cfg, bias=False)
+    assert mod.gate.rblapsum_support_scale == 0.3
+    # default stays exactly 1.0
+    assert SparseTopKBottleneck(32, bn_cfg(), bias=False
+                                ).gate.rblapsum_support_scale == 1.0
+
+
+def test_support_scale_scales_only_the_support_term():
+    """dL/dz = task + s * support, so the s-dependence must be exactly affine."""
+    def grads(scale):
+        g = make_gate(sel="abs_topk", b0=0.0, T=1.0)
+        g.rblapsum_boundary_grad_mode = "through_rank_kappa"
+        g.rblapsum_support_scale = scale
+        torch.manual_seed(0)
+        z = torch.randn(4, g.n_features, dtype=torch.float64, requires_grad=True)
+        g.train()
+        y = g(z)
+        torch.manual_seed(1)
+        y.backward(torch.randn_like(y))
+        return z.grad.clone()
+
+    g0, g1, gh = grads(0.0), grads(1.0), grads(0.5)
+    # halfway in the scale is halfway in the gradient
+    assert torch.allclose(gh, g0 + 0.5 * (g1 - g0), atol=1e-12)
+    # and scale 0 leaves a nonzero task path that differs from the full one
+    assert g0.abs().sum() > 0
+    assert not torch.allclose(g0, g1)

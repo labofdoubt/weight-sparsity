@@ -606,6 +606,16 @@ class ActivationBottleneckConfig:
     # b0: a FIXED bottleneck-level activation floor (never data-dependent).  For
     # abs_topk, b0=0 makes almost every feature eligible, so L0 stays ~K; a
     # positive b0 is needed to get L0 < K on some tokens.  Strict s > b0.
+    # Multiplies the rblapsum SUPPORT gradient -- the boundary-exchange term
+    # g_s -- in the backward, after the mode correction, so the zero-sum
+    # structure of through_rank_kappa is preserved and the term is uniformly
+    # rescaled rather than reshaped.  The hard task path (upstream * mask) is
+    # untouched, so 0.0 is exactly the hard-TopK backward and 1.0 is the
+    # unmodified surrogate.  Previously an analysis-only attribute set by
+    # analysis/scale_dynamics.py; as a config field it can be trained with.
+    # rblapsum modes only.
+    rblapsum_support_scale: float = 1.0
+
     # An RMSNorm on each bottleneck's own output, inside the module (so it is
     # part of the bottleneck's state_dict and the gate hooks are unaffected).
     # Motivation: under a stream placement the bottleneck's output scale

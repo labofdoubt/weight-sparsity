@@ -107,6 +107,7 @@ class SparseTopKBottleneck(nn.Module):
             jumprelu_count_one_sided=cfg.jumprelu_count_one_sided,
             rblapsum_boundary_grad_mode=cfg.rblapsum_boundary_grad_mode,
             rblapsum_boundary_floor=cfg.rblapsum_boundary_floor,
+            rblapsum_support_scale=getattr(cfg, 'rblapsum_support_scale', 1.0),
             rblapsum_temperature=cfg.rblapsum_temperature,
             rblapsum_temperature_mode=cfg.rblapsum_temperature_mode,
             rblapsum_chi_target=cfg.rblapsum_chi_target,
