@@ -172,4 +172,121 @@ $1.46$--$1.55$. All cells are single runs at one seed, so individual
 divergences carry the usual stochastic caveat; the mode-level separation,
 however, is uniform across all six configurations.
 
+% ============================================================
+\section{Where the mass goes: $p_i$ profiles and total surrogate mass}
+% ============================================================
+
+\paragraph{Hypothesis under test.}
+A natural reading of the no-kappa failure is that the surrogate inflates the
+soft mass inside the candidate pool: rather than \emph{redistributing} mass
+across the boundary, the optimizer switches on features that are inactive in
+the forward pass, so $\sum_i p_i$ grows. This section measures that directly.
+
+\paragraph{The quantity.}
+The LapSum soft assignment for a candidate is
+\[
+p_i = F\!\left(\frac{s_i - b}{T}\right),\qquad
+F(z)=\begin{cases}\tfrac12 e^{z}, & z\le 0\\[2pt] 1-\tfrac12 e^{-z}, & z>0\end{cases}
+\]
+(the project's \code{laplace\_cdf}), and $\sum_i p_i$ over the top-$(K+J)$
+pool is exactly the quantity LapSum's barrier solve drives to $K$. RBLapSum
+does not solve for the barrier: it pins $b$ to the rank boundary,
+$b=\max(b_0, s_{(K+1)})$, so here the mass is unconstrained and free to
+drift. Note that $\sum_i p_i$ is a deterministic function of the score
+geometry $(s, b, T)$ -- it is not an independent degree of freedom, but a
+readout of that geometry in probability space.
+
+\paragraph{How it was measured.}
+The no-kappa runs died at steps 1620 and 1580, before their first checkpoint
+at step 2000, so no saved states exist for them. The measurement therefore
+re-runs each of the four runs from its own dumped \code{config.json} at the
+same seed -- which reproduces the trajectory -- and measures every 50 steps
+through \code{train()}'s \code{on\_step} hook, saving no checkpoints
+(\code{analysis/probe\_mass.py}). The measurement is a forward pass under
+\code{no\_grad} on one fixed batch, identical across all four runs, with the
+gate buffers and RNG state it would perturb snapshotted and restored, so the
+training trajectory is unaffected. Profiles below are block 4 at one token;
+the mass was also recorded for all eight blocks at four token positions.
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/mass_vs_step.png}
+\caption{Total surrogate mass $\sum_i p_i$, normalized by $K$, against
+training step (log scale); dashed curves are the part carried by the inactive
+candidates, ranks $>K$. With the kappa correction (blue) the mass stays above
+$K$ and the inactive part is preserved or grows. Without it (red) the
+inactive part collapses -- to $0.8\%$ of $K$ at $(64,448)$ and $0.4\%$ at
+$(128,128)$ -- and the total falls onto exactly $K+\tfrac12$.}
+\end{figure}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/mass_profile_k64_j448.png}
+\caption{$K=64$, $J=448$, $T=1$: $p_i$ against the feature's score at six
+steps, kappa above and plain \code{through\_rank} below; the red line is the
+$K/K{+}1$ boundary. Both start from the same smooth profile. Without the
+kappa correction it steepens (step 500), becomes a step function by step 700,
+and thereafter the score axis runs to $10^3$--$10^7$ while every active
+candidate sits at $p_i=1$ and every inactive one at $p_i\approx0$. With the
+correction the profile stays soft for the whole window and the boundary stays
+inside the transition.}
+\end{figure}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/mass_profile_k128_j128.png}
+\caption{$K=128$, $J=128$, $T=2$: the same comparison. The hardening happens
+later here (between steps 700 and 1000) and from a narrower starting profile,
+but ends in the same saturated step.}
+\end{figure}
+
+\paragraph{Result: the hypothesis is not supported, and the opposite occurs.}
+Without the kappa correction the mass does not grow; it \emph{falls}, and the
+inactive candidates are switched off rather than on:
+
+\begin{center}\small
+\begin{tabular}{llcccc}
+\toprule
+$(K,J)$ & mode & $\sum p_i/K$ & inactive$/K$ & $s_{(1)}$ & CE \\
+ & & start $\to$ end & start $\to$ end & start $\to$ end & start $\to$ end \\
+\midrule
+$(64,448)$  & kappa    & $1.73 \to 2.10$ & $0.99 \to 1.31$  & $6.9 \to 12$   & $11.3 \to 1.71$ \\
+$(64,448)$  & no kappa & $1.73 \to 1.01$ & $0.99 \to 0.008$ & $6.9 \to 4\times10^{7}$ & $11.3 \to 5.85$ \\
+$(128,128)$ & kappa    & $1.06 \to 1.13$ & $0.37 \to 0.45$  & $12 \to 12$    & $11.3 \to 1.74$ \\
+$(128,128)$ & no kappa & $1.06 \to 1.00$ & $0.37 \to 0.004$ & $12 \to 2.5\times10^{7}$ & $11.3 \to 7.90$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The end state of both no-kappa runs is $\sum_i p_i = K + \tfrac12$ exactly:
+$p_i = 1$ for the $K$ active candidates, $p_i = \tfrac12$ for the boundary
+feature itself, and $p_i \approx 0$ for all $J$ inactive ones. This is not
+specific to the block and token plotted -- at the last measured step every
+one of the eight blocks at all four token positions is within $1\%$ of
+$(K+\tfrac12)/K$ in both no-kappa runs, while no block of either kappa run is.
+
+\paragraph{Timing.}
+The hardening precedes the loss failure rather than following it. At
+$(64,448)$ the inactive mass has halved by step 450 and is below $2\%$ of $K$
+by step 700, while the training loss only turns upward at step 750. At
+$(128,128)$ the two coincide within the 50-step measurement interval (mass
+collapse at step 900, loss turning at 850).
+
+\paragraph{What the measurement does support.}
+Because $\sum_i p_i$ is fixed by $(s,b,T)$, the collapse is the score-scale
+inflation documented in \code{docs/scale-dynamics-note-neutral.tex}, read out
+in probability space -- and it shows precisely how that inflation disables the
+surrogate. Once $|s_i - b| \gg T$ for every candidate, $F$ saturates, the
+kernel $\kappa_i = F'((s_i-b)/T)/T$ vanishes, and the boundary exchange
+transmits no gradient at all: the run becomes a hard Top-$K$ whose surrogate
+is numerically dead, which is consistent with its final loss ($5.85$ and
+$7.90$) being far worse than an actual hard Top-$K$ baseline ($1.54$ at
+$K=64$, $1.49$ at $K=128$). \textbf{(M)}
+
+The kappa correction is what prevents this. It subtracts the
+$\kappa$-weighted mean of the candidate gradients, $g = a - q\sum_i a_i$ with
+$q_i = \kappa_i/\sum_j\kappa_j$, so $L_\kappa \mathbf 1 = 0$ and the common
+mode -- a uniform push on all scores in the pool -- is removed by
+construction. Without it the surrogate retains that component, and a common
+push is exactly what inflates the score scale relative to the fixed kernel
+width. This is the interpretation the measurement is consistent with, not
+something the measurement isolates on its own. \textbf{(I)}
+
 \end{document}
