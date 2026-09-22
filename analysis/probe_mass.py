@@ -390,17 +390,138 @@ class GainProbe:
         print(f"[gain] wrote {path}: {len(self.steps)} measurement steps")
 
 
+class RowProbe:
+    """Encoder rows of the top-(K+J) candidates, and the score decomposition.
+
+    For one block and one token the score of candidate i is
+
+        s_i = |w_i . x| = ||w_i|| ||x|| |cos(w_i, x)|,
+
+    with ``w_i`` the encoder row (row of ``in_proj.weight``) that produces the
+    feature and ``x`` the block's bottleneck input.  Recording the three
+    factors separately says which of them carries a change in the score, and
+    recording them per candidate -- ordered by score -- says whether the pool
+    rows behave differently from the other 1536 - (K+J).
+
+    Under ``decouple=True`` each row also has a learnable gain
+    ``softplus(raw_grow)_i`` held in the optimizer state; the fused row is the
+    gain times the on-sphere direction row.
+    """
+
+    def __init__(self, cfg, every, stop_step, layer, token):
+        self.cfg = cfg
+        self.every, self.stop_step = int(every), int(stop_step)
+        self.layer, self.token = int(layer), int(token)
+        b = cfg.activation_bottleneck
+        self.k, self.j = int(b.k), int(b.j)
+        self.t = float(b.rblapsum_temperature)
+        self.b0 = float(b.rblapsum_boundary_floor)
+        self.x = self.y = None
+        self.out = {n: [] for n in ("steps", "x_norm", "s", "row_fused",
+                                    "row_dir", "row_gain", "cos", "idx",
+                                    "all_row_fused_mean", "ce")}
+
+    def _batch(self, device):
+        tr, _ = build_streams(self.cfg.data, seed=self.cfg.train.seed)
+        return tr.batch(4, device, deterministic_offset=4242)
+
+    def __call__(self, step, model, bottleneck, optimizer):
+        if step > self.stop_step:
+            raise StopProbing
+        if step % self.every:
+            return
+        import torch.nn.functional as Fn
+
+        layers = bottleneck.layers
+        device = next(model.parameters()).device
+        if self.x is None:
+            self.x, self.y = self._batch(device)
+        lbl, mod = layers[self.layer]
+
+        rng_cpu = torch.get_rng_state()
+        rng_cuda = torch.cuda.get_rng_state_all() if device.type == "cuda" else None
+        snaps = []
+        for _, m_ in layers:
+            g = m_.gate
+            snaps.append((g.usage_ema.clone(), g.usage_steps.clone(),
+                          dict(g._forward_diag), dict(g._usage_diag),
+                          dict(g._grad_sink), m_._reconstruction))
+        was_training = model.training
+
+        cap = {}
+        h1 = mod.register_forward_pre_hook(
+            lambda m_, inp: cap.__setitem__("x", inp[0].detach().float()))
+        h2 = mod.gate.register_forward_pre_hook(
+            lambda m_, inp: cap.__setitem__("z", inp[0].detach().float()))
+        with torch.no_grad():
+            _, loss = model(self.x, self.y)
+        h1.remove(); h2.remove()
+
+        with torch.no_grad():
+            xrow = cap["x"].reshape(-1, cap["x"].shape[-1])[self.token]
+            zrow = cap["z"].reshape(-1, cap["z"].shape[-1])[self.token]
+            q = min(self.k + self.j, zrow.shape[-1])
+            sc, idx = zrow.abs().topk(q, sorted=True)
+            W = mod.in_proj.weight.detach().float()          # (n_features, d_model)
+            st = optimizer.state.get(mod.in_proj.weight, {})
+            grow = (Fn.softplus(st["raw_grow"]).float() if "raw_grow" in st
+                    else torch.ones(W.shape[0], device=W.device))
+            gcol = (Fn.softplus(st["raw_gcol"]).float() if "raw_gcol" in st
+                    else torch.ones(W.shape[1], device=W.device))
+            rows = W[idx]
+            row_fused = rows.norm(dim=-1)
+            row_dir = (rows / grow[idx].unsqueeze(1) / gcol.unsqueeze(0)).norm(dim=-1)
+            xn = float(xrow.norm())
+            cos = (sc / (row_fused * max(xn, 1e-30))).clamp(max=1.0)
+            self.out["steps"].append(int(step))
+            self.out["x_norm"].append(xn)
+            self.out["s"].append(sc.cpu().numpy())
+            self.out["row_fused"].append(row_fused.cpu().numpy())
+            self.out["row_dir"].append(row_dir.cpu().numpy())
+            self.out["row_gain"].append(grow[idx].cpu().numpy())
+            self.out["cos"].append(cos.cpu().numpy())
+            self.out["idx"].append(idx.cpu().numpy())
+            self.out["all_row_fused_mean"].append(float(W.norm(dim=-1).mean()))
+            self.out["ce"].append(float(loss))
+
+        for (_, m_), sn in zip(layers, snaps):
+            g = m_.gate
+            g.usage_ema.copy_(sn[0]); g.usage_steps.copy_(sn[1])
+            g._forward_diag, g._usage_diag, g._grad_sink = sn[2], sn[3], sn[4]
+            m_._reconstruction = sn[5]
+        model.train(was_training)
+        torch.set_rng_state(rng_cpu)
+        if rng_cuda is not None:
+            torch.cuda.set_rng_state_all(rng_cuda)
+        cap.clear()
+        K = self.k
+        print(f"[row] step {step:>6}  ||x|| {xn:.3g}  s_1 {float(sc[0]):.3g}  "
+              f"pool row||w|| mean {float(row_fused.mean()):.4f} "
+              f"(all rows {self.out['all_row_fused_mean'][-1]:.4f})  "
+              f"gain pool mean {float(grow[idx].mean()):.4f}  "
+              f"|cos| mean {float(cos.mean()):.4f}", flush=True)
+
+    def save(self, path, extra):
+        np.savez_compressed(
+            path,
+            meta=json.dumps({**extra, "k": self.k, "j": self.j, "T": self.t,
+                             "b0": self.b0, "layer": self.layer,
+                             "token": self.token}),
+            **{n: np.array(v) for n, v in self.out.items()})
+        print(f"[row] wrote {path}: {len(self.out['steps'])} measurement steps")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("probe", "ckpt", "gradprobe", "gainprobe"):
+    for name in ("probe", "ckpt", "gradprobe", "gainprobe", "rowprobe"):
         s = sub.add_parser(name)
         s.add_argument("--out", required=True)
         s.add_argument("--positions", type=int, nargs="*", default=[0, 7, 23, 61])
         s.add_argument("--prof-layers", type=int, nargs="*", default=[4, 7])
         s.add_argument("--prof-tokens", type=int, nargs="*", default=[0, 7])
         s.add_argument("--data-dir", default="/workspace/data/tinystories")
-        if name in ("probe", "gradprobe", "gainprobe"):
+        if name in ("probe", "gradprobe", "gainprobe", "rowprobe"):
             s.add_argument("--run-config", required=True,
                            help="a run's dumped config.json")
             s.add_argument("--stop-step", type=int, default=2500)
@@ -409,7 +530,22 @@ def main() -> None:
             s.add_argument("--ckpt", action="append", required=True)
     args = ap.parse_args()
 
-    if args.cmd == "gainprobe":
+    if args.cmd == "rowprobe":
+        cfg = config_from_dict(json.load(open(args.run_config)))
+        cfg.data.data_dir = args.data_dir
+        cfg.train.resume = ""
+        cfg.train.run_name = "row_probe_tmp"
+        cfg.train.checkpoint_every_steps = 10 ** 9
+        cfg.train.sample_every_steps = 0
+        cfg.train.tensorboard = False
+        probe = RowProbe(cfg, args.every, args.stop_step,
+                         args.prof_layers[0], args.prof_tokens[0])
+        try:
+            train(cfg, on_step=probe)
+        except StopProbing:
+            print(f"[row] stopped at {args.stop_step} as planned")
+        probe.save(args.out, {"mode_cmd": "rowprobe", "config": args.run_config})
+    elif args.cmd == "gainprobe":
         cfg = config_from_dict(json.load(open(args.run_config)))
         cfg.data.data_dir = args.data_dir
         cfg.train.resume = ""
