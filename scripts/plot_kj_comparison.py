@@ -1,7 +1,8 @@
 """Top(K+J) with the RBLapSum kappa surrogate versus hard Top-K'.
 
-Two figure families, both 2x2 (left T=2, right post-norm; lower row the same
-panels with the vertical axis capped at 2.0 nats):
+Two figure families, both a single row of two panels (left T=2, right
+post-norm), with the vertical axis capped at 2.0 nats -- no run in this
+campaign diverges, so the full-range view added nothing:
 
   by_kprime_K<K'>   one candidate-pool size K' = K+J: the hard Top-K' run
                     (dashed, black) against every kappa run whose pool is K',
@@ -29,7 +30,7 @@ for p in jsons:
     raw.update(json.load(open(p)))
 
 KS = [32, 64, 128, 256, 512]
-YLIM_FULL, YLIM_CAP = (1.40, 3.1), (1.40, 2.0)
+YLIM = (1.40, 2.0)   # nothing here diverges; the full range was empty above 2
 # Hue separates the two families, lightness carries the ordering within each:
 # the candidate windows are blues, the hard Top-K' ladder is reds.  A single
 # perceptual ramp for both (viridis + copper) put large J and large K' at
@@ -123,25 +124,23 @@ for Kp in KS:
     if not js:
         continue
     col = shades(js, J_CMAP, J_RANGE)
-    fig, axes = plt.subplots(2, 2, figsize=(13.0, 8.4), sharex="col", sharey="row")
+    fig, axes = plt.subplots(1, 2, figsize=(13.0, 4.8), sharey=True)
     for c, var in enumerate(("t2", "pnorm")):
-        for row, ylim in enumerate((YLIM_FULL, YLIM_CAP)):
-            ax = axes[row][c]
-            if (Kp, "pnorm") in hard:
-                curve(ax, hard[(Kp, "pnorm")][1], "0.15", "--", 1.9, ylim)
-            for j in js:
-                k = Kp - j
-                if (k, j, var) in kappa:
-                    curve(ax, kappa[(k, j, var)][1], col[j], "-", 2.1, ylim)
-            finish(ax, ylim, row == 1,
-                   ("validation CE (nats)" if row == 0 else
-                    "validation CE (nats), capped at 2.0") if c == 0 else None)
-        axes[0][c].set_title("$T=2$" if var == "t2" else "post-norm", fontsize=12)
+        ax = axes[c]
+        if (Kp, "pnorm") in hard:
+            curve(ax, hard[(Kp, "pnorm")][1], "0.15", "--", 1.9, YLIM)
+        for j in js:
+            k = Kp - j
+            if (k, j, var) in kappa:
+                curve(ax, kappa[(k, j, var)][1], col[j], "-", 2.1, YLIM)
+        finish(ax, YLIM, True,
+               "validation CE (nats)" if c == 0 else None)
+        ax.set_title("$T=2$" if var == "t2" else "post-norm", fontsize=12)
     h = [Line2D([0], [0], color="0.15", ls="--", lw=1.9,
                 label=f"hard Top-$K'$, $K'={Kp}$ (post-norm)")]
     h += [Line2D([0], [0], color=col[j], lw=2.2,
                  label=f"$K={Kp - j}$, $J={j}$") for j in js]
-    axes[0][1].legend(handles=h, fontsize=9, loc="upper right", framealpha=0.93)
+    axes[1].legend(handles=h, fontsize=9, loc="upper right", framealpha=0.93)
     fig.suptitle(f"Candidate pool $K+J=K'={Kp}$: RBLapSum kappa vs hard Top-$K'$",
                  fontsize=14, y=0.995)
     fig.tight_layout()
@@ -157,25 +156,22 @@ for K in KS:
     if not js:
         continue
     col = shades(js, J_CMAP, J_RANGE)
-    fig, axes = plt.subplots(2, 2, figsize=(13.0, 8.4), sharex="col", sharey="row")
+    fig, axes = plt.subplots(1, 2, figsize=(13.0, 4.8), sharey=True)
     for c, var in enumerate(("t2", "pnorm")):
-        for row, ylim in enumerate((YLIM_FULL, YLIM_CAP)):
-            ax = axes[row][c]
-            for kp in hard_ks:
-                curve(ax, hard[(kp, "pnorm")][1], hcol[kp], "--", 1.7, ylim)
-            for j in js:
-                if (K, j, var) in kappa:
-                    curve(ax, kappa[(K, j, var)][1], col[j], "-", 2.1, ylim)
-            finish(ax, ylim, row == 1,
-                   ("validation CE (nats)" if row == 0 else
-                    "validation CE (nats), capped at 2.0") if c == 0 else None)
-        axes[0][c].set_title("$T=2$" if var == "t2" else "post-norm", fontsize=12)
+        ax = axes[c]
+        for kp in hard_ks:
+            curve(ax, hard[(kp, "pnorm")][1], hcol[kp], "--", 1.7, YLIM)
+        for j in js:
+            if (K, j, var) in kappa:
+                curve(ax, kappa[(K, j, var)][1], col[j], "-", 2.1, YLIM)
+        finish(ax, YLIM, True, "validation CE (nats)" if c == 0 else None)
+        ax.set_title("$T=2$" if var == "t2" else "post-norm", fontsize=12)
     h = [Line2D([0], [0], color=col[j], lw=2.2, label=f"$K={K}$, $J={j}$")
          for j in js]
     h += [Line2D([0], [0], color=hcol[kp], ls="--", lw=1.7,
                  label=f"hard Top-${kp}$") for kp in hard_ks]
-    axes[0][1].legend(handles=h, fontsize=9, loc="upper right", framealpha=0.93,
-                      ncol=2)
+    axes[1].legend(handles=h, fontsize=9, loc="upper right", framealpha=0.93,
+                   ncol=2)
     fig.suptitle(f"Active count $K={K}$: every candidate window, against all "
                  f"hard Top-$K'$", fontsize=14, y=0.995)
     fig.tight_layout()

@@ -227,22 +227,24 @@ effective remedy.
 
 Each figure fixes the pool $\Kp = K+J$ and compares hard Top-$\Kp$ (dashed,
 black) with every surrogate cell sharing that pool (solid, a blue ramp running
-light to dark with increasing $J$). Left column $T=2$, right column post-norm;
-the lower row repeats both panels with the vertical axis capped at 2.0 nats.
+light to dark with increasing $J$). Left panel $T=2$, right panel post-norm.
+The vertical axis is capped at 2.0 nats throughout: no run in this campaign
+diverged, so nothing happens above that line after the first few thousand
+steps.
 
-\begin{figure}[p]\centering
+\begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj_pool_k64.png}
 \caption{$\Kp = 64$. The single surrogate cell ($K=32$, $J=32$) ends below
 hard Top-64 under the post-norm and slightly above it at $T=2$.}
 \end{figure}
 
-\begin{figure}[p]\centering
+\begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj_pool_k128.png}
 \caption{$\Kp = 128$. $K=64$ wins the pool under the post-norm; $K=32$, with
 the same pool but half the active count, trails the hard baseline.}
 \end{figure}
 
-\begin{figure}[p]\centering
+\begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj_pool_k256.png}
 \caption{$\Kp = 256$. Under the post-norm the $K=128$ curve separates from
 the hard baseline from about step 5000 and stays below it; $K=64$ converges to
@@ -250,14 +252,13 @@ within $0.004$ nats of hard, and $K=32$ remains clearly above. At $T=2$ all
 three sit above the baseline throughout.}
 \end{figure}
 
-\begin{figure}[p]\centering
+\begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj_pool_k512.png}
 \caption{$\Kp = 512$. The ordering is monotone in $K$: $K=256$ ends below
 hard Top-512, $K=128$ tracks it to within $0.006$ nats, and $K=64$ and $K=32$
 fall progressively behind. The $K=32$ curve is the reversal discussed above.}
 \end{figure}
 
-\clearpage
 \subsection*{Per active count}
 
 Each figure fixes the active count $K$ and shows every candidate window
@@ -268,7 +269,7 @@ each, so a surrogate curve is never confusable with a hard one. The hard
 curves are identical in all four figures, so they serve as a fixed reference
 scale.
 
-\begin{figure}[p]\centering
+\begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj_active_k32.png}
 \caption{$K=32$. Widening the window moves the model up the hard ladder --
 from between hard Top-32 and Top-64 at $J=32$ to past hard Top-128 at
@@ -276,28 +277,26 @@ $J=224$ -- but the widest window, $J=480$, falls back under the post-norm
 while continuing to improve at $T=2$.}
 \end{figure}
 
-\begin{figure}[p]\centering
+\begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj_active_k64.png}
 \caption{$K=64$. Every window improves on the last, and the best
 ($J=448$) lands between hard Top-256 and hard Top-512 while activating
 64 features.}
 \end{figure}
 
-\begin{figure}[p]\centering
+\begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj_active_k128.png}
 \caption{$K=128$. Both windows beat hard Top-256 under the post-norm, and
 $J=384$ reaches hard Top-512 to within $0.006$ nats at a quarter of its
 active count.}
 \end{figure}
 
-\begin{figure}[p]\centering
+\begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj_active_k256.png}
 \caption{$K=256$. Under the post-norm the single cell ($J=256$) ends below
 every hard baseline including Top-512, which is the best result in the
 comparison. At $T=2$ the same cell sits between hard Top-256 and Top-512.}
 \end{figure}
-
-\clearpage
 
 % ============================================================
 \section{Interpretation}
