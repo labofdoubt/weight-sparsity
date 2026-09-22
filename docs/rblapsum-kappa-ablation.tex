@@ -400,6 +400,43 @@ neurons on'' reading does not hold: the gate-variable gradient is close to
 sign-symmetric outside the support, and what differs between the modes is not
 this gradient but how its common mode is routed into the scores.
 
+\paragraph{Result 4: the pool sums.}
+Summing each gradient over the top-$(K+J)$ candidates separates what the two
+modes share from what distinguishes them.
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/grad_sums.png}
+\caption{Pool sums over training (symlog axes, so both signs are visible).
+Top: $\sum_i \partial L/\partial p_i$, which is nonzero and changes sign from
+step to step in both modes. Bottom: $\sum_i \partial L/\partial s_i$ (solid)
+against $\sum_i |\partial L/\partial s_i|$ (dashed, the scale of the terms
+being summed). The score-gradient sum sits eight to nine orders of magnitude
+below the term scale in \emph{both} modes -- it is zero by construction -- and
+the dashed no-kappa curve dropping to zero after step 800 is the dead
+surrogate again.}
+\end{figure}
+
+$\sum_i \partial L/\partial s_i = 0$ \textbf{in both modes, by construction.}
+Both corrections subtract the full common mode: \code{through\_rank} removes
+$\sum_i a_i$ as a point mass and \code{through\_rank\_kappa} removes it
+$\kappa$-weighted, and in either case the subtracted total equals the sum, so
+the pool sum cancels. Measured, the residual is at floating-point noise:
+$|\sum_i g_i| / \sum_i |g_i| \leq 2.4\times10^{-8}$ for the kappa runs and
+$\leq 4.0\times10^{-6}$ for the no-kappa runs over the steps where the
+surrogate is still alive, against term sums of order $10^{-3}$. This is worth
+stating explicitly because it rules out one reading of the previous result:
+the modes do \emph{not} differ in whether the common mode is removed from the
+pool, only in where the removal is deposited -- on the one boundary feature,
+or spread over the pool.
+
+$\sum_i \partial L/\partial p_i$ is nonzero, of order $10^{-3}$, and flips
+sign between measurements in every run. Normalized by the sum of the absolute
+terms it stays small -- mean $-0.13$ to $+0.06$ across runs and tokens, with
+the sign of the mean differing between the two tokens of the same run -- so
+there is no systematic common-mode demand on the gate variables in either
+mode. Both this and the near-symmetric sign split of Result 3 point the same
+way: the loss is not asking for more total gate mass.
+
 \paragraph{Reading the two sections together.}
 \code{through\_rank} concentrates the entire common-mode correction on the one
 feature whose score \emph{is} the boundary. Moving that feature moves $b$, and
