@@ -226,9 +226,9 @@ effective remedy.
 \subsection*{Per candidate pool}
 
 Each figure fixes the pool $\Kp = K+J$ and compares hard Top-$\Kp$ (dashed,
-black) with every surrogate cell sharing that pool (solid, light to dark with
-increasing $J$). Left column $T=2$, right column post-norm; the lower row
-repeats both panels with the vertical axis capped at 2.0 nats.
+black) with every surrogate cell sharing that pool (solid, a blue ramp running
+light to dark with increasing $J$). Left column $T=2$, right column post-norm;
+the lower row repeats both panels with the vertical axis capped at 2.0 nats.
 
 \begin{figure}[p]\centering
 \includegraphics[width=\textwidth]{figures/kj_pool_k64.png}
@@ -261,10 +261,12 @@ fall progressively behind. The $K=32$ curve is the reversal discussed above.}
 \subsection*{Per active count}
 
 Each figure fixes the active count $K$ and shows every candidate window
-trained at that $K$ (solid, light to dark with increasing $J$) against all
-five hard Top-$\Kp$ baselines (dashed, a separate ramp, light to dark with
-increasing $\Kp$). The hard curves are identical in all four figures, so they
-serve as a fixed reference scale.
+trained at that $K$ (solid, a blue ramp light to dark with increasing $J$)
+against all five hard Top-$\Kp$ baselines (dashed, a red ramp light to dark
+with increasing $\Kp$). Hue separates the two families and lightness orders
+each, so a surrogate curve is never confusable with a hard one. The hard
+curves are identical in all four figures, so they serve as a fixed reference
+scale.
 
 \begin{figure}[p]\centering
 \includegraphics[width=\textwidth]{figures/kj_active_k32.png}

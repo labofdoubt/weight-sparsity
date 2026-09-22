@@ -30,7 +30,13 @@ for p in jsons:
 
 KS = [32, 64, 128, 256, 512]
 YLIM_FULL, YLIM_CAP = (1.40, 3.1), (1.40, 2.0)
-J_CMAP, H_CMAP = cm.get_cmap("viridis"), cm.get_cmap("copper")
+# Hue separates the two families, lightness carries the ordering within each:
+# the candidate windows are blues, the hard Top-K' ladder is reds.  A single
+# perceptual ramp for both (viridis + copper) put large J and large K' at
+# nearly the same near-black, which made the families hard to tell apart.
+# Blue/red is also the colourblind-safe pairing.
+J_CMAP, H_CMAP = cm.get_cmap("Blues"), cm.get_cmap("Reds")
+J_RANGE, H_RANGE = (0.35, 0.95), (0.35, 0.92)
 
 
 def classify(name, rec):
@@ -101,11 +107,12 @@ def finish(ax, ylim, xlabel, ylabel):
         ax.set_ylabel(ylabel)
 
 
-def shades(vals, cmap, lo=0.78, hi=0.06):
-    """Light for the smallest value, dark for the largest (lo > hi inverts the
-    ramp), so 'more J' and 'more K-prime' read as 'more intense'."""
+def shades(vals, cmap, rng):
+    """Light for the smallest value, dark for the largest, so 'more J' and
+    'more K-prime' read as 'more intense'."""
+    lo, hi = rng
     if len(vals) == 1:
-        return {vals[0]: cmap(0.45)}
+        return {vals[0]: cmap(0.5 * (lo + hi))}
     return {v: cmap(lo + (hi - lo) * i / (len(vals) - 1))
             for i, v in enumerate(vals)}
 
@@ -115,7 +122,7 @@ for Kp in KS:
     js = sorted({j for (k, j, v) in kappa if k + j == Kp})
     if not js:
         continue
-    col = shades(js, J_CMAP)
+    col = shades(js, J_CMAP, J_RANGE)
     fig, axes = plt.subplots(2, 2, figsize=(13.0, 8.4), sharex="col", sharey="row")
     for c, var in enumerate(("t2", "pnorm")):
         for row, ylim in enumerate((YLIM_FULL, YLIM_CAP)):
@@ -144,12 +151,12 @@ for Kp in KS:
 
 # ---- family 2: one figure per active count K ----------------------------- #
 hard_ks = sorted({k for (k, v) in hard})
-hcol = shades(hard_ks, H_CMAP)
+hcol = shades(hard_ks, H_CMAP, H_RANGE)
 for K in KS:
     js = sorted({j for (k, j, v) in kappa if k == K})
     if not js:
         continue
-    col = shades(js, J_CMAP)
+    col = shades(js, J_CMAP, J_RANGE)
     fig, axes = plt.subplots(2, 2, figsize=(13.0, 8.4), sharex="col", sharey="row")
     for c, var in enumerate(("t2", "pnorm")):
         for row, ylim in enumerate((YLIM_FULL, YLIM_CAP)):
