@@ -64,6 +64,47 @@ def gate_geometry(z, k, j, t, b0):
     return sc, p, p.sum(-1)
 
 
+def gate_gradients(z, u, k, j, t, b0, mode):
+    """(scores, dL/dp, dL/ds) at the top-(k+j) candidates, per token.
+
+    Follows the backward of :class:`wsparse.bottleneck.rblapsum._RBLapSumGate`
+    exactly.  With ``y_i = p_i z_i`` and ``u_i = dL/dy_i``,
+
+        dL/dp_i = u_i z_i,
+        a_i     = (dL/dp_i) * kappa_i          (kappa_i = dp_i/ds_i)
+
+    and the score gradient is ``a`` after the mode correction: for
+    ``through_rank`` the common mode is dropped as a point mass on the
+    boundary feature, for ``through_rank_kappa`` it is spread over the pool
+    kappa-weighted (``a - q sum_i a_i``, ``q = kappa / sum kappa``).
+    """
+    F = z.shape[-1]
+    zf = z.reshape(-1, F)
+    uf = u.reshape(-1, F)
+    sraw = zf.abs()
+    q_n = min(k + j, F)
+    order = sraw.argsort(dim=-1, descending=True)[:, :q_n]
+    sc = sraw.gather(1, order)
+    z_c = zf.gather(1, order)
+    u_c = uf.gather(1, order)
+    b = sc[:, k].clamp_min(b0) if k < q_n else sc[:, -1].clamp_min(b0)
+    cap_active = (sc[:, k] > b0)[:, None] if k < q_n else torch.ones_like(b)[:, None]
+    kap = torch.exp(-(sc - b[:, None]).abs() / t) / (2.0 * t)
+    dLdp = u_c * z_c
+    a = dLdp * kap
+    if mode == "through_rank_kappa":
+        qw = kap / kap.sum(1, keepdim=True).clamp_min(1e-30)
+        g_s = torch.where(cap_active, a - qw * a.sum(1, keepdim=True), a)
+    elif mode == "through_rank":
+        corr = torch.zeros_like(a)
+        total = a.sum(1, keepdim=True)
+        corr[:, k:k + 1] = torch.where(cap_active, total, torch.zeros_like(total))
+        g_s = a - corr
+    else:
+        g_s = a
+    return sc, dLdp, g_s
+
+
 class MassProbe:
     def __init__(self, cfg, every, stop_step, positions, prof_layers, prof_tokens):
         self.cfg = cfg
@@ -166,17 +207,128 @@ class MassProbe:
         print(f"[mass] wrote {path}: {len(self.steps)} measurement steps")
 
 
+class GradProbe:
+    """Same cadence as MassProbe, but runs a backward so u_i is available.
+
+    Gradient probes must run in train() mode with grad enabled:
+    ``surrogate_active()`` is False in eval and under ``no_grad``, so an
+    eval-mode probe would measure the hard mask instead of the surrogate.
+    The probe's own gradients are discarded -- the hook fires before the
+    step's ``zero_grad`` -- and the gate buffers and RNG it perturbs are
+    restored.
+    """
+
+    def __init__(self, cfg, every, stop_step, prof_layers, prof_tokens):
+        self.cfg = cfg
+        self.every, self.stop_step = int(every), int(stop_step)
+        self.prof_layers, self.prof_tokens = list(prof_layers), list(prof_tokens)
+        b = cfg.activation_bottleneck
+        self.k, self.j = int(b.k), int(b.j)
+        self.t = float(b.rblapsum_temperature)
+        self.b0 = float(b.rblapsum_boundary_floor)
+        self.mode = str(b.rblapsum_boundary_grad_mode)
+        self.x = self.y = None
+        self.steps, self.s, self.dLdp, self.dLds, self.ce = [], [], [], [], []
+
+    def _batch(self, device):
+        tr, _ = build_streams(self.cfg.data, seed=self.cfg.train.seed)
+        return tr.batch(4, device, deterministic_offset=4242)
+
+    def __call__(self, step, model, bottleneck, optimizer):
+        if step > self.stop_step:
+            raise StopProbing
+        if step % self.every:
+            return
+        layers = bottleneck.layers
+        device = next(model.parameters()).device
+        if self.x is None:
+            self.x, self.y = self._batch(device)
+
+        rng_cpu = torch.get_rng_state()
+        rng_cuda = torch.cuda.get_rng_state_all() if device.type == "cuda" else None
+        snaps = []
+        for _, mod in layers:
+            g = mod.gate
+            snaps.append((g.usage_ema.clone(), g.usage_steps.clone(),
+                          dict(g._forward_diag), dict(g._usage_diag),
+                          dict(g._grad_sink), mod._reconstruction))
+        was_training = model.training
+        model.train()
+
+        cap, handles = {}, []
+        for li, (_, mod) in enumerate(layers):
+            if li not in self.prof_layers:
+                continue
+
+            def pre(m, inputs, li=li):
+                cap[("z", li)] = inputs[0].detach().float()
+
+            def post(m, inputs, output, li=li):
+                if output.requires_grad:
+                    output.register_hook(
+                        lambda g, li=li: cap.__setitem__(("u", li), g.detach().float()))
+
+            handles.append(mod.gate.register_forward_pre_hook(pre))
+            handles.append(mod.gate.register_forward_hook(post))
+
+        _, loss = model(self.x, self.y)
+        loss.backward()
+        for h in handles:
+            h.remove()
+
+        ss, gp, gs = [], [], []
+        for li in self.prof_layers:
+            z, u = cap[("z", li)], cap[("u", li)]
+            sc, dLdp, g_s = gate_gradients(z, u, self.k, self.j, self.t,
+                                           self.b0, self.mode)
+            seq = z.shape[1]
+            rows = [t_ for t_ in self.prof_tokens if t_ < seq]
+            ss.append(sc[rows].cpu().numpy())
+            gp.append(dLdp[rows].cpu().numpy())
+            gs.append(g_s[rows].cpu().numpy())
+        self.steps.append(int(step))
+        self.s.append(np.stack(ss)); self.dLdp.append(np.stack(gp))
+        self.dLds.append(np.stack(gs)); self.ce.append(float(loss.detach()))
+
+        optimizer.zero_grad(set_to_none=True)
+        for (_, mod), sn in zip(layers, snaps):
+            g = mod.gate
+            g.usage_ema.copy_(sn[0]); g.usage_steps.copy_(sn[1])
+            g._forward_diag, g._usage_diag, g._grad_sink = sn[2], sn[3], sn[4]
+            mod._reconstruction = sn[5]
+        model.train(was_training)
+        torch.set_rng_state(rng_cpu)
+        if rng_cuda is not None:
+            torch.cuda.set_rng_state_all(rng_cuda)
+        cap.clear()
+        gp0 = self.dLdp[-1][0, 0]
+        print(f"[grad] step {step:>6}  CE {float(loss.detach()):.4f}  "
+              f"max|dL/dp| {np.abs(gp0).max():.3g}  "
+              f"max|dL/ds| {np.abs(self.dLds[-1][0, 0]).max():.3g}", flush=True)
+
+    def save(self, path, extra):
+        np.savez_compressed(
+            path, steps=np.array(self.steps), s=np.stack(self.s),
+            dLdp=np.stack(self.dLdp), dLds=np.stack(self.dLds),
+            ce=np.array(self.ce),
+            meta=json.dumps({**extra, "k": self.k, "j": self.j, "T": self.t,
+                             "b0": self.b0, "mode": self.mode,
+                             "prof_layers": self.prof_layers,
+                             "prof_tokens": self.prof_tokens}))
+        print(f"[grad] wrote {path}: {len(self.steps)} measurement steps")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("probe", "ckpt"):
+    for name in ("probe", "ckpt", "gradprobe"):
         s = sub.add_parser(name)
         s.add_argument("--out", required=True)
         s.add_argument("--positions", type=int, nargs="*", default=[0, 7, 23, 61])
         s.add_argument("--prof-layers", type=int, nargs="*", default=[4, 7])
         s.add_argument("--prof-tokens", type=int, nargs="*", default=[0, 7])
         s.add_argument("--data-dir", default="/workspace/data/tinystories")
-        if name == "probe":
+        if name in ("probe", "gradprobe"):
             s.add_argument("--run-config", required=True,
                            help="a run's dumped config.json")
             s.add_argument("--stop-step", type=int, default=2500)
@@ -185,7 +337,22 @@ def main() -> None:
             s.add_argument("--ckpt", action="append", required=True)
     args = ap.parse_args()
 
-    if args.cmd == "probe":
+    if args.cmd == "gradprobe":
+        cfg = config_from_dict(json.load(open(args.run_config)))
+        cfg.data.data_dir = args.data_dir
+        cfg.train.resume = ""
+        cfg.train.run_name = "grad_probe_tmp"
+        cfg.train.checkpoint_every_steps = 10 ** 9
+        cfg.train.sample_every_steps = 0
+        cfg.train.tensorboard = False
+        probe = GradProbe(cfg, args.every, args.stop_step,
+                          args.prof_layers, args.prof_tokens)
+        try:
+            train(cfg, on_step=probe)
+        except StopProbing:
+            print(f"[grad] stopped at {args.stop_step} as planned")
+        probe.save(args.out, {"mode_cmd": "gradprobe", "config": args.run_config})
+    elif args.cmd == "probe":
         cfg = config_from_dict(json.load(open(args.run_config)))
         cfg.data.data_dir = args.data_dir
         cfg.train.resume = ""            # a fresh trajectory, not a resume
