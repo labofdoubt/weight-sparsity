@@ -289,4 +289,127 @@ push is exactly what inflates the score scale relative to the fixed kernel
 width. This is the interpretation the measurement is consistent with, not
 something the measurement isolates on its own. \textbf{(I)}
 
+% ============================================================
+\section{Gradient structure at the boundary: $\partial L/\partial p_i$ and
+$\partial L/\partial s_i$}
+% ============================================================
+
+The previous section showed \emph{what} happens to the soft profile without
+the kappa correction. This section measures the two gradients that drive it,
+per candidate, on the same runs, block and token.
+
+\paragraph{The quantities.}
+With $y_i = p_i z_i$ the bottleneck output and $u_i = \partial L/\partial y_i$
+the gradient arriving at the gate,
+\[
+\frac{\partial L}{\partial p_i} = u_i z_i,
+\qquad
+a_i = \frac{\partial L}{\partial p_i}\,\kappa_i,
+\qquad
+\kappa_i = \frac{\partial p_i}{\partial s_i} = \frac{F'((s_i-b)/T)}{T},
+\]
+and the score gradient is $a$ after the mode correction: \code{through\_rank}
+removes the common mode as a point mass on the boundary feature,
+$g = a - (\sum_i a_i)\,e_{K+1}$, while \code{through\_rank\_kappa} spreads it
+$\kappa$-weighted, $g = a - q\sum_i a_i$ with $q_i = \kappa_i/\sum_j\kappa_j$.
+Both are reported \emph{signed}. Gradient descent moves a quantity against
+its gradient, so a negative bar means the loss falls if that feature's gate
+variable (or score) increases.
+
+The measurement requires a backward pass, so it runs in \code{train()} mode
+with grad enabled -- \code{surrogate\_active()} is False in eval and under
+\code{no\_grad}, and an eval-mode probe would measure the hard mask instead
+of the surrogate. The probe's own gradients are discarded (the hook fires
+before the step's \code{zero\_grad}) and the gate buffers and RNG state are
+restored, as before. Measured every 100 steps to step 1200, which covers both
+collapses.
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/grad_dLdp_k64_j448.png}
+\caption{$K=64$, $J=448$: signed $\partial L/\partial p_i$ against the
+feature's score. Active candidates are dark blue, inactive light blue, and
+the boundary feature (rank $K{+}1$, whose score defines $b$) red. The two
+modes look alike: the gradient on the gate variable is broadly distributed
+over the pool and close to sign-symmetric, and the boundary feature is
+unremarkable in both. Note the $y$ scale of the last no-kappa panel,
+$10^{-6}$: after the collapse the whole pool's gradient is three orders of
+magnitude smaller.}
+\end{figure}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/grad_dLds_k64_j448.png}
+\caption{$K=64$, $J=448$: signed $\partial L/\partial s_i$, same encoding.
+Here the two modes differ sharply. Without the kappa correction the boundary
+feature carries a single spike that dominates the pool -- it is the point mass
+that removes the common mode -- and by step 1000 the panel is empty: the score
+gradient is exactly zero everywhere. With the correction the same common mode
+is spread over the pool and the boundary feature is one bar among its
+neighbours.}
+\end{figure}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/grad_dLds_k128_j128.png}
+\caption{$K=128$, $J=128$, $T=2$: the same contrast in
+$\partial L/\partial s_i$, with the boundary spike up to $6.9\times$ the
+largest other candidate.}
+\end{figure}
+
+\paragraph{Result 1: the point mass makes the boundary feature the loudest in
+the pool.}
+Taking $|g_{K+1}|$ relative to the largest $|g_i|$ over all other candidates:
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+ & \multicolumn{2}{c}{$(64,448)$} & \multicolumn{2}{c}{$(128,128)$} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+step & kappa & no kappa & kappa & no kappa \\
+\midrule
+0   & $0.17\times$ & $2.0\times$ & $0.06\times$ & $2.8\times$ \\
+300 & $1.04\times$ & $3.4\times$ & $0.04\times$ & $6.9\times$ \\
+500 & $0.02\times$ & $0.7\times$ & $0.10\times$ & $4.5\times$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Without the correction the boundary feature's score gradient is two to seven
+times larger than any other candidate's; with it, the boundary feature is
+typically a tenth of the loudest candidate. In absolute terms the difference
+is one to two orders of magnitude: at step 500, $1.33\times10^{-4}$ against
+$6.1\times10^{-7}$ at $(64,448)$, and $1.26\times10^{-4}$ against
+$2.1\times10^{-6}$ at $(128,128)$.
+
+\paragraph{Result 2: after the collapse the score gradient is identically
+zero.}
+At step 1000 both no-kappa runs have $\partial L/\partial s_i = 0$ for every
+candidate, to the last bit -- visible as an empty panel with a $10^{-30}$
+axis. This is the saturation of the previous section stated in gradient
+terms: once $|s_i - b| \gg T$ everywhere, $\kappa_i$ underflows, $a_i =
+(\partial L/\partial p_i)\kappa_i$ vanishes, and the boundary exchange
+transmits nothing. The kappa runs keep a score gradient of order
+$10^{-5}$ throughout.
+
+\paragraph{Result 3: $\partial L/\partial p_i$ carries no systematic push on
+the inactive features.}
+The fraction of inactive candidates with $\partial L/\partial p_i < 0$ -- the
+ones the loss would like to switch on -- stays at $0.45$--$0.56$ in every run
+and at every measured step, kappa and no-kappa alike. There is no net demand
+to activate the inactive part of the pool in either mode, which is a second,
+independent reason the ``mass grows because the optimizer switches inactive
+neurons on'' reading does not hold: the gate-variable gradient is close to
+sign-symmetric outside the support, and what differs between the modes is not
+this gradient but how its common mode is routed into the scores.
+
+\paragraph{Reading the two sections together.}
+\code{through\_rank} concentrates the entire common-mode correction on the one
+feature whose score \emph{is} the boundary. Moving that feature moves $b$, and
+hence the reference point of every $p_i$ in the pool; the measured
+consequence is the score-scale inflation of the previous section, which ends
+in saturation and a dead surrogate. \code{through\_rank\_kappa} distributes
+the same correction $\kappa$-weighted, so no single feature -- and in
+particular not the boundary -- receives it as a spike, and the profile stays
+soft for the whole run. \textbf{(M)} for the gradient measurements above;
+the causal link from the spike to the inflation remains \textbf{(I)}, since
+these are observations along the trajectory rather than an intervention.
+
 \end{document}
