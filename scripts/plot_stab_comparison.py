@@ -1,8 +1,8 @@
 """Stabilization comparison: five approaches per K group.
 
-One figure per K (32, 64, 128), each a 2x2 grid: the smaller candidate window
-J on the left, the larger on the right; the top row over the full range and the
-bottom row the same panels with the vertical axis capped at 2.0 nats.  Colour
+One figure per K (32, 64, 128): the smaller candidate window J on the left,
+the larger on the right, with the vertical axis capped at 2.0 nats -- the arms
+differ only below that, so the full-range view is omitted.  Colour
 encodes the approach.  A cross marks where the divergence guard stopped a run.
 
 Runs come from two boxes: the four T/lr/post-norm arms and the support-gradient
@@ -81,24 +81,24 @@ for K in (32, 64, 128):
         print("no runs for K =", K)
         continue
     js = sorted({r["j"] for r in sel.values()})
-    fig, axes = plt.subplots(2, 2, figsize=(13.0, 8.4), sharex="col", sharey="row")
+    # one row only: the full-range view sat almost entirely above the region
+    # the arms differ in, so it is dropped and the legend moves here.
+    fig, axes = plt.subplots(1, 2, figsize=(13.0, 4.8), sharey=True)
     present, any_death = set(), False
     for c, J in enumerate(js):                       # left: small J, right: large J
         col = {n: r for n, r in sel.items() if r["j"] == J}
-        for row, ylim in enumerate((YLIM_FULL, YLIM_CAP)):
-            p, d = draw(axes[row][c], col, ylim, xlabel=(row == 1))
-            present |= p
-            any_death |= d
-        axes[0][c].set_title(f"$J={J}$", fontsize=12)
-    axes[0][0].set_ylabel("validation CE (nats)")
-    axes[1][0].set_ylabel("validation CE (nats), capped at 2.0")
+        p, d = draw(axes[c], col, YLIM_CAP, xlabel=True)
+        present |= p
+        any_death |= d
+        axes[c].set_title(f"$J={J}$", fontsize=12)
+    axes[0].set_ylabel("validation CE (nats), capped at 2.0")
     handles = [Line2D([0], [0], color=c, lw=lw, ls=ls, alpha=al, label=lab)
                for a, c, lab, ls, lw, al in ARMS if a in present]
     if any_death:
         handles.append(Line2D([0], [0], color="0.3", ls="", marker="x", ms=9,
                               mew=2.2, label="stopped as diverged"))
-    axes[0][1].legend(handles=handles, fontsize=10, loc="upper right",
-                      framealpha=0.93)
+    axes[1].legend(handles=handles, fontsize=10, loc="upper right",
+                   framealpha=0.93)
     fig.suptitle(f"RBLapSum through_rank_kappa, $K={K}$: five stabilizations",
                  fontsize=14, y=0.995)
     fig.tight_layout()

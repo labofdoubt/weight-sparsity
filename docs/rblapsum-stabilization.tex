@@ -159,16 +159,15 @@ guard stopped the run. Best value per configuration in bold.
 \begin{figure}[h]\centering
 \includegraphics[width=\textwidth]{figures/stab_k32.png}
 \caption{$K=32$: smaller candidate window on the left, larger on the
-right; the lower row repeats each panel with the vertical axis capped at
-2.0 nats. Colour encodes the arm and line style its kind: the untouched
+right, with the vertical axis capped at 2.0 nats, which is where the arms
+differ. Colour encodes the arm and line style its kind: the untouched
 baseline is dashed, the two arms that stabilize without an accuracy cost
 ($T=2$ and the output RMSNorm) are solid, and the two attenuating arms
 (reduced learning rate, support-gradient scale) are dash-dotted and
-slightly transparent. Every arm survives here, so this
-configuration measures cost rather than stabilization: the baseline and
-$T=2$ curves are indistinguishable, the output RMSNorm wins at $J=32$ but
-loses $0.047$ nats at $J=480$, and the reduced learning rate is clearly
-behind throughout.}
+slightly transparent. Every arm survives here, so this configuration
+measures cost rather than stabilization: the baseline and $T=2$ curves are
+indistinguishable, the output RMSNorm wins at $J=32$ but loses $0.047$ nats
+at $J=480$, and the reduced learning rate is clearly behind throughout.}
 \end{figure}
 
 \begin{figure}[h]\centering
@@ -176,18 +175,18 @@ behind throughout.}
 \caption{$K=64$, panels as above. No run diverges, but the baseline
 (blue, $J=64$) leaves the plotted range twice and returns -- the recovered
 excursion discussed in the text. The output RMSNorm is best at both $J$,
-by $0.012$--$0.045$ nats over the baseline; the capped row makes the
-ordering of the four arms legible over the second half of training.}
+by $0.012$--$0.045$ nats over the baseline, and the ordering of the four
+surviving arms is legible over the second half of training.}
 \end{figure}
 
 \begin{figure}[h]\centering
 \includegraphics[width=\textwidth]{figures/stab_k128.png}
 \caption{$K=128$, panels as above. The baseline (blue) diverges at both
-$J$ and leaves the plotted range, its stop marked by a cross at the top
-edge of each panel. All four interventions converge, and the ordering is
-the same at both $J$ and stable from about step 3000: the output RMSNorm
-(red) runs lowest throughout, ahead of $T=2$, then the support-gradient
-scale, then the reduced learning rate.}
+$J$ and leaves the plotted range almost immediately, its stop marked by a
+cross at the top edge of each panel. All four interventions converge, and
+the ordering is the same at both $J$ and stable from about step 3000: the
+output RMSNorm (red) runs lowest throughout, ahead of $T=2$, then the
+support-gradient scale, then the reduced learning rate.}
 \end{figure}
 
 \paragraph{A recovered excursion.}
