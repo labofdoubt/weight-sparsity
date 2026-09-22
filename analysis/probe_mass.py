@@ -318,17 +318,89 @@ class GradProbe:
         print(f"[grad] wrote {path}: {len(self.steps)} measurement steps")
 
 
+class GainProbe:
+    """Magnitude-direction gains and spectral concentration of the bottleneck
+    projections over training.
+
+    Under ``decouple=True`` the gains are optimizer state, not model
+    parameters: per matrix the optimizer holds ``raw_grow`` / ``raw_gcol``
+    (softplus-raw, initialized so every gain is exactly 1) and the sphere
+    radius ``c_f``.  The direction is pinned at ``||W_hat||_F = c_f``, so a
+    growing score scale has to come either from the gains or from the
+    direction concentrating its fixed norm onto fewer singular directions --
+    this probe measures both.
+
+    No forward pass is needed, so the measurement cannot perturb the run at
+    all; it only reads parameters and optimizer state.
+    """
+
+    def __init__(self, cfg, every, stop_step):
+        self.cfg = cfg
+        self.every, self.stop_step = int(every), int(stop_step)
+        self.steps, self.rows = [], []
+
+    def __call__(self, step, model, bottleneck, optimizer):
+        if step > self.stop_step:
+            raise StopProbing
+        if step % self.every:
+            return
+        import torch.nn.functional as Fn
+
+        rec = []
+        for lbl, mod in bottleneck.layers:
+            per_mat = {}
+            for which, W in (("enc", mod.in_proj.weight),
+                             ("dec", mod.out_proj.weight)):
+                st = optimizer.state.get(W, {})
+                grow = (Fn.softplus(st["raw_grow"]) if "raw_grow" in st
+                        else torch.ones(W.shape[0], device=W.device))
+                gcol = (Fn.softplus(st["raw_gcol"]) if "raw_gcol" in st
+                        else torch.ones(W.shape[1], device=W.device))
+                with torch.no_grad():
+                    w_hat = W.detach().float()
+                    w_hat = w_hat / grow.float().unsqueeze(1)
+                    w_hat = w_hat / gcol.float().unsqueeze(0)
+                    fro_hat = float(w_hat.norm())
+                    smax = float(torch.linalg.matrix_norm(w_hat, ord=2))
+                    per_mat[which] = {
+                        "grow_mean": float(grow.mean()),
+                        "grow_max": float(grow.max()),
+                        "grow_min": float(grow.min()),
+                        "grow_p90": float(grow.float().quantile(0.9)),
+                        "gcol_mean": float(gcol.mean()),
+                        "gcol_max": float(gcol.max()),
+                        "fused_fro": float(W.detach().float().norm()),
+                        "dir_fro": fro_hat,
+                        "c_f": float(st["c_f"]) if "c_f" in st else fro_hat,
+                        "sigma_max": smax,
+                        "sigma_over_fro": smax / max(fro_hat, 1e-30),
+                    }
+            rec.append(per_mat)
+        self.steps.append(int(step))
+        self.rows.append(rec)
+        e = rec[4]["enc"]
+        print(f"[gain] step {step:>6}  enc(block4): grow mean {e['grow_mean']:.4f} "
+              f"max {e['grow_max']:.4f} | gcol mean {e['gcol_mean']:.4f} | "
+              f"fused ||W|| {e['fused_fro']:.1f} (c_F {e['c_f']:.1f}) | "
+              f"sigma_max/||W_hat|| {e['sigma_over_fro']:.4f}", flush=True)
+
+    def save(self, path, extra):
+        with open(path, "w") as f:
+            json.dump({"meta": extra, "steps": self.steps, "rows": self.rows}, f)
+        print(f"[gain] wrote {path}: {len(self.steps)} measurement steps")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("probe", "ckpt", "gradprobe"):
+    for name in ("probe", "ckpt", "gradprobe", "gainprobe"):
         s = sub.add_parser(name)
         s.add_argument("--out", required=True)
         s.add_argument("--positions", type=int, nargs="*", default=[0, 7, 23, 61])
         s.add_argument("--prof-layers", type=int, nargs="*", default=[4, 7])
         s.add_argument("--prof-tokens", type=int, nargs="*", default=[0, 7])
         s.add_argument("--data-dir", default="/workspace/data/tinystories")
-        if name in ("probe", "gradprobe"):
+        if name in ("probe", "gradprobe", "gainprobe"):
             s.add_argument("--run-config", required=True,
                            help="a run's dumped config.json")
             s.add_argument("--stop-step", type=int, default=2500)
@@ -337,7 +409,21 @@ def main() -> None:
             s.add_argument("--ckpt", action="append", required=True)
     args = ap.parse_args()
 
-    if args.cmd == "gradprobe":
+    if args.cmd == "gainprobe":
+        cfg = config_from_dict(json.load(open(args.run_config)))
+        cfg.data.data_dir = args.data_dir
+        cfg.train.resume = ""
+        cfg.train.run_name = "gain_probe_tmp"
+        cfg.train.checkpoint_every_steps = 10 ** 9
+        cfg.train.sample_every_steps = 0
+        cfg.train.tensorboard = False
+        probe = GainProbe(cfg, args.every, args.stop_step)
+        try:
+            train(cfg, on_step=probe)
+        except StopProbing:
+            print(f"[gain] stopped at {args.stop_step} as planned")
+        probe.save(args.out, {"mode_cmd": "gainprobe", "config": args.run_config})
+    elif args.cmd == "gradprobe":
         cfg = config_from_dict(json.load(open(args.run_config)))
         cfg.data.data_dir = args.data_dir
         cfg.train.resume = ""
