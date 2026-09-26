@@ -555,6 +555,34 @@ converged quality (MD's residual edge is 0.001–0.041 nats, 0.001–0.025 at
 42 runs MD never diverged in a configuration that `md_init` survived, and
 `md_init` lost six additional cells.
 
+### `rblapsum_sf`: the soft-forward variant (added 2026-09-26)
+
+`surrogate_mode: "rblapsum_sf"` shares rblapsum's Top(K+J) pool, rank boundary
+`b = max(b0, s_(K+1))`, temperature and servo, but the forward itself is
+`y_i = z_i * p_i` with `p_i = F((s_i - b)/T)` (Laplace CDF) over the whole
+pool -- features outside the pool output exactly 0.  The backward is the
+gradient of that forward.  Things an agent must know:
+
+- `rblapsum_boundary_grad_mode` now defaults **per mode** (`None` in the
+  dataclass): `detach` under `rblapsum`, `through_rank_kappa` under
+  `rblapsum_sf`.  Old dumped configs carry concrete strings, so nothing
+  changes when re-loading them.  `through_rank` at support scale 1 is the
+  *exact* autograd gradient of the sf forward (b IS the (K+1)-st score);
+  kappa redistributes the same total (tests: `tests/test_rblapsum_sf.py`).
+- `rblapsum_support_scale` changes meaning in sf: it scales ONLY the boundary
+  term (`g_s = a - scale * dist * sum(a)`), never the direct `z*kappa` path;
+  `0.0` reproduces `detach`, not a hard backward.
+- **Eval metrics**: `val/ce` is the HARD Top-K forward (via `hard_inference`,
+  default true), so it stays name-comparable with every other regime on the
+  same TB plot.  The soft forward actually trained is logged additionally as
+  `val_soft/ce` / `val_soft/ppl`.  Expect them to differ; early in training
+  soft < hard.
+- `L0`/`active_count` still reports the hard support (rank <= K and s > b0);
+  the pool's probability mass is the new `bottleneck/rb_soft_mass` diagnostic
+  (~K + tails).
+- The gradient reconstruction in `analysis/probe_mass.py` (gradprobe) encodes
+  the HARD rblapsum backward; extend it before probing sf runs.
+
 ### `rblapsum` boundary floor: the default changed
 
 `activation_bottleneck.rblapsum_boundary_floor` (`b0`) enters as
