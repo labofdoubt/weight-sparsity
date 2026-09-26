@@ -484,6 +484,24 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
             val = evaluate(model, val_stream, micro_bs, cfg.train.val_batches, device, dtype)
             metrics = {"val/ce": val["ce"], "val/ppl": val["ppl"]}
             line = f"step {step1:>6} | val ce {val['ce']:.4f} | val ppl {val['ppl']:.2f}"
+            if (bottleneck.enabled
+                    and cfg.activation_bottleneck.surrogate_mode == "rblapsum_sf"):
+                # val/ce above used the hard Top-K forward (hard_inference), so
+                # it stays name-comparable across regimes; this second pass
+                # evaluates the soft forward actually trained, z * p over the
+                # Top(K+J) pool.
+                gates = [mod.gate for _, mod in bottleneck.layers]
+                prior = [g.hard_inference for g in gates]
+                for g in gates:
+                    g.hard_inference = False
+                soft = evaluate(
+                    model, val_stream, micro_bs, cfg.train.val_batches, device, dtype
+                )
+                for g, h in zip(gates, prior):
+                    g.hard_inference = h
+                metrics["val_soft/ce"] = soft["ce"]
+                metrics["val_soft/ppl"] = soft["ppl"]
+                line += f" | soft ce {soft['ce']:.4f}"
             if controller.enabled and cfg.sparsity.eval_hard_mask:
                 with controller.hard_mask():
                     hard = evaluate(

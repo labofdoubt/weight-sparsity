@@ -47,7 +47,7 @@ from typing import Optional
 
 import torch
 
-from .lapsum import laplace_pdf
+from .lapsum import laplace_cdf, laplace_pdf
 
 GRAD_MODES = ("detach", "project", "through_rank", "through_rank_kappa")
 _MODE_ID = {"detach": 0, "project": 1, "through_rank": 2,
@@ -137,6 +137,115 @@ class _RBLapSumGate(torch.autograd.Function):
                     omag = gs.abs().mean()
                     sink["rb_boundary_grad_ratio"] = (bmag / (omag + eps)).detach()
         return (grad_value, None, None, None, None, None, None, None, None, None, None)
+
+
+class _RBLapSumSFGate(torch.autograd.Function):
+    """Soft forward ``y_c = value_c * p_c`` with ``p = F((s - b)/T)``.
+
+    The soft-forward (sf) sibling of :class:`_RBLapSumGate`: the SAME
+    Top(K+J) pool, rank boundary ``b = max(b0, s_(K+1))`` and exponential
+    kernel, but the probabilities are IN the forward -- every pool member
+    outputs ``z_i * p_i`` (features outside the pool output exactly 0) -- and
+    the backward is the gradient of that forward, no surrogate discrepancy.
+
+    Because ``F' = kappa``, the direct term of the score gradient is the
+    familiar ``a_i = upstream_i * z_i * kappa_i``: exactly the ``a`` of the
+    hard gate.  The modes differ only in how the boundary's own derivative is
+    routed, written uniformly as
+
+        g_s = a - supp_scale * dist * sum(a)
+
+    with ``dist`` = 0 (``detach``), uniform (``project``), a point mass on the
+    (K+1)-st position (``through_rank``), or ``kappa/sum(kappa)``
+    (``through_rank_kappa``); the correction applies only where the rank cap
+    binds (a floor boundary is a constant -- no derivative to route).
+    ``through_rank`` at ``supp_scale=1`` is the EXACT autograd gradient of the
+    forward, since ``b`` literally is the (K+1)-st score; the kappa mode
+    deposits the same total kappa-weighted, the same modification as in the
+    hard gate.  Unlike the hard gate -- where ``supp_scale`` multiplies the
+    whole surrogate ``g_s`` -- here it multiplies ONLY the boundary term:
+    the direct path is a true forward gradient, and 0.0 reproduces
+    ``detach`` rather than a hard-TopK backward.
+
+    The value path is the true one as well: ``dL/dz_i += upstream_i * p_i``,
+    so inactive pool members receive value gradient in proportion to their
+    probability.
+    """
+
+    @staticmethod
+    def forward(ctx, value_c, p_c, score_c, sign_c, b, t, mode_id, k,
+                cap_active, sink, supp_scale=1.0):  # type: ignore[override]
+        ctx.save_for_backward(value_c, p_c, score_c, sign_c, b, cap_active)
+        ctx.t = float(t)
+        ctx.mode_id = int(mode_id)
+        ctx.k = int(k)
+        ctx.sink = sink
+        ctx.supp_scale = float(supp_scale)
+        return value_c * p_c
+
+    @staticmethod
+    def backward(ctx, grad_y):  # type: ignore[override]
+        value_c, p_c, score_c, sign_c, b, cap_active = ctx.saved_tensors
+        t, mode_id, k = ctx.t, ctx.mode_id, ctx.k
+
+        # true value path of y = z * p:  dL/dz_i += upstream_i * p_i
+        grad_value = grad_y * p_c
+
+        # direct score term (dp/ds = kappa):  a = upstream * z * kappa
+        kappa = laplace_pdf((score_c - b) / t) / t
+        a = grad_y * value_c * kappa
+
+        g_s = a
+        if mode_id and ctx.supp_scale != 0.0:
+            total = a.sum(-1, keepdim=True) * ctx.supp_scale
+            if mode_id == 1:  # project: uniform distribution
+                corr = total / a.shape[-1]
+            elif mode_id == 2:  # through_rank: point mass on the (K+1)-st position
+                corr = torch.zeros_like(a)
+                corr[..., k:k + 1] = total
+            else:  # through_rank_kappa
+                q = kappa / kappa.sum(-1, keepdim=True).clamp_min(
+                    torch.finfo(kappa.dtype).tiny)
+                corr = q.to(a.dtype) * total
+            g_s = torch.where(cap_active, a - corr, a)
+
+        grad_value = grad_value + sign_c * g_s
+
+        sink = ctx.sink
+        if sink is not None:
+            with torch.no_grad():
+                gs = g_s.reshape(-1, g_s.shape[-1])
+                nrm = gs.norm(dim=-1)
+                eps = torch.finfo(gs.dtype).eps
+                sink["rb_support_grad_norm"] = nrm.mean().detach()
+                sink["rb_common_mode"] = (
+                    gs.sum(-1).abs() / (nrm + eps)
+                ).mean().detach()
+                ar = a.reshape(-1, a.shape[-1])
+                sink["rb_common_mode_raw"] = (
+                    ar.sum(-1).abs() / (ar.norm(dim=-1) + eps)
+                ).mean().detach()
+                win = (score_c - b).abs() < t
+                sink["rb_kick_win"] = (
+                    g_s.abs()[win].mean().detach() if bool(win.any())
+                    else torch.zeros((), device=g_s.device))
+        return (grad_value, None, None, None, None, None, None, None, None,
+                None, None)
+
+
+def rblapsum_sf_gate(value_c, p_c, score_c, sign_c, b, t, mode, k,
+                     cap_active, sink=None, supp_scale=1.0):
+    """Apply the soft-forward gate; see :class:`_RBLapSumSFGate`.
+
+    ``value_c`` carries gradient; ``p_c`` and the rest enter detached (the
+    backward routes the score/boundary derivatives explicitly).
+    ``supp_scale`` multiplies only the boundary term of the score gradient.
+    """
+    return _RBLapSumSFGate.apply(
+        value_c, p_c.detach(), score_c.detach(), sign_c.detach(), b.detach(),
+        float(t), _MODE_ID[mode], int(k), cap_active.detach(), sink,
+        float(supp_scale),
+    )
 
 
 def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,

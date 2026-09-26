@@ -587,11 +587,24 @@ class ActivationBottleneckConfig:
     # and recruitment below K is left entirely to the task gradient.
     jumprelu_count_one_sided: bool = False
 
-    # ---- rblapsum (surrogate_mode: rblapsum) -------------------------------- #
+    # ---- rblapsum (surrogate_mode: rblapsum | rblapsum_sf) ------------------ #
     # Rank-Boundary LapSum: LapSum's hard TopK forward, Top(K+J) candidates and
     # exponential local kernel, but the boundary is the HARD rank b=max(b0,
     # s_(K+1)) instead of the soft mass constraint sum p_i = K -- an upper cap
     # of K active features, not exactly K.  No target-count penalty.
+    #
+    # rblapsum_sf ("soft forward") keeps the same pool, boundary and kernel but
+    # puts the probabilities IN the forward: every Top(K+J) candidate outputs
+    # z_i * p_i with p_i = F((s_i - b)/T) (Laplace CDF), features outside the
+    # pool output exactly 0, and the backward is the gradient of that forward
+    # -- no train-time forward/backward discrepancy.  boundary_grad_mode picks
+    # how the boundary's own derivative is routed (through_rank at scale 1 is
+    # the exact autograd gradient, since b IS the (K+1)-st score; the kappa
+    # mode redistributes the same total kappa-weighted); rblapsum_support_scale
+    # scales ONLY that boundary term in this mode.  In eval the gate falls back
+    # to the hard Top-K forward while hard_inference=True (the default), so
+    # val/ce stays comparable across regimes; the soft-forward CE is logged
+    # separately as val_soft/ce.
     #   detach        independent local boundary gradients (default)
     #   project       + remove the common-mode score direction (cap-active only)
     #   through_rank  differentiate through the (K+1)-st score used as boundary
@@ -602,7 +615,11 @@ class ActivationBottleneckConfig:
     #   through_rank_kappa  the same zero-sum correction distributed
     #                 kappa-weighted -- LapSum's rank-one Jacobian form at the
     #                 rank boundary; removes the runaway (verified same-seed)
-    rblapsum_boundary_grad_mode: str = "detach"
+    # None -> mode-dependent default, resolved in __post_init__: "detach" for
+    # the hard-forward rblapsum (the original default), "through_rank_kappa"
+    # for rblapsum_sf (the soft forward's natural companion).  Set explicitly
+    # for the ablations.
+    rblapsum_boundary_grad_mode: Optional[str] = None
     # b0: a FIXED bottleneck-level activation floor (never data-dependent).  For
     # abs_topk, b0=0 makes almost every feature eligible, so L0 stays ~K; a
     # positive b0 is needed to get L0 < K on some tokens.  Strict s > b0.
@@ -613,7 +630,10 @@ class ActivationBottleneckConfig:
     # untouched, so 0.0 is exactly the hard-TopK backward and 1.0 is the
     # unmodified surrogate.  Previously an analysis-only attribute set by
     # analysis/scale_dynamics.py; as a config field it can be trained with.
-    # rblapsum modes only.
+    # Under rblapsum_sf the whole score gradient is a true forward gradient,
+    # so this scales ONLY the boundary term (- dist * sum(a)): 1.0 is the full
+    # boundary derivative, 0.0 reproduces boundary_grad_mode="detach" -- the
+    # direct z*kappa path is never scaled.  rblapsum modes only.
     rblapsum_support_scale: float = 1.0
 
     # An RMSNorm on each bottleneck's own output, inside the module (so it is
@@ -832,12 +852,12 @@ class ActivationBottleneckConfig:
             )
         if self.surrogate_mode not in (
             "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed", "swap_gibbs",
-            "jumprelu", "rblapsum", "reinforce_topk", "hard"
+            "jumprelu", "rblapsum", "rblapsum_sf", "reinforce_topk", "hard"
         ):
             raise ValueError(
                 f"unknown surrogate_mode: {self.surrogate_mode} "
                 "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed | swap_gibbs "
-                "| jumprelu | rblapsum | reinforce_topk | hard)"
+                "| jumprelu | rblapsum | rblapsum_sf | reinforce_topk | hard)"
             )
         from .bottleneck.swap import swap_log_rho
 
@@ -870,11 +890,17 @@ class ActivationBottleneckConfig:
         if self.rblapsum_boundary_floor is None:
             # concrete float in the dumped config
             self.rblapsum_boundary_floor = 0.0
-        if self.surrogate_mode == "rblapsum":
+        if self.rblapsum_boundary_grad_mode is None:
+            # concrete string in the dumped config; the sf default follows the
+            # measured hard-mode ranking (through_rank_kappa is the stable one)
+            self.rblapsum_boundary_grad_mode = (
+                "through_rank_kappa" if self.surrogate_mode == "rblapsum_sf"
+                else "detach")
+        if self.surrogate_mode in ("rblapsum", "rblapsum_sf"):
             if self.selection_mode not in ("topk", "abs_topk"):
                 raise ValueError(
-                    "surrogate_mode='rblapsum' requires selection_mode 'topk' or "
-                    "'abs_topk' (not gated_topk)"
+                    f"surrogate_mode={self.surrogate_mode!r} requires selection_mode "
+                    "'topk' or 'abs_topk' (not gated_topk)"
                 )
             if self.rblapsum_boundary_grad_mode not in (
                     "detach", "project", "through_rank", "through_rank_kappa"):
@@ -906,7 +932,7 @@ class ActivationBottleneckConfig:
             if self.inactive_grad_scale != 1.0:
                 raise ValueError(
                     "inactive_grad_scale is a LapSum-VJP knob and is not applied by "
-                    "surrogate_mode='rblapsum'; leave it at 1.0"
+                    f"surrogate_mode={self.surrogate_mode!r}; leave it at 1.0"
                 )
             if self.project_scale_gradient:
                 raise ValueError(

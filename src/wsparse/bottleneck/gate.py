@@ -30,9 +30,9 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 
-from .lapsum import lapsum_barrier_sorted, lapsum_budget, lapsum_probs
+from .lapsum import lapsum_barrier_sorted, lapsum_budget, lapsum_probs, laplace_cdf
 from .jumprelu import default_log_theta, jumprelu_count, jumprelu_forward
-from .rblapsum import GRAD_MODES, rblapsum_gate
+from .rblapsum import GRAD_MODES, rblapsum_gate, rblapsum_sf_gate
 from .reinforce import DISTRIBUTIONS as RF_DISTRIBUTIONS
 from .reinforce import sample_exact_k
 from .swap import swap_gibbs_mask, swap_log_rho, swap_weights
@@ -68,7 +68,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         jumprelu_count_coef: float = 0.0,
         jumprelu_theta_init=None,
         jumprelu_count_one_sided: bool = False,
-        rblapsum_boundary_grad_mode: str = "detach",
+        rblapsum_boundary_grad_mode: Optional[str] = None,
         rblapsum_boundary_floor=None,
         rblapsum_support_scale: float = 1.0,
         rblapsum_temperature: float = 1.0,
@@ -115,12 +115,12 @@ class AdaptiveLapSumTopKGate(nn.Module):
             )
         if surrogate_mode not in (
             "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed", "swap_gibbs",
-            "jumprelu", "rblapsum", "reinforce_topk", "hard"
+            "jumprelu", "rblapsum", "rblapsum_sf", "reinforce_topk", "hard"
         ):
             raise ValueError(
                 f"unknown surrogate_mode: {surrogate_mode!r} "
                 "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed | swap_gibbs "
-                "| jumprelu | rblapsum | reinforce_topk | hard)"
+                "| jumprelu | rblapsum | rblapsum_sf | reinforce_topk | hard)"
             )
         if temperature_scale_mode not in ("relative", "absolute"):
             raise ValueError(
@@ -181,7 +181,11 @@ class AdaptiveLapSumTopKGate(nn.Module):
                              dtype=torch.uint8),
             )
         self._count_sq = None
-        self.rblapsum_boundary_grad_mode = rblapsum_boundary_grad_mode
+        # None mirrors the config default: detach for the hard forward,
+        # through_rank_kappa for the soft forward (see ActivationBottleneckConfig)
+        self.rblapsum_boundary_grad_mode = (
+            ("through_rank_kappa" if surrogate_mode == "rblapsum_sf" else "detach")
+            if rblapsum_boundary_grad_mode is None else rblapsum_boundary_grad_mode)
         # None -> 0.0: no floor by default (config resolves this too, but a
         # directly-constructed gate should get the same default)
         self.rblapsum_boundary_floor = (
@@ -211,16 +215,16 @@ class AdaptiveLapSumTopKGate(nn.Module):
         # counterfactual branches, which is why it stays a plain attribute.
         self.rblapsum_support_scale = float(rblapsum_support_scale)
         self.rblapsum_view_scale = 1.0
-        if surrogate_mode == "rblapsum":
+        if surrogate_mode in ("rblapsum", "rblapsum_sf"):
             if selection_mode not in ("topk", "abs_topk"):
                 raise ValueError(
-                    "surrogate_mode='rblapsum' requires selection_mode "
+                    f"surrogate_mode={surrogate_mode!r} requires selection_mode "
                     "'topk' or 'abs_topk' (not gated_topk)"
                 )
-            if rblapsum_boundary_grad_mode not in GRAD_MODES:
+            if self.rblapsum_boundary_grad_mode not in GRAD_MODES:
                 raise ValueError(
                     f"unknown rblapsum_boundary_grad_mode: "
-                    f"{rblapsum_boundary_grad_mode!r} ({' | '.join(GRAD_MODES)})"
+                    f"{self.rblapsum_boundary_grad_mode!r} ({' | '.join(GRAD_MODES)})"
                 )
             if rblapsum_kernel != "exponential":
                 raise ValueError(
@@ -464,7 +468,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         if self.surrogate_mode == "jumprelu":
             return self._jumprelu(scores, value)
 
-        if self.surrogate_mode == "rblapsum":
+        if self.surrogate_mode in ("rblapsum", "rblapsum_sf"):
             return self._rblapsum(scores, value)
 
         if self.surrogate_mode == "reinforce_topk":
@@ -573,9 +577,23 @@ class AdaptiveLapSumTopKGate(nn.Module):
             self._rb_servo_update(score_c, b)
         t = float(self.rb_temp) if servo else self.rblapsum_temperature
         sink = self._grad_sink if self.log_diagnostics and self.training else None
-        y_c = rblapsum_gate(value_c, active_c, score_c, sign_c, b, t,
-                            self.rblapsum_boundary_grad_mode, self.k, cap_active, sink,
-                            supp_scale=float(self.rblapsum_support_scale))
+        # rblapsum_sf: the probabilities are IN the forward, y = z * p over the
+        # whole pool.  In eval, hard_inference=True (the default) falls back to
+        # the hard Top-K forward below, so the base validation metric measures
+        # the hardened model and stays name-comparable with the other regimes;
+        # flip hard_inference off around a second eval pass for the soft CE.
+        soft = (self.surrogate_mode == "rblapsum_sf"
+                and (self.training or not self.hard_inference))
+        if soft:
+            p_c = laplace_cdf((score_c - b) / t)
+            y_c = rblapsum_sf_gate(value_c, p_c, score_c, sign_c, b, t,
+                                   self.rblapsum_boundary_grad_mode, self.k,
+                                   cap_active, sink,
+                                   supp_scale=float(self.rblapsum_support_scale))
+        else:
+            y_c = rblapsum_gate(value_c, active_c, score_c, sign_c, b, t,
+                                self.rblapsum_boundary_grad_mode, self.k, cap_active, sink,
+                                supp_scale=float(self.rblapsum_support_scale))
         y = torch.zeros_like(value).scatter(-1, cand_idx, y_c.to(value.dtype))
         if alpha != 1.0:
             y = y / alpha
@@ -585,7 +603,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 mask_full = torch.zeros_like(scores).scatter(
                     -1, cand_idx, active_c.to(scores.dtype))
                 self._record_usage(mask_full)
-                self._record_rblapsum(active_c, cap_active, b_rank, b)
+                self._record_rblapsum(active_c, cap_active, b_rank, b,
+                                      p_c if soft else None)
         return y
 
     @torch.no_grad()
@@ -663,8 +682,15 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self._rb_servo_diag = diag
 
     @torch.no_grad()
-    def _record_rblapsum(self, active_c, cap_active, b_rank, b) -> None:
-        """Forward diagnostics for rblapsum (hard quantities only)."""
+    def _record_rblapsum(self, active_c, cap_active, b_rank, b,
+                         p_c=None) -> None:
+        """Forward diagnostics for rblapsum.
+
+        ``active_count`` stays the HARD support size (rank <= K and s > b0) in
+        every mode, so the L0 log line and its TB series remain comparable
+        across regimes; the sf forward's dense pool shows up as ``rb_soft_mass``
+        (mean over tokens of sum_i p_i) instead.
+        """
         d = {
             "active_count": active_c.sum(-1).mean(),
             "active_count_max": active_c.sum(-1).max(),
@@ -672,6 +698,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
             "rb_b_rank": b_rank.mean(),
             "rb_boundary": b.mean(),
         }
+        if p_c is not None:
+            d["rb_soft_mass"] = p_c.sum(-1).mean()
         if getattr(self, "_rb_servo_diag", None):
             d.update(self._rb_servo_diag)
         self._forward_diag = {key: value.detach() for key, value in d.items()}
