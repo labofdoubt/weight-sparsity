@@ -74,6 +74,12 @@ train:
   # micro 16 -> 414K tok/s; micro 64 OOMs even at 141 GB (the N=4096 codes
   # dominate activations).  Grad accumulation 64/32 = 2 is derived.
   micro_batch_size: 32
+  # Measured +37% on 8xH200 (614K vs 448K tok/s, ~4.5h vs 6.2h per 10B-token
+  # run), losses matching eager step-for-step at the probe.  Note the repo's
+  # documented compile-vs-eager bitwise-match failure for the topk gate: a
+  # compiled run is a numerically distinct trajectory, so the campaign runs
+  # EVERY arm compiled for internal consistency.
+  compile: true
   # 19,000 steps x 0.52M tokens ~ 10.0B tokens = one pass over sample-10BT
   max_steps: 19000
   lr: 3.0e-4
