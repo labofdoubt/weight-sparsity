@@ -2337,4 +2337,5 @@ def test_hard_mode_j0_diagnostics():
     y = g(torch.randn(5, 16))
     assert (y != 0).sum(-1).max() <= 4
     assert float(g._forward_diag["score_gap"]) == 0.0
-    assert float(g._forward_diag["score_span"]) > 0.0
+    # at j=0 the candidate list IS the support, so the span degenerates too
+    assert float(g._forward_diag["score_span"]) == 0.0
