@@ -19,8 +19,7 @@
 #   no bottleneck: --activation_bottleneck.enabled=false
 #
 # Deliberately undecided until the smoke run on the rented box:
-#   * micro_batch_size: 16 is the safe floor; try 32 (accum 2) and 64
-#     (accum 1) -- larger micro = better MFU, ~20 GB activations at 32.
+#   * micro_batch_size: settled by the smoke -- 32 (see train block).
 #   * lr: 3e-4 is the standard 350-760M-class value and NOT swept; optional
 #     3-point probe (2e-4 / 3e-4 / 4.5e-4, ~1.5B tokens each) before launch.
 #
@@ -71,7 +70,10 @@ train:
   dtype: bfloat16
   # PER-RANK: 64 seq x 1024 tok; x8 ranks = 524,288 tokens per optimizer step
   batch_size: 64
-  micro_batch_size: 16          # grad accum 64/16 = 4 derived; revisit in smoke
+  # Measured on 8xH200 (smoke, 2026-09-28): micro 32 -> 448K tok/s, ~65 GB/GPU;
+  # micro 16 -> 414K tok/s; micro 64 OOMs even at 141 GB (the N=4096 codes
+  # dominate activations).  Grad accumulation 64/32 = 2 is derived.
+  micro_batch_size: 32
   # 19,000 steps x 0.52M tokens ~ 10.0B tokens = one pass over sample-10BT
   max_steps: 19000
   lr: 3.0e-4
