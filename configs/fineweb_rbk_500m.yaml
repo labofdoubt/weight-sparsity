@@ -15,7 +15,9 @@
 # Arms:
 #   rblapsum kappa + post-norm (this file's defaults)   -- the model under test
 #   hard Top-K':   --activation_bottleneck.surrogate_mode=hard \
-#                  --activation_bottleneck.k=<K'> --activation_bottleneck.j=0
+#                  --activation_bottleneck.k=<K'> --activation_bottleneck.j=64
+#                  (j=64 is the hard-baseline convention of every earlier
+#                  campaign: identical forward, keeps the gap/span diagnostics)
 #   no bottleneck: --activation_bottleneck.enabled=false
 #
 # Deliberately undecided until the smoke run on the rented box:
