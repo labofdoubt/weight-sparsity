@@ -213,3 +213,80 @@ def test_config_rejects_gated_topk():
     with pytest.raises(ValueError, match="rblapsum_sf"):
         ActivationBottleneckConfig(enabled=True, surrogate_mode="rblapsum_sf",
                                    selection_mode="gated_topk")
+
+
+# --------------------------------------------------------------------------- #
+# value_grad="support": tail values do not train, ranking still does
+# --------------------------------------------------------------------------- #
+
+
+def make_gate_vg(vg, mode=None, b0=0.0, T=1.0, k=3, j=4, n=16, supp=1.0):
+    return AdaptiveLapSumTopKGate(
+        n_features=n, k=k, j=j, n_eff=3.0, selection_mode="abs_topk",
+        surrogate_mode="rblapsum_sf", rblapsum_boundary_grad_mode=mode,
+        rblapsum_boundary_floor=b0, rblapsum_temperature=T,
+        rblapsum_support_scale=supp, rblapsum_sf_value_grad=vg,
+        log_diagnostics=True)
+
+
+def test_support_masks_exactly_the_tail_value_path():
+    torch.manual_seed(8)
+    a = torch.randn(8, 16, dtype=torch.float64)
+    up = torch.randn(8, 16, dtype=torch.float64)
+    g_pool = make_gate_vg("pool"); g_pool.train()
+    g_sup = make_gate_vg("support"); g_sup.train()
+    # identical forward
+    with torch.no_grad():
+        assert torch.equal(g_pool(a), g_sup(a))
+    d_pool = grad_of(g_pool, a, up)
+    d_sup = grad_of(g_sup, a, up)
+    # the difference is u * p on the inactive candidates, exactly
+    scores = a.abs()
+    cs, ci = torch.topk(scores, g_pool.m, dim=-1, largest=True, sorted=True)
+    b = cs[..., g_pool.k:g_pool.k + 1].clamp(min=0.0)
+    p = laplace_cdf((cs - b) / g_pool.rblapsum_temperature)
+    active = torch.zeros_like(cs)
+    active[..., :g_pool.k] = 1.0
+    want = torch.zeros_like(a).scatter(
+        -1, ci, torch.gather(up, -1, ci) * p * (1 - active))
+    assert torch.allclose(d_pool - d_sup, want, atol=1e-12)
+    # actives bit-identical between the two modes
+    act_idx = ci[..., :g_pool.k]
+    assert torch.equal(torch.gather(d_pool, -1, act_idx),
+                       torch.gather(d_sup, -1, act_idx))
+    # the tail still receives its score-path gradient (nonzero in general)
+    tail_idx = ci[..., g_pool.k:]
+    assert torch.gather(d_sup, -1, tail_idx).abs().sum() > 0
+
+
+def test_support_tail_gradient_is_score_path_only():
+    # with the boundary term off (supp=0, detach) the tail gradient under
+    # "support" must equal sign(z) * u * z * kappa -- the direct score term
+    torch.manual_seed(9)
+    a = torch.randn(6, 16, dtype=torch.float64)
+    up = torch.randn(6, 16, dtype=torch.float64)
+    g = make_gate_vg("support", mode="detach", supp=0.0); g.train()
+    dz = grad_of(g, a, up)
+    scores = a.abs()
+    cs, ci = torch.topk(scores, g.m, dim=-1, largest=True, sorted=True)
+    b = cs[..., g.k:g.k + 1].clamp(min=0.0)
+    kap = laplace_pdf((cs - b) / 1.0) / 1.0
+    z_c = torch.gather(a, -1, ci)
+    u_c = torch.gather(up, -1, ci)
+    want_tail = (z_c.sign() * u_c * z_c * kap)[..., g.k:]
+    got_tail = torch.gather(dz, -1, ci[..., g.k:])
+    assert torch.allclose(got_tail, want_tail, atol=1e-12)
+
+
+def test_value_grad_config_validation():
+    ActivationBottleneckConfig(enabled=True, surrogate_mode="rblapsum_sf",
+                               selection_mode="abs_topk",
+                               rblapsum_sf_value_grad="support")
+    with pytest.raises(ValueError, match="pool | support"):
+        ActivationBottleneckConfig(enabled=True, surrogate_mode="rblapsum_sf",
+                                   selection_mode="abs_topk",
+                                   rblapsum_sf_value_grad="tail")
+    with pytest.raises(ValueError, match="soft-forward knob"):
+        ActivationBottleneckConfig(enabled=True, surrogate_mode="rblapsum",
+                                   selection_mode="abs_topk",
+                                   rblapsum_sf_value_grad="support")

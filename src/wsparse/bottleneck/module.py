@@ -116,6 +116,7 @@ class SparseTopKBottleneck(nn.Module):
             rblapsum_t_max=cfg.rblapsum_t_max,
             rblapsum_servo_rate=cfg.rblapsum_servo_rate,
             rblapsum_kernel=cfg.rblapsum_kernel,
+            rblapsum_sf_value_grad=getattr(cfg, "rblapsum_sf_value_grad", "pool"),
             reinforce_distribution=cfg.reinforce_distribution,
             reinforce_temperature=cfg.reinforce_temperature,
             reinforce_stochastic_eval=cfg.reinforce_stochastic_eval,

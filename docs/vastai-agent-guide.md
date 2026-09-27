@@ -582,6 +582,11 @@ gradient of that forward.  Things an agent must know:
   (~K + tails).
 - The gradient reconstruction in `analysis/probe_mass.py` (gradprobe) encodes
   the HARD rblapsum backward; extend it before probing sf runs.
+- `rblapsum_sf_value_grad` (added 2026-09-27): `"pool"` (default, the true
+  gradient -- every candidate's value trains as u*p) or `"support"` (the J
+  inactive candidates receive only the score-path term: ranking trains,
+  content does not; actives keep u*p, forward unchanged).  sf-only; any other
+  mode rejects a non-default value.
 
 ### `rblapsum` boundary floor: the default changed
 

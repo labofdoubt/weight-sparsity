@@ -636,6 +636,15 @@ class ActivationBottleneckConfig:
     # direct z*kappa path is never scaled.  rblapsum modes only.
     rblapsum_support_scale: float = 1.0
 
+    # rblapsum_sf only: which candidates' VALUES train.  "pool" (default) is
+    # the gradient of the soft forward -- every Top(K+J) member gets the value
+    # path u * p_i.  "support" masks the value path to the hard support: the J
+    # inactive candidates receive only the score-path (support-change) term,
+    # so their ranking still trains but their content does not.  The forward
+    # is unchanged, so "support" deliberately reintroduces a forward/backward
+    # discrepancy on the tail; active features keep u * p (not u * 1).
+    rblapsum_sf_value_grad: str = "pool"
+
     # An RMSNorm on each bottleneck's own output, inside the module (so it is
     # part of the bottleneck's state_dict and the gate hooks are unaffected).
     # Motivation: under a stream placement the bottleneck's output scale
@@ -908,6 +917,18 @@ class ActivationBottleneckConfig:
                     "rblapsum_boundary_grad_mode must be detach | project | "
                     "through_rank | through_rank_kappa, "
                     f"got {self.rblapsum_boundary_grad_mode!r}"
+                )
+            if self.rblapsum_sf_value_grad not in ("pool", "support"):
+                raise ValueError(
+                    "rblapsum_sf_value_grad must be pool | support, "
+                    f"got {self.rblapsum_sf_value_grad!r}"
+                )
+            if (self.rblapsum_sf_value_grad != "pool"
+                    and self.surrogate_mode != "rblapsum_sf"):
+                raise ValueError(
+                    "rblapsum_sf_value_grad is a soft-forward knob and is not "
+                    f"applied by surrogate_mode={self.surrogate_mode!r}; "
+                    "leave it at 'pool'"
                 )
             if self.rblapsum_kernel != "exponential":
                 raise ValueError("rblapsum_kernel: only 'exponential' is implemented")

@@ -167,29 +167,41 @@ class _RBLapSumSFGate(torch.autograd.Function):
     the direct path is a true forward gradient, and 0.0 reproduces
     ``detach`` rather than a hard-TopK backward.
 
-    The value path is the true one as well: ``dL/dz_i += upstream_i * p_i``,
+    The value path is the true one by default: ``dL/dz_i += upstream_i * p_i``,
     so inactive pool members receive value gradient in proportion to their
-    probability.
+    probability.  ``value_grad_id=1`` (``"support"``) masks that path to the
+    hard support: the J inactive candidates then receive ONLY the score-path
+    term -- their values are no longer trained, while their ranking still is.
+    The forward is unchanged, so this deliberately reintroduces a
+    forward/backward discrepancy on the tail; active features keep the sf
+    value gradient ``u * p`` (not the hard gate's ``u * 1``).
     """
 
     @staticmethod
-    def forward(ctx, value_c, p_c, score_c, sign_c, b, t, mode_id, k,
-                cap_active, sink, supp_scale=1.0):  # type: ignore[override]
-        ctx.save_for_backward(value_c, p_c, score_c, sign_c, b, cap_active)
+    def forward(ctx, value_c, p_c, active_c, score_c, sign_c, b, t, mode_id,
+                k, cap_active, sink, supp_scale=1.0,
+                value_grad_id=0):  # type: ignore[override]
+        ctx.save_for_backward(value_c, p_c, active_c, score_c, sign_c, b,
+                              cap_active)
         ctx.t = float(t)
         ctx.mode_id = int(mode_id)
         ctx.k = int(k)
         ctx.sink = sink
         ctx.supp_scale = float(supp_scale)
+        ctx.value_grad_id = int(value_grad_id)
         return value_c * p_c
 
     @staticmethod
     def backward(ctx, grad_y):  # type: ignore[override]
-        value_c, p_c, score_c, sign_c, b, cap_active = ctx.saved_tensors
+        (value_c, p_c, active_c, score_c, sign_c, b,
+         cap_active) = ctx.saved_tensors
         t, mode_id, k = ctx.t, ctx.mode_id, ctx.k
 
-        # true value path of y = z * p:  dL/dz_i += upstream_i * p_i
+        # value path of y = z * p:  dL/dz_i += upstream_i * p_i, masked to the
+        # hard support under value_grad_id=1 ("support")
         grad_value = grad_y * p_c
+        if ctx.value_grad_id == 1:
+            grad_value = grad_value * active_c
 
         # direct score term (dp/ds = kappa):  a = upstream * z * kappa
         kappa = laplace_pdf((score_c - b) / t) / t
@@ -230,21 +242,30 @@ class _RBLapSumSFGate(torch.autograd.Function):
                     g_s.abs()[win].mean().detach() if bool(win.any())
                     else torch.zeros((), device=g_s.device))
         return (grad_value, None, None, None, None, None, None, None, None,
-                None, None)
+                None, None, None, None)
 
 
-def rblapsum_sf_gate(value_c, p_c, score_c, sign_c, b, t, mode, k,
-                     cap_active, sink=None, supp_scale=1.0):
+VALUE_GRAD_MODES = ("pool", "support")
+_VALUE_GRAD_ID = {"pool": 0, "support": 1}
+
+
+def rblapsum_sf_gate(value_c, p_c, active_c, score_c, sign_c, b, t, mode, k,
+                     cap_active, sink=None, supp_scale=1.0,
+                     value_grad="pool"):
     """Apply the soft-forward gate; see :class:`_RBLapSumSFGate`.
 
     ``value_c`` carries gradient; ``p_c`` and the rest enter detached (the
     backward routes the score/boundary derivatives explicitly).
     ``supp_scale`` multiplies only the boundary term of the score gradient.
+    ``value_grad`` is "pool" (every candidate's value trains, the gradient of
+    the forward) or "support" (the J inactive candidates receive only the
+    score-path term).
     """
     return _RBLapSumSFGate.apply(
-        value_c, p_c.detach(), score_c.detach(), sign_c.detach(), b.detach(),
-        float(t), _MODE_ID[mode], int(k), cap_active.detach(), sink,
-        float(supp_scale),
+        value_c, p_c.detach(), active_c.detach(), score_c.detach(),
+        sign_c.detach(), b.detach(), float(t), _MODE_ID[mode], int(k),
+        cap_active.detach(), sink, float(supp_scale),
+        _VALUE_GRAD_ID[value_grad],
     )
 
 

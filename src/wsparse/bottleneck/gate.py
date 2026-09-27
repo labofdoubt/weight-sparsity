@@ -32,7 +32,7 @@ import torch.nn as nn
 
 from .lapsum import lapsum_barrier_sorted, lapsum_budget, lapsum_probs, laplace_cdf
 from .jumprelu import default_log_theta, jumprelu_count, jumprelu_forward
-from .rblapsum import GRAD_MODES, rblapsum_gate, rblapsum_sf_gate
+from .rblapsum import GRAD_MODES, VALUE_GRAD_MODES, rblapsum_gate, rblapsum_sf_gate
 from .reinforce import DISTRIBUTIONS as RF_DISTRIBUTIONS
 from .reinforce import sample_exact_k
 from .swap import swap_gibbs_mask, swap_log_rho, swap_weights
@@ -79,6 +79,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         rblapsum_t_min: float = 0.25,
         rblapsum_t_max: float = 8.0,
         rblapsum_servo_rate: float = 0.02,
+        rblapsum_sf_value_grad: str = "pool",
         reinforce_distribution: str = "gumbel_pl",
         reinforce_temperature: float = 1.0,
         reinforce_stochastic_eval: bool = False,
@@ -199,6 +200,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self.rblapsum_t_min = float(rblapsum_t_min)
         self.rblapsum_t_max = float(rblapsum_t_max)
         self.rblapsum_servo_rate = float(rblapsum_servo_rate)
+        self.rblapsum_sf_value_grad = rblapsum_sf_value_grad
         # Experiment-only knobs, set programmatically (analysis/scale_dynamics.py),
         # deliberately not config fields.  support_scale multiplies the surrogate
         # support gradient g_s in the backward (0 = pure hard task path).
@@ -233,6 +235,17 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 )
             if self.rblapsum_temperature <= 0:
                 raise ValueError("rblapsum_temperature must be positive")
+            if rblapsum_sf_value_grad not in VALUE_GRAD_MODES:
+                raise ValueError(
+                    f"unknown rblapsum_sf_value_grad: {rblapsum_sf_value_grad!r} "
+                    f"({' | '.join(VALUE_GRAD_MODES)})"
+                )
+            if (rblapsum_sf_value_grad != "pool"
+                    and surrogate_mode != "rblapsum_sf"):
+                raise ValueError(
+                    "rblapsum_sf_value_grad is a soft-forward knob and is not "
+                    f"applied by surrogate_mode={surrogate_mode!r}; leave it at 'pool'"
+                )
             if rblapsum_temperature_mode not in ("fixed", "servo"):
                 raise ValueError(
                     f"rblapsum_temperature_mode must be fixed | servo, "
@@ -586,10 +599,11 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 and (self.training or not self.hard_inference))
         if soft:
             p_c = laplace_cdf((score_c - b) / t)
-            y_c = rblapsum_sf_gate(value_c, p_c, score_c, sign_c, b, t,
-                                   self.rblapsum_boundary_grad_mode, self.k,
-                                   cap_active, sink,
-                                   supp_scale=float(self.rblapsum_support_scale))
+            y_c = rblapsum_sf_gate(value_c, p_c, active_c, score_c, sign_c,
+                                   b, t, self.rblapsum_boundary_grad_mode,
+                                   self.k, cap_active, sink,
+                                   supp_scale=float(self.rblapsum_support_scale),
+                                   value_grad=self.rblapsum_sf_value_grad)
         else:
             y_c = rblapsum_gate(value_c, active_c, score_c, sign_c, b, t,
                                 self.rblapsum_boundary_grad_mode, self.k, cap_active, sink,
