@@ -588,6 +588,17 @@ gradient of that forward.  Things an agent must know:
   content does not; actives keep u*p, forward unchanged).  sf-only; any other
   mode rejects a non-default value.
 
+### `rblapsum_rho_random_perm_prob_grad`: the permutation ablation (added 2026-09-27)
+
+Hard-forward `rblapsum` only.  Each training backward, per (token, block) row,
+a rho fraction of the Top(K+J) pool has its dL/dp_i = u_i z_i values shuffled
+(uniform subset, uniform permutation, fresh every step) BEFORE the kernel
+weighting -- positions keep their own kappa, the zero-sum correction applies to
+the permuted signal, the hard task path is untouched, eval unaffected.  A
+matched-marginals control for whether the ASSIGNMENT of surrogate signal to
+neuron matters: 0.0 is bitwise the unmodified backward, 1.0 permutes the whole
+pool.  Rejected under every other surrogate mode.
+
 ### `rblapsum` boundary floor: the default changed
 
 `activation_bottleneck.rblapsum_boundary_floor` (`b0`) enters as

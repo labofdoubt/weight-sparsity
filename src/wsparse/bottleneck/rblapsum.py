@@ -50,6 +50,30 @@ import torch
 from .lapsum import laplace_cdf, laplace_pdf
 
 GRAD_MODES = ("detach", "project", "through_rank", "through_rank_kappa")
+
+
+def permute_fraction(x: torch.Tensor, rho: float) -> torch.Tensor:
+    """Randomly permute a ``rho`` fraction of each row's values, per row.
+
+    For every row (token/block) independently: sample ``round(rho * q)``
+    positions uniformly without replacement, and shuffle the VALUES at those
+    positions by a uniform random permutation of the subset (fixed points
+    allowed, as in any uniform permutation).  The multiset of values per row
+    is preserved exactly; only the assignment moves.  Fresh randomness every
+    call, torch's device RNG.  ``rho=0`` and subsets smaller than 2 return
+    the input unchanged.
+    """
+    q = x.shape[-1]
+    n_sel = int(round(rho * q))
+    if n_sel < 2:
+        return x
+    rows = x.reshape(-1, q)
+    sel = torch.rand_like(rows).argsort(-1)[:, :n_sel]        # random subset
+    shuf = torch.rand(rows.shape[0], n_sel, device=x.device).argsort(-1)
+    src = sel.gather(1, shuf)                                  # permuted subset
+    out = rows.clone()
+    out.scatter_(1, sel, rows.gather(1, src))
+    return out.reshape(x.shape)
 _MODE_ID = {"detach": 0, "project": 1, "through_rank": 2,
             "through_rank_kappa": 3}
 
@@ -66,13 +90,15 @@ class _RBLapSumGate(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, value_c, active_c, score_c, sign_c, b, t, mode_id, k,
-                cap_active, sink, supp_scale=1.0):  # type: ignore[override]
+                cap_active, sink, supp_scale=1.0,
+                perm_rho=0.0):  # type: ignore[override]
         ctx.save_for_backward(value_c, active_c, score_c, sign_c, b, cap_active)
         ctx.t = float(t)
         ctx.mode_id = int(mode_id)
         ctx.k = int(k)
         ctx.sink = sink
         ctx.supp_scale = float(supp_scale)
+        ctx.perm_rho = float(perm_rho)
         return value_c * active_c
 
     @staticmethod
@@ -83,9 +109,21 @@ class _RBLapSumGate(torch.autograd.Function):
         # ordinary hard-forward path: dL/dz_i += upstream_i * m_i, unmodified
         grad_value = grad_y * active_c
 
-        # raw support gradient in score-margin space:  a = upstream * z * kappa
+        # the surrogate signal dL/dp_i = upstream_i * z_i.  The permutation
+        # ablation scrambles a rho fraction of it WITHIN each row's pool,
+        # BEFORE the kernel weighting: each position keeps its own kappa (its
+        # distance to the boundary), so the surrogate's scale profile, kernel
+        # locality and zero-sum structure are preserved and only the
+        # assignment of task signal to neuron is destroyed.  The hard task
+        # path above is exact and is never permuted.  rho=0 is a no-op on the
+        # exact code path of the original backward.
+        g_p = grad_y * value_c
+        if ctx.perm_rho > 0.0:
+            g_p = permute_fraction(g_p, ctx.perm_rho)
+
+        # raw support gradient in score-margin space:  a = dL/dp * kappa
         kappa = laplace_pdf((score_c - b) / t) / t
-        a = grad_y * value_c * kappa
+        a = g_p * kappa
         a_raw = a
 
         if mode_id == 1:  # project: remove the common-mode direction where cap binds
@@ -136,7 +174,8 @@ class _RBLapSumGate(torch.autograd.Function):
                     bmag = gs[:, k].abs().mean()
                     omag = gs.abs().mean()
                     sink["rb_boundary_grad_ratio"] = (bmag / (omag + eps)).detach()
-        return (grad_value, None, None, None, None, None, None, None, None, None, None)
+        return (grad_value, None, None, None, None, None, None, None, None, None,
+                None, None)
 
 
 class _RBLapSumSFGate(torch.autograd.Function):
@@ -270,7 +309,7 @@ def rblapsum_sf_gate(value_c, p_c, active_c, score_c, sign_c, b, t, mode, k,
 
 
 def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
-                  cap_active, sink=None, supp_scale=1.0):
+                  cap_active, sink=None, supp_scale=1.0, perm_rho=0.0):
     """Apply the rank-boundary support gate; see :class:`_RBLapSumGate`.
 
     ``value_c`` (signed z at the sorted Top(K+J) candidates) carries gradient;
@@ -282,5 +321,5 @@ def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
     return _RBLapSumGate.apply(
         value_c, active_c, score_c.detach(), sign_c.detach(), b.detach(),
         float(t), _MODE_ID[mode], int(k), cap_active.detach(), sink,
-        float(supp_scale),
+        float(supp_scale), float(perm_rho),
     )

@@ -636,6 +636,19 @@ class ActivationBottleneckConfig:
     # direct z*kappa path is never scaled.  rblapsum modes only.
     rblapsum_support_scale: float = 1.0
 
+    # Permutation ablation of the surrogate signal (surrogate_mode: rblapsum
+    # only).  Each training backward, for every (token, block) row
+    # independently, a rho fraction of the Top(K+J) pool is sampled and the
+    # dL/dp_i = u_i z_i values AT those positions are shuffled by a uniform
+    # random permutation of the subset -- BEFORE the kernel weighting, so each
+    # position keeps its own kappa and the zero-sum correction is applied to
+    # the permuted signal.  Preserves the surrogate's scale profile, kernel
+    # locality, zero-sum structure and the per-row multiset of signal values;
+    # destroys only the assignment of signal to neuron.  The hard task path
+    # is never permuted.  0.0 (default) is exactly the unmodified backward;
+    # 1.0 permutes the whole pool.  Training only; eval is unaffected.
+    rblapsum_rho_random_perm_prob_grad: float = 0.0
+
     # rblapsum_sf only: which candidates' VALUES train.  "pool" (default) is
     # the gradient of the soft forward -- every Top(K+J) member gets the value
     # path u * p_i.  "support" masks the value path to the hard support: the J
@@ -918,6 +931,16 @@ class ActivationBottleneckConfig:
                     "through_rank | through_rank_kappa, "
                     f"got {self.rblapsum_boundary_grad_mode!r}"
                 )
+            if not 0.0 <= self.rblapsum_rho_random_perm_prob_grad <= 1.0:
+                raise ValueError(
+                    "rblapsum_rho_random_perm_prob_grad must be in [0, 1], "
+                    f"got {self.rblapsum_rho_random_perm_prob_grad!r}")
+            if (self.rblapsum_rho_random_perm_prob_grad != 0.0
+                    and self.surrogate_mode != "rblapsum"):
+                raise ValueError(
+                    "rblapsum_rho_random_perm_prob_grad is implemented for "
+                    "surrogate_mode='rblapsum' only; leave it at 0.0 under "
+                    f"{self.surrogate_mode!r}")
             if self.rblapsum_sf_value_grad not in ("pool", "support"):
                 raise ValueError(
                     "rblapsum_sf_value_grad must be pool | support, "

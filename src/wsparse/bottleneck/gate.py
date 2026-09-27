@@ -80,6 +80,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         rblapsum_t_max: float = 8.0,
         rblapsum_servo_rate: float = 0.02,
         rblapsum_sf_value_grad: str = "pool",
+        rblapsum_rho_random_perm_prob_grad: float = 0.0,
         reinforce_distribution: str = "gumbel_pl",
         reinforce_temperature: float = 1.0,
         reinforce_stochastic_eval: bool = False,
@@ -201,6 +202,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self.rblapsum_t_max = float(rblapsum_t_max)
         self.rblapsum_servo_rate = float(rblapsum_servo_rate)
         self.rblapsum_sf_value_grad = rblapsum_sf_value_grad
+        self.rblapsum_rho_random_perm_prob_grad = float(
+            rblapsum_rho_random_perm_prob_grad)
         # Experiment-only knobs, set programmatically (analysis/scale_dynamics.py),
         # deliberately not config fields.  support_scale multiplies the surrogate
         # support gradient g_s in the backward (0 = pure hard task path).
@@ -235,6 +238,16 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 )
             if self.rblapsum_temperature <= 0:
                 raise ValueError("rblapsum_temperature must be positive")
+            if not 0.0 <= float(rblapsum_rho_random_perm_prob_grad) <= 1.0:
+                raise ValueError(
+                    "rblapsum_rho_random_perm_prob_grad must be in [0, 1], "
+                    f"got {rblapsum_rho_random_perm_prob_grad!r}")
+            if (float(rblapsum_rho_random_perm_prob_grad) != 0.0
+                    and surrogate_mode != "rblapsum"):
+                raise ValueError(
+                    "rblapsum_rho_random_perm_prob_grad is implemented for the "
+                    "hard-forward surrogate_mode='rblapsum' only; leave it at 0.0 "
+                    f"under {surrogate_mode!r}")
             if rblapsum_sf_value_grad not in VALUE_GRAD_MODES:
                 raise ValueError(
                     f"unknown rblapsum_sf_value_grad: {rblapsum_sf_value_grad!r} "
@@ -607,7 +620,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
         else:
             y_c = rblapsum_gate(value_c, active_c, score_c, sign_c, b, t,
                                 self.rblapsum_boundary_grad_mode, self.k, cap_active, sink,
-                                supp_scale=float(self.rblapsum_support_scale))
+                                supp_scale=float(self.rblapsum_support_scale),
+                                perm_rho=(self.rblapsum_rho_random_perm_prob_grad
+                                          if self.training else 0.0))
         y = torch.zeros_like(value).scatter(-1, cand_idx, y_c.to(value.dtype))
         if alpha != 1.0:
             y = y / alpha
