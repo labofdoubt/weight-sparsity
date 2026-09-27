@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import builtins
 import glob
 import json
 import math
@@ -14,6 +15,7 @@ import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 
 from .config import Config, config_from_dict, load_config
@@ -28,6 +30,29 @@ from .utils import Logger, autocast_context, human, resolve_device, resolve_dtyp
 # --------------------------------------------------------------------------- #
 # evaluation
 # --------------------------------------------------------------------------- #
+
+
+def ddp_env() -> Tuple[int, int, int]:
+    """``(world_size, rank, local_rank)`` from torchrun's environment.
+
+    ``(1, 0, 0)`` when launched as a plain process, so every caller can treat
+    the single-GPU path as world size 1 rather than as a special case.
+    """
+    return (int(os.environ.get("WORLD_SIZE", "1")),
+            int(os.environ.get("RANK", "0")),
+            int(os.environ.get("LOCAL_RANK", "0")))
+
+
+def unwrap_model(model):
+    """Peel ``torch.compile`` and DDP wrappers to the plain module."""
+    m = model
+    while True:
+        if hasattr(m, "_orig_mod"):
+            m = m._orig_mod
+        elif isinstance(m, torch.nn.parallel.DistributedDataParallel):
+            m = m.module
+        else:
+            return m
 
 
 @torch.no_grad()
@@ -106,13 +131,43 @@ def load_for_inference(path: str, device: str = "cpu") -> Tuple[torch.nn.Module,
 # --------------------------------------------------------------------------- #
 
 
-def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[str, float]:
+def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
+          should_stop: Optional[Callable[[], Optional[str]]] = None) -> Dict[str, float]:
     """Train ``cfg``.  ``on_step(step, model, bottleneck, optimizer)``, when given,
     is called at the top of every optimizer step -- before the gradients for that
     step are accumulated -- so a caller can measure the model mid-training without
     holding checkpoints.  See ``interpretability/probe_early_training.py``.
+
+    ``should_stop()``, when given, is polled once per optimizer step (after
+    logging/eval/checkpointing) and a non-None reason ends the run cleanly:
+    the loop breaks on EVERY rank in the same step -- the flag is all-reduced
+    under DDP, which an exception could never be -- and the summary records
+    the reason.  This is how scripts/train_guard.py stops diverged runs.
     """
-    set_seed(cfg.train.seed)
+    # ---- distributed context (torchrun) ---------------------------------- #
+    # One process per GPU under `torchrun --nproc_per_node=N`; plain single-
+    # process launches see world == 1 and none of the branches below fire.
+    # Per-rank state is deliberate where it exists: the data stream RNG is
+    # offset by rank (each rank sees different batches), gate buffers such as
+    # usage_ema and the temperature servo evolve per rank
+    # (broadcast_buffers=False), and everything user-visible -- logging,
+    # validation, checkpoints, samples, the dumped config -- is rank 0 only.
+    world, rank, local_rank = ddp_env()
+    is_main = rank == 0
+    ddp_initialized_here = False
+    if world > 1 and not dist.is_initialized():
+        dist.init_process_group("nccl" if torch.cuda.is_available() else "gloo")
+        ddp_initialized_here = True
+    if world > 1 and torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+        cfg.train.device = f"cuda:{local_rank}"
+    if not is_main:
+        # local shadow: silences every print in this function on ranks > 0
+        print = lambda *a, **k: None  # noqa: E731
+    else:
+        print = builtins.print
+
+    set_seed(cfg.train.seed)  # identical across ranks: model init must agree
     device = resolve_device(cfg.train.device)
     dtype = resolve_dtype(cfg.train.dtype, device)
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -120,7 +175,11 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
 
     meta = load_meta(cfg.data.data_dir)
     cfg.model.vocab_size = int(meta["vocab_size"])
-    train_stream, val_stream = build_streams(cfg.data, seed=cfg.train.seed)
+    # rank-offset stream seed: each rank draws its own training batches; the
+    # validation stream is read with deterministic offsets on rank 0 only, so
+    # its RNG never matters.
+    train_stream, val_stream = build_streams(
+        cfg.data, seed=cfg.train.seed + 7919 * rank)
 
     model = build_model(cfg.model).to(device)
     controller = apply_sparsity(model, cfg.sparsity, max_steps=cfg.train.max_steps)
@@ -191,15 +250,25 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
     mask_clip = cfg.train.grad_clip if mask_clip is None else float(mask_clip)
 
     run_dir = os.path.join(cfg.train.out_dir, cfg.train.run_name)
-    logger = Logger(
-        cfg.train.out_dir,
-        cfg.train.run_name,
-        config=cfg.to_dict(),
-        wandb_project=cfg.train.wandb_project,
-        wandb_entity=cfg.train.wandb_entity,
-        tensorboard=cfg.train.tensorboard,
-    )
-    cfg.dump(os.path.join(run_dir, "config.yaml"))
+    if is_main:
+        logger = Logger(
+            cfg.train.out_dir,
+            cfg.train.run_name,
+            config=cfg.to_dict(),
+            wandb_project=cfg.train.wandb_project,
+            wandb_entity=cfg.train.wandb_entity,
+            tensorboard=cfg.train.tensorboard,
+        )
+        cfg.dump(os.path.join(run_dir, "config.yaml"))
+    else:
+        class _NullLogger:
+            def log(self, *a, **k): pass
+            def log_text(self, *a, **k): pass
+            def log_figure(self, *a, **k): pass
+            def close(self): pass
+        logger = _NullLogger()
+    if world > 1:
+        dist.barrier()  # run_dir and config exist before anyone proceeds
 
     start_step = 0
     resume_path = cfg.train.resume
@@ -213,19 +282,33 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
         start_step = int(payload["step"])
         print(f"[train] resumed from {resume_path} at step {start_step}")
 
+    if world > 1:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[local_rank] if device.type == "cuda" else None,
+            # buffers stay per-rank: usage_ema, servo state and the forward
+            # diagnostics are rank-local by design (initial construction
+            # already synced parameters and buffers from rank 0)
+            broadcast_buffers=False,
+            gradient_as_bucket_view=True,
+        )
+
     if cfg.train.compile:
         model = torch.compile(model)  # type: ignore[assignment]
 
     scaler = torch.amp.GradScaler("cuda", enabled=(dtype is torch.float16 and device.type == "cuda"))
     accum = cfg.train.grad_accum_steps
     micro_bs = int(cfg.train.micro_batch_size)
-    tokens_per_step = cfg.train.batch_size * cfg.data.seq_len
+    # batch_size is PER RANK (as documented on the field); the global batch is
+    # world x batch_size sequences, and throughput metrics report global tokens
+    tokens_per_step = cfg.train.batch_size * cfg.data.seq_len * world
 
     print(
         f"[train] device={device} dtype={dtype} params={human(model_params(model))} "
         f"(non-emb {human(model_params(model, non_embedding=True))}) "
-        f"batch={cfg.train.batch_size}x{cfg.data.seq_len} tok "
-        f"(micro {micro_bs} x accum {accum})"
+        f"batch={cfg.train.batch_size}x{cfg.data.seq_len} tok per rank "
+        f"(micro {micro_bs} x accum {accum}"
+        + (f" x world {world} = {human(tokens_per_step)} tok/step" if world > 1 else ")")
     )
     print(f"[train] param groups: {count_parameter_groups(optimizer)}")
     if controller.enabled:
@@ -480,7 +563,7 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
 
         if cfg.train.validate_every_steps and (
             step1 % cfg.train.validate_every_steps == 0 or step1 == cfg.train.max_steps
-        ):
+        ) and is_main:
             val = evaluate(model, val_stream, micro_bs, cfg.train.val_batches, device, dtype)
             metrics = {"val/ce": val["ce"], "val/ppl": val["ppl"]}
             line = f"step {step1:>6} | val ce {val['ce']:.4f} | val ppl {val['ppl']:.2f}"
@@ -521,7 +604,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
             best_val = min(best_val, val["ce"])
             last_metrics.update(metrics)
 
-        if cfg.train.sample_every_steps and step1 % cfg.train.sample_every_steps == 0:
+        if (cfg.train.sample_every_steps
+                and step1 % cfg.train.sample_every_steps == 0 and is_main):
             texts = sample(model, cfg, device, dtype, step=step1)
             if texts:
                 for i, text in enumerate(texts, 1):
@@ -534,8 +618,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
 
         if cfg.train.checkpoint_every_steps and (
             step1 % cfg.train.checkpoint_every_steps == 0 or step1 == cfg.train.max_steps
-        ):
-            base = model._orig_mod if hasattr(model, "_orig_mod") else model
+        ) and is_main:
+            base = unwrap_model(model)
             path = os.path.join(run_dir, f"ckpt_step{step1}.pt")
             save_checkpoint(path, cfg, base, optimizer, step1, extra={"metrics": last_metrics})
             save_checkpoint(
@@ -549,10 +633,51 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None) -> Dict[st
             prune_old_checkpoints(run_dir, cfg.train.keep_last_checkpoints)
             print(f"[ckpt] saved {path}")
 
+        # ---- coordinated stop (guards, --stop-step) ----------------------- #
+        # Polled on every rank, all-reduced so every rank breaks in the same
+        # step.  Under DDP an exception on one rank would hang the others in
+        # the next gradient all-reduce; this flag is the supported way out.
+        stop_reason = should_stop() if should_stop is not None else None
+        if world > 1:
+            flag = torch.tensor(
+                [1 if stop_reason else 0],
+                device=device if device.type == "cuda" else "cpu",
+                dtype=torch.int32,
+            )
+            dist.all_reduce(flag, op=dist.ReduceOp.MAX)
+            do_stop = bool(flag.item())
+        else:
+            do_stop = stop_reason is not None
+        if do_stop:
+            if stop_reason:
+                print(f"[train] stop requested at step {step1}: {stop_reason}")
+            last_metrics["stopped_at"] = step1
+            if stop_reason:
+                last_metrics["stopped_reason"] = stop_reason
+            break
+
+    stopped = "stopped_at" in last_metrics
+    if cfg.train.final_val_batches and not stopped and is_main:
+        # the full-holdout evaluation: many more batches than the routine
+        # validation, run once at the end (skipped when a guard stopped the run)
+        fv = evaluate(model, val_stream, micro_bs,
+                      cfg.train.final_val_batches, device, dtype)
+        logger.log(cfg.train.max_steps,
+                   {"val_final/ce": fv["ce"], "val_final/ppl": fv["ppl"]},
+                   console=(f"final validation ({cfg.train.final_val_batches} "
+                            f"batches) | ce {fv['ce']:.4f} | ppl {fv['ppl']:.2f}"))
+        last_metrics["val_final/ce"] = fv["ce"]
+        last_metrics["val_final/ppl"] = fv["ppl"]
+
     logger.close()
     summary = {"best_val_ce": best_val, **last_metrics}
-    with open(os.path.join(run_dir, "summary.json"), "w") as f:
-        json.dump(summary, f, indent=2)
+    if is_main:
+        with open(os.path.join(run_dir, "summary.json"), "w") as f:
+            json.dump(summary, f, indent=2)
+    if world > 1:
+        dist.barrier()
+        if ddp_initialized_here:
+            dist.destroy_process_group()
     return summary
 
 

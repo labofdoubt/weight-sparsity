@@ -828,6 +828,43 @@ the small-`K` corner.
 
 ---
 
+## 9c. Data-parallel (DDP) training for the large runs (added 2026-09-27)
+
+`train()` is DDP-aware: `torchrun --nproc_per_node=N` (or
+`scripts/train_ddp.sh`, which wraps it around `train_guard.py`) gives one
+process per GPU; a plain launch is world size 1 and behaves exactly as before.
+What an agent must know:
+
+- **batch semantics are PER RANK**: global tokens/step = world x
+  `train.batch_size` x `data.seq_len`; grad accumulation is derived
+  (`batch_size / micro_batch_size`) per rank as before.
+- **rank 0 owns everything user-visible**: metrics.jsonl, TB, validation,
+  samples, checkpoints, config dump, summary.json.  Other ranks run a null
+  logger.  Data streams are rank-offset (`seed + 7919*rank`); gate buffers
+  (usage_ema, servo, diagnostics) evolve per rank by design
+  (`broadcast_buffers=False`; initial state synced from rank 0 at wrap).
+- **stops are flag-based, never exceptions**: `train(cfg, should_stop=...)`
+  polls the callable once per step and all-reduces the flag so every rank
+  breaks together (an exception on rank 0 would hang the others in the next
+  gradient all-reduce).  `train_guard.py` uses this hook for the divergence
+  rules and `--stop-step`; on stop it writes `diverged.json`/`stopped.json`
+  (rank 0) and train() writes summary.json with `stopped_at`/`stopped_reason`.
+- **`train.final_val_batches`** (new): one extra evaluation over that many
+  batches after the last step -- the full-holdout score (`val_final/ce`);
+  `val_batches` remains the small routine prefix.
+- **FineWeb-Edu**: `scripts/prepare_fineweb.py --out <dir>` writes
+  train.bin/val.bin/meta.json in the TinyStories format (gpt_neo tokenizer,
+  EOS per document; val = FIRST documents up to --val-tokens, default 50M).
+  Routine validation = `val_batches` deterministic-prefix batches of val.bin
+  (~5M tokens at the 500M config's settings).  Reference config:
+  `configs/fineweb_rbk_500m.yaml` (24x1024, N=4096, seq 1024, per-rank batch
+  64 -> 0.52M tok/step on 8 GPUs, 19k steps ~ 10B tokens).
+- **Tests**: `tests/test_train_ddp.py`; the real multi-process test is gated
+  -- run `WSPARSE_DDP_TEST=1 pytest tests/test_train_ddp.py -q` on the
+  training box before a campaign.
+- Under DDP the rho permutation ablation draws identical permutations on
+  every rank per step (same torch seed); data still differs per rank.
+
 ## 10. Operational habits that were learned the hard way
 
 * **Run anything long in `tmux` on the server.** Backgrounded commands driven

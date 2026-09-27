@@ -237,6 +237,13 @@ class TrainConfig:
 
     # ---- batching -------------------------------------------------------- #
     batch_size: int = 32  # sequences per optimizer step (per device, after accumulation)
+    # One extra evaluation over this many batches after the last step (0 = off).
+    # Use it to score the FULL validation holdout once, while val_batches keeps
+    # the routine (every validate_every_steps) evaluation on a small fixed
+    # prefix of the same holdout: evaluate() reads deterministic disjoint
+    # windows from the start of val.bin, so val_batches IS the size of the
+    # routine subset.  Logged as val_final/ce, recorded in summary.json.
+    final_val_batches: int = 0
     micro_batch_size: Optional[int] = None  # None -> == batch_size (no accumulation)
 
     # ---- length / cadence ------------------------------------------------ #

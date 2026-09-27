@@ -42,6 +42,14 @@ class StoppedEarly(Exception):
 
 
 class Diverged(Exception):
+    """Retained as a record type; the guard no longer raises.
+
+    Stopping by exception cannot work under DDP -- the raising rank leaves the
+    others hanging in the next gradient all-reduce -- so the guard sets a flag
+    that train()'s ``should_stop`` hook polls and all-reduces, and every rank
+    breaks in the same step.  The single-process path uses the same mechanism.
+    """
+
     def __init__(self, step: int, reason: str):
         super().__init__(reason)
         self.step = step
@@ -70,9 +78,12 @@ def main() -> None:
     args, unknown = ap.parse_known_args()
     cfg = load_config(args.config, list(unknown) + args.overrides)
     run_dir = os.path.join(cfg.train.out_dir, cfg.train.run_name)
+    is_main = int(os.environ.get("RANK", "0")) == 0
 
     state = {"best": math.inf, "last": None, "over_ceiling_since": None,
-             "over_margin_since": None}
+             "over_margin_since": None,
+             # set instead of raising: (kind, step, reason)
+             "stop": None}
 
     orig_log = utils.Logger.log
 
@@ -81,9 +92,13 @@ def main() -> None:
         for key in ("train/ce", "val/ce"):
             v = metrics.get(key)
             if v is not None and not math.isfinite(v):
-                raise Diverged(step, f"{key} is non-finite ({v})")
+                state["stop"] = ("diverged", step, f"{key} is non-finite ({v})")
+                return
+        if state["stop"] is not None:
+            return  # already stopping; don't overwrite the first reason
         if args.stop_step and step >= args.stop_step:
-            raise StoppedEarly(step)
+            state["stop"] = ("stopped", step, f"reached --stop-step {args.stop_step}")
+            return
         ce = metrics.get("train/ce")
         if ce is None:
             return
@@ -95,8 +110,9 @@ def main() -> None:
             if state["over_ceiling_since"] is None:
                 state["over_ceiling_since"] = step
             elif step - state["over_ceiling_since"] >= args.ceiling_steps:
-                raise Diverged(step, f"train/ce > {args.ceiling} for "
-                                     f"{step - state['over_ceiling_since']} steps")
+                state["stop"] = ("diverged", step,
+                                 f"train/ce > {args.ceiling} for "
+                                 f"{step - state['over_ceiling_since']} steps")
         else:
             state["over_ceiling_since"] = None
 
@@ -104,37 +120,45 @@ def main() -> None:
             if state["over_margin_since"] is None:
                 state["over_margin_since"] = step
             elif step - state["over_margin_since"] >= args.margin_steps:
-                raise Diverged(step, f"train/ce > best+{args.margin} "
-                                     f"(best {state['best']:.3f}) for "
-                                     f"{step - state['over_margin_since']} steps")
+                state["stop"] = ("diverged", step,
+                                 f"train/ce > best+{args.margin} "
+                                 f"(best {state['best']:.3f}) for "
+                                 f"{step - state['over_margin_since']} steps")
         else:
             state["over_margin_since"] = None
 
     utils.Logger.log = guarded_log
+
+    def should_stop():
+        # polled by train() once per optimizer step on every rank; only rank 0
+        # has a real Logger (and so a live guard) -- the other ranks return
+        # None and learn about the stop from the all-reduce inside train()
+        return state["stop"][2] if state["stop"] is not None else None
+
     try:
-        train(cfg)
-    except StoppedEarly as st:
-        print(f"[train_guard] STOPPED {cfg.train.run_name} at step {st.step} "
-              f"(--stop-step {args.stop_step}; best {state['best']:.4f})")
-        try:
-            with open(os.path.join(run_dir, "stopped.json"), "w") as f:
-                json.dump({"step": st.step, "stop_step": args.stop_step,
-                           "best_train_ce": state["best"],
-                           "last_train_ce": state["last"]}, f, indent=1)
-        except OSError as e:
-            print(f"[train_guard] could not write stopped.json: {e}")
-    except Diverged as d:
-        print(f"[train_guard] DIVERGED {cfg.train.run_name} at step {d.step}: "
-              f"{d.reason} (best {state['best']:.4f}, last {state['last']})")
-        try:
-            with open(os.path.join(run_dir, "diverged.json"), "w") as f:
-                json.dump({"step": d.step, "reason": d.reason,
-                           "best_train_ce": state["best"],
-                           "last_train_ce": state["last"]}, f, indent=1)
-        except OSError as e:
-            print(f"[train_guard] could not write diverged.json: {e}")
+        train(cfg, should_stop=should_stop)
     finally:
         utils.Logger.log = orig_log
+
+    if state["stop"] is not None and is_main:
+        kind, step, reason = state["stop"]
+        if kind == "stopped":
+            print(f"[train_guard] STOPPED {cfg.train.run_name} at step {step} "
+                  f"(--stop-step {args.stop_step}; best {state['best']:.4f})")
+            payload = {"step": step, "stop_step": args.stop_step,
+                       "best_train_ce": state["best"],
+                       "last_train_ce": state["last"]}
+        else:
+            print(f"[train_guard] DIVERGED {cfg.train.run_name} at step {step}: "
+                  f"{reason} (best {state['best']:.4f}, last {state['last']})")
+            payload = {"step": step, "reason": reason,
+                       "best_train_ce": state["best"],
+                       "last_train_ce": state["last"]}
+        try:
+            with open(os.path.join(run_dir, f"{kind}.json"), "w") as f:
+                json.dump(payload, f, indent=1)
+        except OSError as e:
+            print(f"[train_guard] could not write {kind}.json: {e}")
 
 
 if __name__ == "__main__":
