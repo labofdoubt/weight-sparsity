@@ -864,6 +864,23 @@ What an agent must know:
   training box before a campaign.
 - Under DDP the rho permutation ablation draws identical permutations on
   every rank per step (same torch seed); data still differs per rank.
+- **Large-model checkpoint/egress policy** (decided 2026-09-27, for the
+  ~500M runs where a checkpoint is ~7 GB and bandwidth may be billed):
+  local cadence stays fine-grained for crash recovery
+  (`checkpoint_every_steps: 2000`, `keep_last_checkpoints: 3` -- a rollback
+  point every ~18 min on disk), but the checkpoint WATCHER runs the
+  latest-only tier on a two-hour cycle:
+
+      tmux new-session -d -s backup_ckpt \
+        "bash scripts/backup_watch.sh /workspace/runs gdrive:...  7200 --with-checkpoints"
+
+  so at least one checkpoint per two hours reaches Drive (worst-case loss on
+  box death: <= 2 h of training, resumable from the uploaded latest.pt), and
+  intermediate `ckpt_step*.pt` stay local-only.  Push once more with
+  `--with-checkpoints` at each run's end (the campaign runner should do this
+  explicitly) so the final state never waits for the next cycle.  The light
+  tier (metrics/config/summary/markers) and tb_push keep their usual 600 s /
+  60 s cadence -- they are kilobytes.
 
 ## 10. Operational habits that were learned the hard way
 
