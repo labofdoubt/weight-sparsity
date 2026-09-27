@@ -920,10 +920,17 @@ class AdaptiveLapSumTopKGate(nn.Module):
 
     @torch.no_grad()
     def _record_hard(self, cand) -> None:
-        """Forward-only diagnostics for the no-surrogate baseline."""
+        """Forward-only diagnostics for the no-surrogate baseline.
+
+        With ``j = 0`` there is no candidate beyond the support, so the
+        boundary gap does not exist; the span degenerates to within-support
+        spread and the gap is recorded as 0 rather than indexing off the end.
+        """
         zero = cand.new_zeros(())
+        gap = ((cand[..., self.k - 1] - cand[..., self.k]).mean()
+               if cand.shape[-1] > self.k else zero)
         self._forward_diag = {
-            "score_gap": (cand[..., self.k - 1] - cand[..., self.k]).mean(),
+            "score_gap": gap,
             "score_span": (cand[..., self.k - 1] - cand[..., -1]).mean(),
             "grad_inactive": zero,
             "grad_active": zero,

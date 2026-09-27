@@ -2322,3 +2322,19 @@ def test_post_norm_applies_at_every_layer_for_a_branch_placement():
     # pre_mlp never feeds norm_f, so no layer is exempt
     _, ctl = _post_norm_model(True, placement="pre_mlp")
     assert all(type(m.post_norm).__name__ == "RMSNorm" for _, m in ctl.layers)
+
+
+def test_hard_mode_j0_diagnostics():
+    """j=0 is a legal hard configuration (spec section 23); the boundary-gap
+    diagnostic must degrade gracefully instead of indexing off the pool end."""
+    import torch
+    from wsparse.bottleneck import AdaptiveLapSumTopKGate
+
+    g = AdaptiveLapSumTopKGate(n_features=16, k=4, j=0, n_eff=3.0,
+                               selection_mode="abs_topk", surrogate_mode="hard",
+                               log_diagnostics=True)
+    g.train()
+    y = g(torch.randn(5, 16))
+    assert (y != 0).sum(-1).max() <= 4
+    assert float(g._forward_diag["score_gap"]) == 0.0
+    assert float(g._forward_diag["score_span"]) > 0.0
