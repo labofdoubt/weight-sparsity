@@ -34,3 +34,4 @@ wandb/
 !docs/rblapsum-stabilization.pdf
 !docs/kj-vs-hard-topk.pdf
 !docs/rblapsum-soft-forward.pdf
+!docs/rblapsum-sf-support-values.pdf
