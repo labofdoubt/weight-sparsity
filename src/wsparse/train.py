@@ -336,6 +336,12 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             batches=cfg.activation_bottleneck.calibration_batches,
             iters=cfg.activation_bottleneck.calibration_iters,
         )
+        if world > 1:
+            # calibration ran after the DDP wrap on per-rank batches; make the
+            # fitted scale identical everywhere by adopting rank 0's
+            for _, mod_ in bottleneck.layers:
+                if getattr(mod_, "output_scale", None) is not None:
+                    dist.broadcast(mod_.output_scale, src=0)
         print(
             f"[train] bottleneck output calibrated: scale mean "
             f"{cal['bottleneck/output_scale']:.4f} "
@@ -744,8 +750,7 @@ def log_feature_usage(logger, bottleneck, step: int) -> Dict[str, float]:
 
 
 def model_params(model, non_embedding: bool = False) -> int:
-    base = model._orig_mod if hasattr(model, "_orig_mod") else model
-    return base.num_parameters(non_embedding=non_embedding)
+    return unwrap_model(model).num_parameters(non_embedding=non_embedding)
 
 
 def sampling_generator(device: torch.device, seed: int) -> Optional[torch.Generator]:
