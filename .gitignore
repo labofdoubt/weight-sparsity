@@ -33,3 +33,4 @@ wandb/
 !docs/init-pi-grid-postnorm.pdf
 !docs/rblapsum-stabilization.pdf
 !docs/kj-vs-hard-topk.pdf
+!docs/rblapsum-soft-forward.pdf
