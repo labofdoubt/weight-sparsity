@@ -35,6 +35,12 @@ from wsparse.train import train
 from wsparse import utils
 
 
+class StoppedEarly(Exception):
+    def __init__(self, step: int):
+        super().__init__(f"reached --stop-step at {step}")
+        self.step = step
+
+
 class Diverged(Exception):
     def __init__(self, step: int, reason: str):
         super().__init__(reason)
@@ -50,6 +56,13 @@ def main() -> None:
     ap.add_argument("--margin", type=float, default=2.5)
     ap.add_argument("--margin-steps", type=int, default=800)
     ap.add_argument("--min-step", type=int, default=1500)
+    # Stop the RUN at this step while leaving cfg.train.max_steps -- and with
+    # it every schedule (LR cosine, temperature) -- untouched, so the
+    # trajectory up to the stop is identical to a full-length run's and
+    # step-matched comparisons against full-length references stay valid.
+    # 0 disables.  Contrast with overriding train.max_steps, which reshapes
+    # the schedules and produces a run comparable to nothing existing.
+    ap.add_argument("--stop-step", type=int, default=0)
     ap.add_argument("overrides", nargs="*")
     # dotted --section.field=value overrides arrive as unknown flags; collect
     # them like wsparse.train's own main() does (apply_overrides rejects any
@@ -69,6 +82,8 @@ def main() -> None:
             v = metrics.get(key)
             if v is not None and not math.isfinite(v):
                 raise Diverged(step, f"{key} is non-finite ({v})")
+        if args.stop_step and step >= args.stop_step:
+            raise StoppedEarly(step)
         ce = metrics.get("train/ce")
         if ce is None:
             return
@@ -98,6 +113,16 @@ def main() -> None:
     utils.Logger.log = guarded_log
     try:
         train(cfg)
+    except StoppedEarly as st:
+        print(f"[train_guard] STOPPED {cfg.train.run_name} at step {st.step} "
+              f"(--stop-step {args.stop_step}; best {state['best']:.4f})")
+        try:
+            with open(os.path.join(run_dir, "stopped.json"), "w") as f:
+                json.dump({"step": st.step, "stop_step": args.stop_step,
+                           "best_train_ce": state["best"],
+                           "last_train_ce": state["last"]}, f, indent=1)
+        except OSError as e:
+            print(f"[train_guard] could not write stopped.json: {e}")
     except Diverged as d:
         print(f"[train_guard] DIVERGED {cfg.train.run_name} at step {d.step}: "
               f"{d.reason} (best {state['best']:.4f}, last {state['last']})")
