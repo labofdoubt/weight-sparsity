@@ -46,6 +46,8 @@ FILTERS+=(
   --filter "+ **/config.yaml"
   --filter "+ **/config.json"
   --filter "+ **/summary.json"
+  --filter "+ **/stopped.json"
+  --filter "+ **/diverged.json"
   --filter "+ **/feature_usage.*"
   --filter "+ **/tb/**"
 )
