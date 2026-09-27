@@ -1,13 +1,34 @@
-# 24x1024 (~555M params with the bottleneck) on FineWeb-Edu sample-10BT,
-# 8-GPU data parallel.  Launch:
+# ============================================================================
+# Preliminary config for the FineWeb-Edu 500M campaign (8 x H100/H200, DDP).
+#
+# Model: 24 x 1024, d_head 64, d_ff 4096, GELU, RoPE, MD decoupling ->
+# 353.5M base + 201.3M bottleneck (N=4096) = ~555M parameters.
+# Data: FineWeb-Edu sample-10BT bins (scripts/prepare_fineweb.py output;
+# on Drive under data/fineweb_edu_10bt): 50M-token document-aligned holdout
+# in val.bin; routine validation = val_batches prefix (~4.9M tokens);
+# final_val_batches scores the full holdout once at the end (val_final/ce).
+#
+# Launch (one 8-GPU job at a time; guard included):
 #   NGPU=8 bash scripts/train_ddp.sh --config configs/fineweb_rbk_500m.yaml \
-#       --train.run_name=<name> --activation_bottleneck.k=<K> --activation_bottleneck.j=<J>
-# Variants used by the campaign:
-#   hard Top-K':    --activation_bottleneck.surrogate_mode=hard --activation_bottleneck.k=<K'>
-#   no bottleneck:  --activation_bottleneck.enabled=false
-# Data: scripts/prepare_fineweb.py --out <data_dir> (50M-token holdout in val.bin;
-# routine validation = val_batches deterministic-prefix batches ~ 5M tokens;
-# final_val_batches scores the whole holdout once at the end).
+#     --train.run_name=<name> \
+#     --activation_bottleneck.k=<K> --activation_bottleneck.j=<J>
+# Arms:
+#   rblapsum kappa + post-norm (this file's defaults)   -- the model under test
+#   hard Top-K':   --activation_bottleneck.surrogate_mode=hard \
+#                  --activation_bottleneck.k=<K'> --activation_bottleneck.j=0
+#   no bottleneck: --activation_bottleneck.enabled=false
+#
+# Deliberately undecided until the smoke run on the rented box:
+#   * micro_batch_size: 16 is the safe floor; try 32 (accum 2) and 64
+#     (accum 1) -- larger micro = better MFU, ~20 GB activations at 32.
+#   * lr: 3e-4 is the standard 350-760M-class value and NOT swept; optional
+#     3-point probe (2e-4 / 3e-4 / 4.5e-4, ~1.5B tokens each) before launch.
+#
+# Checkpoint/egress policy (guide 9c): local cadence below is for crash
+# recovery; the ckpt WATCHER uploads latest.pt on a 7200 s cycle
+# (--with-checkpoints), so >= 1 checkpoint per 2 h reaches Drive and
+# intermediate ckpt_step*.pt stay local-only.
+# ============================================================================
 
 model:
   n_layers: 24
@@ -20,7 +41,7 @@ model:
   vocab_size: 50257    # overwritten from meta.json at start
   bias: false
   dropout: 0.0
-  decouple: true
+  decouple: true       # MD everywhere, all arms: weight decay replaced by the sphere
   logit_scale: none
 
 data:
@@ -31,15 +52,15 @@ data:
 
 activation_bottleneck:
   enabled: true
-  n_features: 4096
-  k: 128
-  j: 128
+  n_features: 4096     # 4x expansion; 2 x d x N x L = 201.3M params
+  k: 128               # set per cell at launch
+  j: 128               # set per cell at launch
   layers: all
   placement: residual_out
   selection_mode: abs_topk
   surrogate_mode: rblapsum
   rblapsum_boundary_grad_mode: through_rank_kappa
-  rblapsum_temperature: 1.0
+  rblapsum_temperature: 1.0     # post-norm variant runs T=1 (stabilization note)
   post_norm: true
   init_mode: sqrt_k_selection_corrected
   log_diagnostics: true
@@ -48,25 +69,25 @@ train:
   seed: 1337
   device: cuda
   dtype: bfloat16
-  # PER-RANK: 64 seq x 1024 tok x 8 ranks = 524,288 tokens per optimizer step
+  # PER-RANK: 64 seq x 1024 tok; x8 ranks = 524,288 tokens per optimizer step
   batch_size: 64
-  micro_batch_size: 16      # grad accumulation 64/16 = 4 is derived
-  # ~10B tokens / 0.52M tokens per step
+  micro_batch_size: 16          # grad accum 64/16 = 4 derived; revisit in smoke
+  # 19,000 steps x 0.52M tokens ~ 10.0B tokens = one pass over sample-10BT
   max_steps: 19000
-  lr: 3.0e-4           # scaled down from 6e-4 at 114M; not swept
-  warmup_steps: 380    # 2%
+  lr: 3.0e-4
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  warmup_steps: 500             # ~2.6%, ~260M tokens
   lr_schedule: cosine
   min_lr_ratio: 0.1
   grad_clip: 1.0
   log_every_steps: 20
   validate_every_steps: 500
-  # routine validation: 300 x 16 x 1025 tok ~ 4.9M of the 50M holdout (prefix)
-  val_batches: 300
-  # the full 50M holdout, once, after the last step
-  final_val_batches: 3050
-  checkpoint_every_steps: 2000
+  val_batches: 300              # routine: 300 x 16 x 1025 ~ 4.9M-token prefix
+  final_val_batches: 3050       # the full 50M holdout, once, at the end
+  checkpoint_every_steps: 2000  # local recovery cadence (~18 min at 0.55 s/step)
   keep_last_checkpoints: 3
   sample_every_steps: 0
   tensorboard: true
   out_dir: /workspace/runs
-  run_name: fineweb_rbk_500m
+  run_name: fineweb_rbk_500m    # overridden per run at launch
