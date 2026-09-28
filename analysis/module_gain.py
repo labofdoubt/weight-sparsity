@@ -98,6 +98,11 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--offset", type=int, default=4242)
+    ap.add_argument("--pnorm-gamma", default="1.0",
+                    help="scale for the post-RMSNorm's gains; \"auto\" runs a "
+                         "second pass with gamma = 1/sqrt(that layer's measured "
+                         "backward gain), which puts the norm's gradient gain "
+                         "at 1 (it enters both directions as gamma^2)")
     ap.add_argument("--md-alpha", default="1.0",
                     help="total scale for each bottleneck's OUTPUT, put into "
                          "the MD gains (md_spread_gain_) and split equally "
@@ -176,46 +181,82 @@ def main() -> None:
           f"N={cb.n_features} K={cb.k} {cb.placement} "
           f"post_norm={cb.post_norm} bottlenecks={len(bn.layers)}")
 
-    # fwd[(point, li)] and bwd[(point, li)] hold [B*T] per-token squared norms
-    fwd, bwd, hooks = {}, {}, []
-
-    def keep(store, point, li):
-        def fn(t):
-            store[(point, li)] = token_sq(t)
-        return fn
-
-    for li, (_, mod) in enumerate(bn.layers):
-        has_norm = not isinstance(mod.post_norm, nn.Identity)
-
-        def mod_pre(mod_, inp, li=li):
-            x = inp[0]
-            keep(fwd, "x", li)(x)
-            if x.requires_grad:
-                x.register_hook(keep(bwd, "x", li))
-        hooks.append(mod.register_forward_pre_hook(mod_pre))
-
-        def mod_post(mod_, inp, out, li=li, has_norm=has_norm):
-            keep(fwd, "z" if has_norm else "y", li)(out)
-            if out.requires_grad:
-                out.register_hook(keep(bwd, "z" if has_norm else "y", li))
-        hooks.append(mod.register_forward_hook(mod_post))
-
-        if has_norm:  # y = the decoder's output = the norm's input
-            def norm_pre(mod_, inp, li=li):
-                y = inp[0]
-                keep(fwd, "y", li)(y)
-                if y.requires_grad:
-                    y.register_hook(keep(bwd, "y", li))
-            hooks.append(mod.post_norm.register_forward_pre_hook(norm_pre))
-
     _, val_stream = build_streams(cfg.data, seed=cfg.train.seed)
     xb, yb = val_stream.batch(args.batch, device, deterministic_offset=args.offset)
-    _, loss = model(xb, yb)
-    loss.backward()
-    for h in hooks:
-        h.remove()
-    ce = float(loss.detach())
+
+    def measure():
+        """One forward+backward; returns (ce, fwd, bwd) of per-token sq norms.
+
+        ``fwd[(point, li)]`` and ``bwd[(point, li)]`` are [B*T] vectors at the
+        three probe points x (module input), y (decoder output = the norm's
+        input) and z (module output).
+        """
+        fwd, bwd, hooks = {}, {}, []
+
+        def keep(store, point, li):
+            def fn(t):
+                store[(point, li)] = token_sq(t)
+            return fn
+
+        for li, (_, mod) in enumerate(bn.layers):
+            has_norm = not isinstance(mod.post_norm, nn.Identity)
+
+            def mod_pre(mod_, inp, li=li):
+                x = inp[0]
+                keep(fwd, "x", li)(x)
+                if x.requires_grad:
+                    x.register_hook(keep(bwd, "x", li))
+            hooks.append(mod.register_forward_pre_hook(mod_pre))
+
+            def mod_post(mod_, inp, out, li=li, has_norm=has_norm):
+                keep(fwd, "z" if has_norm else "y", li)(out)
+                if out.requires_grad:
+                    out.register_hook(keep(bwd, "z" if has_norm else "y", li))
+            hooks.append(mod.register_forward_hook(mod_post))
+
+            if has_norm:  # y = the decoder's output = the norm's input
+                def norm_pre(mod_, inp, li=li):
+                    y = inp[0]
+                    keep(fwd, "y", li)(y)
+                    if y.requires_grad:
+                        y.register_hook(keep(bwd, "y", li))
+                hooks.append(mod.post_norm.register_forward_pre_hook(norm_pre))
+
+        model.zero_grad(set_to_none=True)
+        _, loss = model(xb, yb)
+        loss.backward()
+        for h in hooks:
+            h.remove()
+        return float(loss.detach()), fwd, bwd
+
+    ce, fwd, bwd = measure()
     print(f"[gain] batch CE {ce:.4f}  tokens {args.batch * cfg.data.seq_len}")
+
+    # ---- post-norm gamma ------------------------------------------------- #
+    # "auto" is a second pass: the RMSNorm's gain enters both directions as
+    # gamma^2, so gamma = 1/sqrt(measured backward gain at gamma=1) puts that
+    # gain at 1 -- per layer, since it drifts slightly with depth.
+    gammas = {}
+    if str(args.pnorm_gamma) != "1.0":
+        eps = torch.finfo(torch.float32).tiny
+        with torch.no_grad():
+            for li, (_, mod) in enumerate(bn.layers):
+                if isinstance(mod.post_norm, nn.Identity):
+                    continue
+                if str(args.pnorm_gamma) == "auto":
+                    g_in = bwd[("y", li)].mean()          # module-input side
+                    g_out = bwd[("z", li)].mean()         # module-output side
+                    gamma = float((g_out / g_in.clamp_min(eps)).sqrt())
+                else:
+                    gamma = float(args.pnorm_gamma)
+                mod.post_norm.weight.mul_(gamma)
+                gammas[li] = gamma
+        vals = sorted(gammas.values())
+        print(f"[gain] post-norm gamma: {len(gammas)} layers, "
+              f"{vals[0]:.4f} .. {vals[-1]:.4f} "
+              f"(geo-mean {math.exp(sum(map(math.log, vals)) / len(vals)):.4f})")
+        ce, fwd, bwd = measure()
+        print(f"[gain] batch CE {ce:.4f} after the gamma rescale")
 
     out = {
         "step": step, "ce": ce, "k": int(cb.k), "j": int(cb.j),
@@ -225,6 +266,8 @@ def main() -> None:
         "batch": int(args.batch), "seq_len": int(cfg.data.seq_len),
         "offset": int(args.offset), "proj_scale": float(args.proj_scale),
         "md_alpha": float(md_alpha),
+        "pnorm_gamma": str(args.pnorm_gamma),
+        "pnorm_gamma_per_layer": {str(k): v for k, v in sorted(gammas.items())},
         "layers": [],
     }
     for li in range(len(bn.layers)):
