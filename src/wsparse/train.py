@@ -152,18 +152,24 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
     # process launches see world == 1 and none of the branches below fire.
     # Per-rank state is deliberate where it exists: the data stream RNG is
     # offset by rank (each rank sees different batches), gate buffers such as
-    # usage_ema and the temperature servo evolve per rank
-    # (broadcast_buffers=False), and everything user-visible -- logging,
-    # validation, checkpoints, samples, the dumped config -- is rank 0 only.
+    # usage_ema evolve per rank (broadcast_buffers=False), and everything
+    # user-visible -- logging, validation, checkpoints, samples, the dumped
+    # config -- is rank 0 only.
     world, rank, local_rank = ddp_env()
     is_main = rank == 0
     ddp_initialized_here = False
-    if world > 1 and not dist.is_initialized():
-        dist.init_process_group("nccl" if torch.cuda.is_available() else "gloo")
-        ddp_initialized_here = True
-    if world > 1 and torch.cuda.is_available():
-        torch.cuda.set_device(local_rank)
-        cfg.train.device = f"cuda:{local_rank}"
+    if world > 1:
+        # The configured device picks both the per-rank device and the
+        # backend. Deciding from torch.cuda.is_available() instead would
+        # promote an explicit `device: cpu` to cuda on a GPU box, and would
+        # hand rank r a `cuda:r` that need not exist (fewer GPUs than ranks).
+        wants_cuda = resolve_device(cfg.train.device).type == "cuda"
+        if not dist.is_initialized():
+            dist.init_process_group("nccl" if wants_cuda else "gloo")
+            ddp_initialized_here = True
+        if wants_cuda:
+            torch.cuda.set_device(local_rank)
+            cfg.train.device = f"cuda:{local_rank}"
     if not is_main:
         # local shadow: silences every print in this function on ranks > 0
         print = lambda *a, **k: None  # noqa: E731
@@ -376,8 +382,6 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                     line += f" | dK {bn['bottleneck/budget_residual']:.1e}"
             if "bottleneck/active_count" in bn:
                 line += f" | L0 {bn['bottleneck/active_count']:.1f}"
-                if "bottleneck/in_window_frac" in bn:
-                    line += f" | win {bn['bottleneck/in_window_frac']:.2f}"
                 if "bottleneck/rb_cap_active_frac" in bn:
                     line += f" | cap {bn['bottleneck/rb_cap_active_frac']:.2f}"
             elif "bottleneck/score_gap" in bn:  # the hard baseline runs no solver
