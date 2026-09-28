@@ -151,10 +151,11 @@ def main() -> None:
     loss.backward()
     for h in hooks:
         h.remove()
-    print(f"[gain] batch CE {float(loss):.4f}  tokens {args.batch * cfg.data.seq_len}")
+    ce = float(loss.detach())
+    print(f"[gain] batch CE {ce:.4f}  tokens {args.batch * cfg.data.seq_len}")
 
     out = {
-        "step": step, "ce": float(loss), "k": int(cb.k), "j": int(cb.j),
+        "step": step, "ce": ce, "k": int(cb.k), "j": int(cb.j),
         "n_features": int(cb.n_features), "d_model": int(cfg.model.d_model),
         "n_layers": int(cfg.model.n_layers), "placement": str(cb.placement),
         "post_norm": bool(cb.post_norm), "surrogate_mode": str(cb.surrogate_mode),
