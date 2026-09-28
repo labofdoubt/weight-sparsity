@@ -8,9 +8,12 @@ GEOMETRIC mean over layers -- these gains compound multiplicatively down the
 stack, so that is the average whose 24th power is the whole-stack factor -- with
 the per-layer min/max as a band.  The dotted line at 1.0 is transparency.
 
-The bottleneck's backward panel also carries ``4K/N``, which is what the
-measurement follows: only K of N coordinates survive the mask, and the
-projections' init contributes the constant.
+The bottleneck's backward panel also carries ``K / d_model``, which is what the
+measurement follows to better than 3%: the mask keeps K of N coordinates, so
+the composite encoder-mask-decoder map has rank at most K against a stream of
+dimension d_model.  Verified N-independent -- at K=512 the gain is 0.501,
+0.500, 0.499 for N = 2048, 4096, 8192, where 4K/N would have given 1.0, 0.5,
+0.25.
 """
 
 import json
@@ -40,6 +43,9 @@ def main() -> None:
     n_features = {d["n_features"] for d in runs}
     assert len(n_features) == 1, f"mixed n_features: {n_features}"
     N = n_features.pop()
+    d_models = {d["d_model"] for d in runs}
+    assert len(d_models) == 1, f"mixed d_model: {d_models}"
+    d_model = d_models.pop()
 
     fig, axes = plt.subplots(2, 2, figsize=(12.2, 8.4))
     for ax, (field, name, ylab, color, ref) in zip(axes.ravel(), PANELS):
@@ -50,8 +56,8 @@ def main() -> None:
                         label="per-layer min-max")
         ax.plot(ks, mean, "-o", ms=5, color=color, label="geometric mean over layers")
         if ref:
-            ax.plot(ks, [4.0 * k / N for k in ks], ":", color=REF, lw=1.4,
-                    label=f"$4K/N$  ($N={N}$)")
+            ax.plot(ks, [k / d_model for k in ks], ":", color=REF, lw=1.4,
+                    label=f"$K/d_{{model}}$  ($d={d_model}$)")
         ax.axhline(1.0, color="k", ls=":", lw=0.9)
         ax.set_xscale("log", base=2)
         ax.set_yscale("log")
@@ -72,12 +78,12 @@ def main() -> None:
     fig.savefig(out_path, dpi=160, bbox_inches="tight")
     print(out_path)
 
-    print(f"{'K':>6} {'bwd_bn':>9} {'x N/K':>7} {'bwd_pn':>9} "
+    print(f"{'K':>6} {'bwd_bn':>9} {'/(K/d)':>7} {'bwd_pn':>9} "
           f"{'fwd_bn':>9} {'fwd_pn':>9} {'fwd net':>8} {'bwd net':>8}")
     for d in runs:
         g = {f: d["summary"][f]["geometric_mean"] for f, *_ in PANELS}
         print(f"{d['k']:6d} {g['bwd_bottleneck']:9.4f} "
-              f"{g['bwd_bottleneck'] * N / d['k']:7.2f} {g['bwd_post_norm']:9.4f} "
+              f"{g['bwd_bottleneck'] / (d['k'] / d_model):7.3f} {g['bwd_post_norm']:9.4f} "
               f"{g['fwd_bottleneck']:9.4f} {g['fwd_post_norm']:9.4f} "
               f"{g['fwd_bottleneck'] * g['fwd_post_norm']:8.4f} "
               f"{g['bwd_bottleneck'] * g['bwd_post_norm']:8.4f}")
