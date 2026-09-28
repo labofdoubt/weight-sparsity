@@ -137,6 +137,9 @@ def main() -> None:
             "lapsum" if new_schema else "lapsum_fixed")
         if not new_schema:
             ov["activation_bottleneck.temperature_scale_mode"] = "absolute"
+            # legacy validation: 1 < n_eff < j; the value is numerically inert
+            # for the fixed-temperature mode
+            ov["activation_bottleneck.n_eff"] = 8.0
     else:
         ov["activation_bottleneck.surrogate_mode"] = "rblapsum"
         ov["activation_bottleneck.rblapsum_boundary_grad_mode"] = "through_rank_kappa"
