@@ -33,26 +33,49 @@ from wsparse.bottleneck import apply_activation_bottleneck  # noqa: E402
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", required=True)
+    ap.add_argument("--ckpt", default="")
+    ap.add_argument("--init-config", default="",
+                    help="measure at initialization instead: build the model "
+                         "from this run config with train()'s exact "
+                         "construction sequence (seed, build, bottleneck, "
+                         "md_init) and no weight loading")
     ap.add_argument("--data-dir", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--offset", type=int, default=4242)
     args = ap.parse_args()
 
-    payload = torch.load(args.ckpt, map_location="cpu", weights_only=False)
-    cfg = config_from_dict(payload["config"])
-    cfg.data.data_dir = args.data_dir
+    assert bool(args.ckpt) != bool(args.init_config), \
+        "give exactly one of --ckpt / --init-config"
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-    model = build_model(cfg.model)
-    bn = apply_activation_bottleneck(model, cfg.activation_bottleneck,
-                                     max_steps=cfg.train.max_steps)
-    model.load_state_dict(payload["model"])
+    if args.ckpt:
+        payload = torch.load(args.ckpt, map_location="cpu", weights_only=False)
+        cfg = config_from_dict(payload["config"])
+        cfg.data.data_dir = args.data_dir
+        model = build_model(cfg.model)
+        bn = apply_activation_bottleneck(model, cfg.activation_bottleneck,
+                                         max_steps=cfg.train.max_steps)
+        model.load_state_dict(payload["model"])
+        step = int(payload["step"])
+    else:
+        from wsparse.utils import set_seed
+        cfg = config_from_dict(json.load(open(args.init_config)))
+        cfg.data.data_dir = args.data_dir
+        # train()'s construction sequence at the same seed reproduces the
+        # run's exact step-0 weights (md_init_ runs inside the same RNG
+        # stream position)
+        set_seed(cfg.train.seed)
+        model = build_model(cfg.model)
+        bn = apply_activation_bottleneck(model, cfg.activation_bottleneck,
+                                         max_steps=cfg.train.max_steps)
+        if cfg.model.decouple:
+            from wsparse.decouple import md_init_
+            md_init_(model, cfg.model.decouple_gains)
+        step = 0
     model.to(device).train()  # train mode: gradients as during training
     k = int(cfg.activation_bottleneck.k)
-    print(f"[diag] {os.path.basename(args.ckpt)} step={payload['step']} "
-          f"K={k} layers={len(bn.layers)}")
+    print(f"[diag] {'init' if not args.ckpt else os.path.basename(args.ckpt)} "
+          f"step={step} K={k} layers={len(bn.layers)}")
 
     cap = {}
     hooks = []
@@ -90,8 +113,7 @@ def main() -> None:
     print(f"[diag] batch CE {float(loss):.4f}")
 
     n_layers = len(blocks)
-    out = {"step": int(payload["step"]), "ce": float(loss), "k": k,
-           "layers": []}
+    out = {"step": step, "ce": float(loss), "k": k, "layers": []}
     for li in range(n_layers):
         rec = {"layer": li}
         if ("z", li) in cap:
