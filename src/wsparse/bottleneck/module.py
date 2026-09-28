@@ -94,33 +94,15 @@ class SparseTopKBottleneck(nn.Module):
             n_features=self.n_features,
             k=cfg.k,
             j=cfg.j,
-            n_eff=cfg.n_eff,
             selection_mode=cfg.selection_mode,
-            effective_count_metric=cfg.effective_count_metric,
-            boundary_mode=cfg.boundary_mode,
-            one_sided_weight_mode=cfg.one_sided_weight_mode,
             surrogate_mode=cfg.surrogate_mode,
             rblapsum_boundary_grad_mode=cfg.rblapsum_boundary_grad_mode,
             rblapsum_boundary_floor=cfg.rblapsum_boundary_floor,
             rblapsum_support_scale=getattr(cfg, 'rblapsum_support_scale', 1.0),
-            rblapsum_temperature=cfg.rblapsum_temperature,
-            rblapsum_temperature_mode=cfg.rblapsum_temperature_mode,
-            rblapsum_chi_target=cfg.rblapsum_chi_target,
-            rblapsum_window_floor=cfg.rblapsum_window_floor,
-            rblapsum_t_min=cfg.rblapsum_t_min,
-            rblapsum_t_max=cfg.rblapsum_t_max,
-            rblapsum_servo_rate=cfg.rblapsum_servo_rate,
-            rblapsum_kernel=cfg.rblapsum_kernel,
+            temperature=cfg.temperature,
             rblapsum_sf_value_grad=getattr(cfg, "rblapsum_sf_value_grad", "pool"),
             rblapsum_rho_random_perm_prob_grad=getattr(
                 cfg, "rblapsum_rho_random_perm_prob_grad", 0.0),
-            surrogate_grad_scale=cfg.surrogate_grad_scale,
-            inactive_grad_scale=cfg.inactive_grad_scale,
-            project_scale_gradient=cfg.project_scale_gradient,
-            fixed_temperature=cfg.fixed_temperature,
-            temperature_scale_mode=cfg.temperature_scale_mode,
-            temperature_solver_tol=cfg.temperature_solver_tol,
-            temperature_solver_max_iters=cfg.temperature_solver_max_iters,
             barrier_solver_tol=cfg.barrier_solver_tol,
             solver_dtype=cfg.solver_dtype,
             log_diagnostics=cfg.log_diagnostics,
@@ -147,21 +129,11 @@ class SparseTopKBottleneck(nn.Module):
         else:
             self.out_proj = nn.Linear(self.n_features, self.d_model, bias=bias)
         self._init_projections(int(cfg.k))
-        # Non-trainable output gain, fitted once before training so the block's
-        # output variance matches its input's.  Registered only when enabled, so
-        # checkpoints written without calibration still load.
-        if cfg.calibrate_output:
-            self.register_buffer("output_scale", torch.ones((), dtype=torch.float32))
-        else:
-            self.output_scale = None
         # An optional RMSNorm on this bottleneck's output.  It lives inside the
         # module so the gate hooks and `_PLACEMENT_ATTR` lookups are unchanged,
         # and Identity costs nothing when the option is off.
         self.post_norm = (RMSNorm(self.d_model, norm_eps) if post_norm
                           else nn.Identity())
-        self.reconstruction_coef = float(cfg.reconstruction_coef)
-        self.reconstruction_normalize = bool(cfg.reconstruction_normalize)
-        self._reconstruction = None
 
     def _init_projections(self, k: int) -> None:
         """Re-initialize the projections; ``default`` leaves PyTorch's alone.
@@ -217,28 +189,10 @@ class SparseTopKBottleneck(nn.Module):
             y = self.out_proj(self.gate(self.score_proj(x), value))
         else:
             y = self.out_proj(self.gate(value))
-        if self.output_scale is not None:
-            y = y * self.output_scale.to(y.dtype)
         # Identity unless post_norm was requested; Identity holds no parameters
         # or buffers, so state_dicts are unchanged when the option is off.
         y = self.post_norm(y)
-        if self.reconstruction_coef and self.training and torch.is_grad_enabled():
-            # Held for the controller to collect after this forward.  It has to
-            # be produced here rather than recomputed later: the term depends on
-            # the activations of *this* micro-batch, unlike the weight-sparsity
-            # penalty, which is a function of parameters alone.
-            diff = (y.float() - x.float()).pow(2).sum(-1)
-            if self.reconstruction_normalize:
-                # relative error, so the coefficient means the same thing at any
-                # activation scale and across placements
-                diff = diff / (x.float().pow(2).sum(-1) + 1e-8)
-            self._reconstruction = diff.mean()
         return y
-
-    def take_reconstruction(self):
-        """Pop the term recorded by the last forward (None if disabled)."""
-        term, self._reconstruction = self._reconstruction, None
-        return term
 
     @property
     def diagnostics(self):

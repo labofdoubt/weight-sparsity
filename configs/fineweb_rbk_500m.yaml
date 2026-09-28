@@ -63,7 +63,7 @@ activation_bottleneck:
   selection_mode: abs_topk
   surrogate_mode: rblapsum
   rblapsum_boundary_grad_mode: through_rank_kappa
-  rblapsum_temperature: 1.0     # post-norm variant runs T=1 (stabilization note)
+  temperature: 1.0     # post-norm variant runs T=1 (stabilization note)
   post_norm: true
   init_mode: sqrt_k_selection_corrected
   log_diagnostics: true

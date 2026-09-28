@@ -1,7 +1,17 @@
 _base_:
   - model/small.yaml
   - train/default.yaml
-  - bottleneck/base.yaml
 
 train:
   run_name: bottleneck_small
+
+activation_bottleneck:
+  enabled: true
+  layers: all
+  placement: residual_out
+  n_features: 1536
+  k: 32
+  j: 480
+  selection_mode: abs_topk
+  surrogate_mode: lapsum
+  temperature: 1.0

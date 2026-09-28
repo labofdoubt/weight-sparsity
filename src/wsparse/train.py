@@ -296,36 +296,15 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         + (f" x world {world} = {human(tokens_per_step)} tok/step" if world > 1 else ")")
     )
     print(f"[train] param groups: {count_parameter_groups(optimizer)}")
-    if bottleneck.enabled and cfg.activation_bottleneck.calibrate_output and start_step == 0:
-        # Before the first step only: on resume the fitted scale comes back with
-        # the checkpoint, and re-fitting it against a trained model would be a
-        # silent change of function mid-run.
-        cal = bottleneck.calibrate_output_scale(
-            lambda: train_stream.batch(micro_bs, device)[0],
-            batches=cfg.activation_bottleneck.calibration_batches,
-            iters=cfg.activation_bottleneck.calibration_iters,
-        )
-        if world > 1:
-            # calibration ran after the DDP wrap on per-rank batches; make the
-            # fitted scale identical everywhere by adopting rank 0's
-            for _, mod_ in bottleneck.layers:
-                if getattr(mod_, "output_scale", None) is not None:
-                    dist.broadcast(mod_.output_scale, src=0)
-        print(
-            f"[train] bottleneck output calibrated: scale mean "
-            f"{cal['bottleneck/output_scale']:.4f} "
-            f"(min {cal['bottleneck/output_scale_min']:.4f}, "
-            f"max {cal['bottleneck/output_scale_max']:.4f})"
-        )
 
     if bottleneck.enabled:
         cb = cfg.activation_bottleneck
         print(
             f"[train] activation bottleneck: {len(bottleneck.layers)} layers "
             f"({cfg.activation_bottleneck.layers}) {cb.placement} "
-            f"N={cb.n_features} K={cb.k} J={cb.j} n_eff={cb.n_eff:g} "
-            f"({cb.selection_mode}, {cb.boundary_mode}, {cb.effective_count_metric}, "
-            f"{cb.surrogate_mode}) density={cb.k / cb.n_features:.3f} "
+            f"N={cb.n_features} K={cb.k} J={cb.j} "
+            f"({cb.selection_mode}, {cb.surrogate_mode}) "
+            f"density={cb.k / cb.n_features:.3f} "
             f"params={human(bottleneck.n_parameters)}"
         )
 
@@ -338,7 +317,6 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
     for step in range(start_step, cfg.train.max_steps):
         lr = lr_at(step, cfg.train)
         set_lr(optimizer, lr)
-        bottleneck.set_step(step)
 
         if on_step is not None:
             # Deliberately before zero_grad: a probe that runs a backward of its
@@ -350,23 +328,12 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
 
         optimizer.zero_grad(set_to_none=True)
         ce_sum = 0.0
-        recon_sum, recon_logs = 0.0, {}
-        recon_coef = (
-            cfg.activation_bottleneck.reconstruction_coef if bottleneck.enabled else 0.0
-        )
         for _ in range(accum):
             x, y = train_stream.batch(micro_bs, device)
             with autocast_context(device, dtype):
                 _, ce = model(x, y)
             micro = ce
             ce_sum += ce.detach().float().item()
-            if recon_coef:
-                # activation-dependent, so it belongs to *this* micro-batch and
-                # is accumulated with the same 1/accum weighting as the CE
-                recon, recon_logs = bottleneck.reconstruction_loss()
-                if recon is not None:
-                    recon_sum += float(recon.detach())
-                    micro = micro + recon_coef * recon
             scaler.scale(micro / accum).backward()
 
         grad_norm = torch.tensor(0.0)
@@ -377,8 +344,6 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         scaler.update()
 
         ce_mean = ce_sum / accum
-        if recon_coef:
-            recon_logs = {"bottleneck/reconstruction": recon_sum / accum}
         running_ce += ce_mean
         running_n += 1
         step1 = step + 1
@@ -396,7 +361,6 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 "perf/ms_per_step": 1000 * dt / running_n,
                 "perf/tokens_seen": step1 * tokens_per_step,
             }
-            metrics.update(recon_logs)
             bn = bottleneck.stats()
             metrics.update(bn)
             metrics["train/loss"] = metrics["train/ce"]
@@ -407,13 +371,7 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 f"| lr {lr:.2e}"
             )
             if "bottleneck/temperature" in bn:
-                line += (
-                    f" | t {bn['bottleneck/temperature']:.3g}"
-                    f" | t/std {bn['bottleneck/temperature_rel']:.3g}"
-                )
-                # LapSum modes calibrate n_eff and solve a barrier.
-                if "bottleneck/n_eff_realized" in bn:
-                    line += f" | neff {bn['bottleneck/n_eff_realized']:.1f}"
+                line += f" | t {bn['bottleneck/temperature']:.3g}"
                 if "bottleneck/budget_residual" in bn:
                     line += f" | dK {bn['bottleneck/budget_residual']:.1e}"
             if "bottleneck/active_count" in bn:

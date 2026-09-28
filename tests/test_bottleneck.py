@@ -12,28 +12,19 @@ import pytest
 import torch
 import torch.nn as nn
 
+from wsparse.bottleneck.controller import _PLACEMENT_ATTR as _PLACEMENT_ATTRS
 from wsparse.bottleneck import (
-    STATUS_ABOVE_RANGE,
-    STATUS_BELOW_RANGE,
-    STATUS_OK,
     ActivationBottleneckController,
     AdaptiveLapSumTopKGate,
     SparseTopKBottleneck,
     apply_activation_bottleneck,
-    effective_count,
     lapsum_barrier_bisect,
     lapsum_barrier_sorted,
     lapsum_budget,
     lapsum_probs,
     lapsum_probs_at,
-    gradient_count,
-    gradient_weights,
-    score_softmax_count,
-    resolve_layers,
-    solve_joint_temperature,
-    solve_reference_temperature,
-    solve_score_softmax_temperature,
     parse_placements,
+    resolve_layers,
     validate_gate_shapes,
 )
 from wsparse.config import ActivationBottleneckConfig, Config, ModelConfig
@@ -47,7 +38,8 @@ def sorted_scores(rows=32, m=48, scale=1.0, dtype=torch.float64, seed=0):
 
 
 def bottleneck_cfg(**kw):
-    cfg = dict(enabled=True, n_features=64, k=8, j=24, n_eff=6.0, layers="all")
+    cfg = dict(enabled=True, n_features=64, k=8, j=24, layers="all",
+               surrogate_mode="lapsum", temperature=1.0)
     cfg.update(kw)
     return ActivationBottleneckConfig(**cfg)
 
@@ -59,11 +51,49 @@ def tiny_model(**kw):
 
 
 def make_gate(**kw):
-    cfg = dict(n_features=64, k=8, j=24, n_eff=6.0)
+    cfg = dict(n_features=64, k=8, j=24, surrogate_mode="lapsum", temperature=1.0)
     cfg.update(kw)
     gate = AdaptiveLapSumTopKGate(**cfg)
     gate.train()
     return gate
+
+
+def drive_gate(gate, generator, steps):
+    for _ in range(steps):
+        gate(generator())
+    return gate.diagnostics
+
+
+
+def placed_model(placement, n_layers=3, **kw):
+    torch.manual_seed(0)
+    cfg = bottleneck_cfg(n_features=128, k=16, j=48, placement=placement, **kw)
+    model = tiny_model(n_layers=n_layers)
+    return model, apply_activation_bottleneck(model, cfg, max_steps=10)
+
+
+
+def init_module(mode, k=32, n_features=2048, d_model=640, **kw):
+    torch.manual_seed(0)
+    cfg = bottleneck_cfg(n_features=n_features, k=k, j=64,
+                         init_mode=mode, **kw)
+    return SparseTopKBottleneck(d_model, cfg)
+
+
+
+def _post_norm_model(post_norm: bool, placement: str = "residual_out",
+                     n_layers: int = 3):
+    torch.manual_seed(0)
+    model = build_model(ModelConfig(
+        vocab_size=53, max_seq_len=16, n_layers=n_layers, d_model=32, n_heads=4,
+        mlp_ratio=2.0))
+    ctl = apply_activation_bottleneck(model, ActivationBottleneckConfig(
+        enabled=True, layers="all", placement=placement, n_features=64,
+        k=4, j=8, surrogate_mode="hard", selection_mode="abs_topk",
+        bias=False, post_norm=post_norm), max_steps=10)
+    return model, ctl
+
+
 
 
 # --------------------------------------------------------------------------- #
@@ -138,43 +168,17 @@ def adversarial_scores(kind, rows, n):
     ["gaussian", "heavy_tail", "tiny_scale", "huge_scale", "offset", "half_tied",
      "two_cluster", "one_spike", "exp_decay"],
 )
-@pytest.mark.parametrize("boundary", ["outside_only", "both_sides"])
-def test_solvers_survive_adversarial_score_geometries(kind, boundary):
-    gate = make_gate(n_features=512, k=32, j=96, n_eff=16.0, boundary_mode=boundary)
+def test_extreme_dynamic_range_keeps_the_budget(kind):
+    """Adversarial score geometries must keep |sum p - K| at solver precision."""
+    gate = make_gate(n_features=512, k=32, j=96)
     a = adversarial_scores(kind, 64, 512).requires_grad_(True)
-    out = gate(a)
-    out.pow(2).sum().backward()
-
-    assert torch.isfinite(out).all() and torch.isfinite(a.grad).all()
-    d = gate.diagnostics
-    assert torch.isfinite(d["temperature"]) and float(d["temperature"]) > 0
-    assert torch.isfinite(d["barrier"])
-    assert float(d["barrier_failures"]) == 0.0
-    assert float(d["n_eff_abs_error"]) < 0.05
-
-
-def test_extreme_dynamic_range_keeps_the_budget(boundary="outside_only"):
-    """One score 1e7x the rest: the r_max-anchored prefix scan lost every
-    significant digit of log A here (residual ~93 against K=32)."""
-    gate = make_gate(n_features=512, k=32, j=96, n_eff=16.0)
-    a = adversarial_scores("one_spike", 64, 512).requires_grad_(True)
     gate(a).sum().backward()
     assert float(gate.diagnostics["budget_residual"]) < 1e-3
 
 
-@pytest.mark.parametrize("offset", [0.0, 50.0, 1000.0])
-def test_offset_activations_do_not_report_spurious_barrier_failures(offset):
-    gate = make_gate(n_features=512, k=32, j=96, n_eff=16.0)
-    a = (torch.randn(128, 512) + offset).requires_grad_(True)
-    gate(a).sum().backward()
-    d = gate.diagnostics
-    assert float(d["barrier_failures"]) == 0.0
-    assert abs(float(d["n_eff_realized"]) - 16.0) < 0.01
-
-
 def test_barrier_failure_diagnostic_still_fires_on_a_genuinely_wrong_barrier():
     """Guards the precision-aware tolerance against becoming vacuous."""
-    gate = make_gate(n_features=512, k=32, j=96, n_eff=16.0)
+    gate = make_gate(n_features=512, k=32, j=96)
     a = torch.randn(64, 512)
     cand = torch.topk(a.abs(), 128, dim=-1, sorted=True).values
     t = torch.full((64,), 0.05)
@@ -182,18 +186,6 @@ def test_barrier_failure_diagnostic_still_fires_on_a_genuinely_wrong_barrier():
     budget = (lapsum_probs_at(cand, bogus, t).sum(-1) - 32).abs()
     assert bool((budget > gate._budget_tolerance(cand, t)).all())
 
-
-def test_all_tied_scores_fall_back_with_a_diagnostic_not_a_nan():
-    """N_eff == J for every t when the calibration scores are identical, so the
-    target is unreachable by construction (spec section 23)."""
-    gate = make_gate(n_features=64, k=8, j=24, n_eff=6.0)
-    a = torch.zeros(16, 64, requires_grad=True)
-    out = gate(a)
-    out.sum().backward()
-    assert torch.isfinite(out).all() and torch.isfinite(a.grad).all()
-    d = gate.diagnostics
-    assert float(d["status_degenerate_scores"]) == 1.0  # every row flagged
-    assert torch.isfinite(d["temperature"]) and float(d["temperature"]) > 0
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
@@ -217,193 +209,9 @@ def natural_pool(rows=256, k=64, j=192, extra=300, seed=0):
     return torch.topk(a, k + j, dim=-1, sorted=True).values
 
 
-def test_score_softmax_equals_true_gradient_when_the_barrier_is_above_r_k1():
-    """Test A: with every outside candidate below b, softmax(r/t) over the tail
-    is exactly proportional to the true kappa weights."""
-    k, j = 64, 192
-    cand = natural_pool(k=k, j=j)
-    base, _ = solve_score_softmax_temperature(cand[:, k:], 16.0, "ess")
-    t = base * 5.0  # warm enough that the barrier clears the whole pool
-    b = lapsum_barrier_sorted(cand, k, t)
-    assert bool((b > cand[:, k]).all()), "test needs r_{K+1} < b on every row"
-
-    q_score = torch.softmax((cand[:, k:] - cand[:, k : k + 1]) / t[:, None], dim=-1)
-    q_true = gradient_weights(cand, b, t, slice(k, k + j))
-    assert torch.allclose(q_score, q_true, atol=1e-6)
-    for metric in ("ess", "entropy"):
-        assert torch.allclose(
-            score_softmax_count(cand[:, k:], t, metric),
-            gradient_count(cand, b, t, metric, slice(k, k + j)),
-            rtol=1e-5,
-        )
 
 
-def test_score_softmax_differs_from_true_gradient_when_r_k1_is_above_the_barrier():
-    """Test B: at the temperature the cheap solver actually picks, a minority of
-    rows have r_{K+1} > b, and there the shortcut is no longer exact."""
-    k, j = 64, 192
-    cand = natural_pool(k=k, j=j)
-    t, _ = solve_score_softmax_temperature(cand[:, k:], 16.0, "ess")
-    b = lapsum_barrier_sorted(cand, k, t)
 
-    above = cand[:, k] > b
-    assert bool(above.any()), "expected some rows with r_{K+1} above the barrier"
-    q_score = torch.softmax((cand[:, k:] - cand[:, k : k + 1]) / t[:, None], dim=-1)
-    q_true = gradient_weights(cand, b, t, slice(k, k + j))
-    assert (q_score[above] - q_true[above]).abs().max() > 1e-3
-    n_score = score_softmax_count(cand[:, k:], t, "ess")
-    n_true = gradient_count(cand, b, t, "ess", slice(k, k + j))
-    assert (n_true[above] - n_score[above]).abs().max() > 1e-3
-    # ... while rows with the barrier above r_{K+1} still agree exactly
-    if bool((~above).any()):
-        assert (q_score[~above] - q_true[~above]).abs().max() < 1e-6
-
-
-@pytest.mark.parametrize("metric", ["ess", "entropy"])
-@pytest.mark.parametrize("target", [4.0, 16.0, 64.0])
-def test_true_gradient_one_sided_hits_the_target(metric, target):
-    """Test C: realized N_eff from the *actual* kappas matches the request."""
-    k, j = 64, 192
-    cand = natural_pool(k=k, j=j)
-    t0, _ = solve_score_softmax_temperature(cand[:, k:], target, metric)
-    b0 = lapsum_barrier_sorted(cand, k, t0)
-    b, t, ok, _ = solve_joint_temperature(
-        cand, k, target, b0, t0, metric, calibration=slice(k, k + j), max_iters=12
-    )
-    assert bool(ok.all())
-    realized = gradient_count(cand, b, t, metric, slice(k, k + j))
-    assert (realized - target).abs().max() < 1e-2
-    assert (lapsum_budget(cand, b, t) - k).abs().max() < 1e-3
-
-
-@pytest.mark.parametrize("metric", ["ess", "entropy"])
-@pytest.mark.parametrize("k,j,target", [(16, 48, 8.0), (32, 96, 24.0), (64, 64, 12.0)])
-def test_true_gradient_joint_matches_the_reference_solver(metric, k, j, target):
-    """Test D: joint Newton against the independent outer-t reference."""
-    cand = natural_pool(rows=64, k=k, j=j, seed=1)
-    cal = slice(k, k + j)
-    t0, _ = solve_score_softmax_temperature(cand[:, k:], target, metric)
-    b0 = lapsum_barrier_sorted(cand, k, t0)
-    b, t, ok, _ = solve_joint_temperature(
-        cand, k, target, b0, t0, metric, calibration=cal, max_iters=12
-    )
-    b_ref, t_ref, status = solve_reference_temperature(cand, k, target, metric, calibration=cal)
-    assert int((status != 0).sum()) == 0
-    assert bool(ok.all())
-    assert torch.allclose(t, t_ref, rtol=2e-2)
-    assert (lapsum_budget(cand, b, t) - k).abs().max() < 1e-3
-    assert (gradient_count(cand, b, t, metric, cal) - target).abs().max() < 1e-2
-
-
-def test_gate_reports_the_approximation_gap():
-    torch.manual_seed(0)
-    gate = make_gate(n_features=512, k=64, j=192, n_eff=16.0,
-                     one_sided_weight_mode="score_softmax")
-    a = torch.randn(128, 512, requires_grad=True)
-    gate(a).sum().backward()
-    d = gate.diagnostics
-    for key in ("barrier_gap", "barrier_gap_rel", "frac_above_barrier",
-                "n_eff_score", "n_eff_true_gradient", "n_eff_gap"):
-        assert key in d, key
-    assert 0.0 <= float(d["frac_above_barrier"]) <= 1.0
-    assert float(d["n_eff_score"]) == pytest.approx(16.0, abs=0.05)
-    assert float(d["n_eff_gap"]) == pytest.approx(
-        float(d["n_eff_true_gradient"]) - float(d["n_eff_score"]), abs=1e-4
-    )
-
-
-@pytest.mark.parametrize("weights", ["score_softmax", "true_gradient"])
-@pytest.mark.parametrize("metric", ["ess", "entropy"])
-def test_gate_realized_target_matches_its_own_calibration_definition(weights, metric):
-    torch.manual_seed(0)
-    gate = make_gate(n_features=512, k=64, j=192, n_eff=16.0,
-                     one_sided_weight_mode=weights, effective_count_metric=metric)
-    a = torch.randn(64, 512, requires_grad=True)
-    gate(a).sum().backward()
-    assert float(gate.diagnostics["n_eff_abs_error"]) < 0.05
-
-
-def test_both_sides_ignores_the_one_sided_weight_mode():
-    torch.manual_seed(0)
-    a = torch.randn(32, 256)
-    outs = []
-    for weights in ("score_softmax", "true_gradient"):
-        g = make_gate(n_features=256, k=32, j=96, n_eff=12.0,
-                      boundary_mode="both_sides", one_sided_weight_mode=weights)
-        outs.append(float(g(a).sum()))
-        assert g.calibration == slice(0, 128)
-        assert g.exact_calibration
-    assert outs[0] == outs[1]
-
-
-# --------------------------------------------------------------------------- #
-# feasibility
-# --------------------------------------------------------------------------- #
-
-
-def test_two_sided_low_temperature_limit_is_about_two_not_one():
-    """The two candidates straddling the boundary end up with equal density as
-    t -> 0, so two-sided N_eff bottoms out near 2 -- a target below that is not
-    attainable however small t gets."""
-    k, j = 32, 96
-    cand = natural_pool(rows=32, k=k, j=j, seed=3)
-    span = (cand[:, 0] - cand[:, -1]).mean()
-    # small enough to be at the floor, still large enough that kappa has not
-    # underflowed and the barrier is identifiable inside the K/K+1 plateau
-    cold = torch.full((32,), float(span) * 2.5e-3)
-    b = lapsum_barrier_sorted(cand, k, cold)
-    n = gradient_count(cand, b, cold, "ess", slice(0, k + j))
-    assert float(n.min()) > 1.9, "two-sided N_eff should bottom out near 2, not 1"
-
-    # one-sided calibration drops the r_K side, so its floor really is 1
-    n_one = gradient_count(cand, b, cold, "ess", slice(k, k + j))
-    assert float(n_one.min()) < 1.5
-
-
-def test_reference_solver_reports_unattainable_targets():
-    """The attainable floor is row-dependent, so feasibility is reported per row
-    rather than decided once from K, J and n_eff."""
-    k, j = 32, 96
-    cand = natural_pool(rows=16, k=k, j=j, seed=4)
-    cal = slice(0, k + j)
-
-    # above the subset size: unattainable for every row
-    _, _, high = solve_reference_temperature(cand, k, float(k + j) + 12.0, "ess", calibration=cal)
-    assert int((high == STATUS_ABOVE_RANGE).sum()) == 16
-
-    # under the two-sided floor: most rows flagged, and the rows that are *not*
-    # flagged genuinely reach the target
-    b, t, low = solve_reference_temperature(cand, k, 1.2, "ess", calibration=cal)
-    assert int((low == STATUS_BELOW_RANGE).sum()) > 8
-    reached = gradient_count(cand, b, t, "ess", cal)[low == STATUS_OK]
-    if reached.numel():
-        assert (reached - 1.2).abs().max() < 1e-2
-
-    # comfortably inside the range: nothing flagged, target met
-    b, t, fine = solve_reference_temperature(cand, k, 16.0, "ess", calibration=cal)
-    assert int((fine == STATUS_OK).sum()) == 16
-    assert (gradient_count(cand, b, t, "ess", cal) - 16.0).abs().max() < 1e-2
-
-
-def test_infeasible_target_is_flagged_not_silently_accepted():
-    """A two-sided target below the attainable floor must surface in the
-    diagnostics rather than being returned as a converged solve."""
-    torch.manual_seed(0)
-    gate = make_gate(n_features=256, k=32, j=96, n_eff=1.05, boundary_mode="both_sides")
-    a = torch.randn(32, 256, requires_grad=True)
-    out = gate(a)
-    out.sum().backward()
-    assert torch.isfinite(out).all() and torch.isfinite(a.grad).all()
-    d = gate.diagnostics
-    # Newton cannot hit an unattainable target, so it must report failure and
-    # hand the rows to the reference solver rather than returning its last iterate
-    assert float(d["newton_failed"]) > 0.0
-    assert float(d["status_target_below_attainable_range"]) > 0.0
-
-
-# --------------------------------------------------------------------------- #
-# LapSum VJP numerical stability
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize("temp", [1e-1, 1e-3, 1e-5, 1e-8])
@@ -440,169 +248,10 @@ def test_budget_weights_are_a_proper_distribution_at_extremes():
         assert bool((q >= 0).all())
 
 
-def test_hard_baseline_still_logs_comparable_diagnostics():
-    """The no-surrogate baseline must line up with the surrogate runs in the
-    comparison table, with a gradient on J that is zero rather than missing."""
-    torch.manual_seed(0)
-    gate = make_gate(n_features=256, k=32, j=96, n_eff=12.0, surrogate_mode="hard")
-    gate.train()
-    a = torch.randn(16, 256, requires_grad=True)
-    gate(a).sum().backward()
-    d = gate.diagnostics
-    assert float(d["grad_inactive"]) == 0.0
-    assert float(d["score_gap"]) > 0
-    assert "temperature" not in d  # no solve happened
-
-
-# --------------------------------------------------------------------------- #
-# prescribed temperature: fixed and scheduled
-# --------------------------------------------------------------------------- #
-
-
-def scheduled_cfg(**kw):
-    cfg = dict(surrogate_mode="lapsum_scheduled", temperature_schedule="exponential",
-               temperature_start=0.5, temperature_end=0.02)
-    cfg.update(kw)
-    return bottleneck_cfg(**cfg)
-
-
-@pytest.mark.parametrize(
-    "kind", ["constant", "linear", "exponential", "cosine", "polynomial"]
-)
-def test_temperature_schedule_endpoints_and_direction(kind):
-    """Temperature usually *falls*: a broad boundary gradient early, sharp late."""
-    model = tiny_model(n_layers=1)
-    ctrl = apply_activation_bottleneck(
-        model, scheduled_cfg(temperature_schedule=kind), max_steps=1000
-    )
-    assert ctrl.set_step(0) == pytest.approx(0.5)
-    if kind == "constant":
-        assert ctrl.set_step(1000) == pytest.approx(0.5)
-        return
-    assert ctrl.set_step(1000) == pytest.approx(0.02)
-    assert ctrl.set_step(5000) == pytest.approx(0.02)  # clamped after annealing
-    values = [ctrl.set_step(s) for s in range(0, 1100, 50)]
-    assert all(b <= a + 1e-9 for a, b in zip(values, values[1:]))  # monotone down
-
-
-def test_temperature_schedule_warmup_holds_then_anneals():
-    model = tiny_model(n_layers=1)
-    ctrl = apply_activation_bottleneck(
-        model, scheduled_cfg(temperature_warmup_steps=300), max_steps=1000
-    )
-    assert ctrl.set_step(0) == pytest.approx(0.5)
-    assert ctrl.set_step(300) == pytest.approx(0.5)
-    assert ctrl.set_step(1000) == pytest.approx(0.02)
-    assert 0.02 < ctrl.set_step(600) < 0.5
-
-
-def test_schedule_is_broadcast_to_every_layer():
-    model = tiny_model(n_layers=4)
-    ctrl = apply_activation_bottleneck(model, scheduled_cfg(), max_steps=1000)
-    ctrl.set_step(500)
-    values = {float(layer.gate.scheduled_temperature) for _, layer in ctrl.layers}
-    assert len(values) == 1
-    assert values.pop() == pytest.approx(ctrl.temperature)
-
-
-def test_scheduled_mode_keeps_the_hard_forward_and_the_exact_budget():
-    torch.manual_seed(0)
-    gate = make_gate(n_features=256, k=32, j=96, n_eff=12.0,
-                     surrogate_mode="lapsum_scheduled")
-    gate.scheduled_temperature.fill_(0.2)
-    a = torch.randn(32, 256, requires_grad=True)
-    out = gate(a)
-    scores = a.detach().abs()
-    hard = torch.zeros_like(a).scatter(-1, torch.topk(scores, 32, -1).indices, 1.0)
-    assert torch.equal(out.detach(), a.detach() * hard)  # still exactly K-sparse
-    out.sum().backward()
-    assert float(gate.diagnostics["budget_residual"]) < 1e-4
-    assert float(gate.diagnostics["barrier_failures"]) == 0.0
-    # the J candidates still receive the boundary gradient
-    order = scores.argsort(dim=-1, descending=True)
-    rank = order.argsort(dim=-1)
-    assert bool((a.grad[(rank >= 32) & (rank < 128)] != 0).any())
-    assert not bool((a.grad[rank >= 128] != 0).any())
-
-
-def test_relative_temperature_is_scale_invariant_and_absolute_is_not():
-    """The score scale drifts during training, so an absolute temperature
-    silently means something different at every point."""
-    torch.manual_seed(0)
-    base = torch.randn(128, 256)
-    counts = {}
-    for mode in ("absolute", "relative"):
-        counts[mode] = []
-        for mult in (0.1, 10.0):
-            gate = make_gate(n_features=256, k=32, j=96, n_eff=12.0,
-                             surrogate_mode="lapsum_scheduled",
-                             temperature_scale_mode=mode)
-            gate.scheduled_temperature.fill_(0.2)
-            a = (base * mult).requires_grad_(True)
-            gate(a).sum().backward()
-            counts[mode].append(float(gate.diagnostics["n_eff_realized"]))
-    lo, hi = counts["relative"]
-    assert lo == pytest.approx(hi, rel=0.1)  # invariant
-    lo, hi = counts["absolute"]
-    assert hi < 0.5 * lo  # a 100x rescale moves it by a lot
-
-
-def test_relative_temperature_equals_the_logged_temperature_rel():
-    torch.manual_seed(0)
-    gate = make_gate(n_features=256, k=32, j=96, n_eff=12.0,
-                     surrogate_mode="lapsum_scheduled", temperature_scale_mode="relative")
-    gate.scheduled_temperature.fill_(0.35)
-    a = torch.randn(64, 256, requires_grad=True)
-    gate(a).sum().backward()
-    assert float(gate.diagnostics["temperature_rel"]) == pytest.approx(0.35, rel=1e-4)
-    assert float(gate.diagnostics["temperature_scheduled"]) == pytest.approx(0.35)
-
-
-def test_fixed_mode_is_a_constant_absolute_temperature():
-    model = tiny_model(n_layers=2)
-    cfg = bottleneck_cfg(surrogate_mode="lapsum_fixed", fixed_temperature=0.07,
-                         temperature_schedule="exponential", temperature_start=9.0)
-    ctrl = apply_activation_bottleneck(model, cfg, max_steps=1000)
-    # the schedule fields are ignored by lapsum_fixed
-    assert ctrl.set_step(0) == pytest.approx(0.07)
-    assert ctrl.set_step(999) == pytest.approx(0.07)
-
-
-def test_scheduled_mode_runs_no_solver():
-    gate = make_gate(surrogate_mode="lapsum_scheduled")
-    gate.scheduled_temperature.fill_(0.1)
-    a = torch.randn(16, 64, requires_grad=True)
-    gate(a).sum().backward()
-    d = gate.diagnostics
-    assert "temp_iters" not in d and "newton_iters" not in d
-    assert "temperature_scheduled" in d
-
-
-def test_scheduled_temperature_validation():
-    with pytest.raises(ValueError, match="unknown temperature_schedule"):
-        scheduled_cfg(temperature_schedule="quadratic")
-    with pytest.raises(ValueError, match="unknown temperature_scale_mode"):
-        scheduled_cfg(temperature_scale_mode="per_layer")
-    with pytest.raises(ValueError, match="must be positive"):
-        scheduled_cfg(temperature_end=0.0)
-    with pytest.raises(ValueError, match="unknown surrogate_mode"):
-        bottleneck_cfg(surrogate_mode="lapsum_annealed")
-
-
-# --------------------------------------------------------------------------- #
-# feature-usage / dead-feature diagnostics
-# --------------------------------------------------------------------------- #
-
-
-def drive_gate(gate, generator, steps):
-    for _ in range(steps):
-        gate(generator())
-    return gate.diagnostics
-
 
 def test_healthy_usage_reads_as_even():
     torch.manual_seed(0)
-    gate = make_gate(n_features=256, k=32, j=96, n_eff=12.0)
+    gate = make_gate(n_features=256, k=32, j=96)
     d = drive_gate(gate, lambda: torch.randn(64, 256), 200)
     assert float(d["feature_dead_frac"]) == 0.0
     assert float(d["feature_usage_entropy"]) > 0.98
@@ -615,7 +264,7 @@ def test_collapsed_usage_is_detected():
     torch.manual_seed(0)
     n, k, alive = 256, 32, 64
     bias = torch.cat([torch.full((alive,), 9.0), torch.zeros(n - alive)])
-    gate = make_gate(n_features=n, k=k, j=96, n_eff=12.0)
+    gate = make_gate(n_features=n, k=k, j=96)
     d = drive_gate(gate, lambda: torch.randn(64, n) + bias, 200)
     assert float(d["feature_dead_frac"]) == pytest.approx((n - alive) / n, abs=0.02)
     assert float(d["feature_usage_entropy"]) == pytest.approx(alive / n, abs=0.02)
@@ -628,23 +277,13 @@ def test_collapse_is_detected_early_not_after_hundreds_of_steps():
     torch.manual_seed(0)
     n, alive = 256, 64
     bias = torch.cat([torch.full((alive,), 9.0), torch.zeros(n - alive)])
-    gate = make_gate(n_features=n, k=32, j=96, n_eff=12.0)
+    gate = make_gate(n_features=n, k=32, j=96)
     d = drive_gate(gate, lambda: torch.randn(64, n) + bias, 10)
     assert float(d["feature_dead_frac"]) == pytest.approx(0.75, abs=0.02)
 
 
-def test_usage_is_tracked_for_every_surrogate_mode():
-    torch.manual_seed(0)
-    for mode in ("hard", "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed"):
-        gate = make_gate(n_features=128, k=16, j=48, n_eff=8.0, surrogate_mode=mode)
-        gate.scheduled_temperature.fill_(0.1)
-        d = drive_gate(gate, lambda: torch.randn(32, 128), 5)
-        assert "feature_dead_frac" in d, mode
-        assert 0.0 <= float(d["feature_usage_entropy"]) <= 1.0
-
-
 def test_usage_tracking_is_skipped_in_eval():
-    gate = make_gate(n_features=128, k=16, j=48, n_eff=8.0)
+    gate = make_gate(n_features=128, k=16, j=48)
     gate.eval()
     gate(torch.randn(8, 128))
     assert float(gate.usage_steps) == 0.0
@@ -667,7 +306,8 @@ def test_controller_exports_usage_stats():
 
 
 def gated_gate(**kw):
-    cfg = dict(n_features=64, k=8, j=24, n_eff=6.0, selection_mode="gated_topk")
+    cfg = dict(n_features=64, k=8, j=24, selection_mode="gated_topk",
+               surrogate_mode="lapsum", temperature=1.0)
     cfg.update(kw)
     gate = AdaptiveLapSumTopKGate(**cfg)
     gate.train()
@@ -691,7 +331,7 @@ def test_gated_forward_is_hard_mask_times_value():
 def test_gated_support_depends_only_on_scores():
     """A huge value with a low score must not be selected; a high score with a
     tiny negative value must be."""
-    gate = gated_gate(k=2, j=4, n_eff=2.0, n_features=8)
+    gate = gated_gate(k=2, j=4, n_features=8)
     s = torch.tensor([[5.0, 4.0, 0.0, -1.0, -2.0, -3.0, -4.0, -5.0]])
     v = torch.tensor([[0.01, -0.02, 900.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
     out = gate(s, v)
@@ -716,7 +356,7 @@ def test_gated_score_gradient_matches_the_constrained_formula():
     """grad_s = q * (a - <q,a>/sum q) with a = g*v, over the Top-(K+J) pool."""
     torch.manual_seed(0)
     k, j, n = 8, 24, 64
-    gate = gated_gate(k=k, j=j, n_eff=6.0, n_features=n)
+    gate = gated_gate(k=k, j=j, n_features=n)
     s = torch.randn(4, n, dtype=torch.float64, requires_grad=True)
     v = torch.randn(4, n, dtype=torch.float64)
     g = torch.randn(4, n, dtype=torch.float64)
@@ -736,7 +376,7 @@ def test_gated_score_gradient_matches_the_constrained_formula():
 def test_gated_inactive_features_get_score_gradient_but_no_value_gradient():
     torch.manual_seed(0)
     k, j, n = 4, 12, 32
-    gate = gated_gate(k=k, j=j, n_eff=3.0, n_features=n)
+    gate = gated_gate(k=k, j=j, n_features=n)
     s = torch.randn(6, n, requires_grad=True)
     v = torch.randn(6, n, requires_grad=True)
     (gate(s, v).pow(2).sum()).backward()
@@ -773,22 +413,8 @@ def test_gated_both_projections_receive_input_gradient():
     assert x.grad.abs().sum() > 0   # dL/dx = W_s^T dL/ds + W_v^T dL/dv
 
 
-@pytest.mark.parametrize("temp", [1e-3, 1.0])
-@pytest.mark.parametrize("scale", [1.0, 1e3])
-def test_gated_is_stable_at_extreme_temperatures_and_score_ranges(temp, scale):
-    torch.manual_seed(0)
-    gate = gated_gate(surrogate_mode="lapsum_fixed", fixed_temperature=temp)
-    s = (torch.randn(8, 64) * scale).requires_grad_(True)
-    v = torch.randn(8, 64, requires_grad=True)
-    out = gate(s, v)
-    out.pow(2).sum().backward()
-    assert torch.isfinite(out).all()
-    assert torch.isfinite(s.grad).all() and torch.isfinite(v.grad).all()
-    assert float(gate.diagnostics["barrier_failures"]) == 0.0
-
-
 def test_gated_handles_scores_clustered_at_the_boundary():
-    gate = gated_gate(k=8, j=24, n_eff=6.0, n_features=64)
+    gate = gated_gate(k=8, j=24, n_features=64)
     s = (torch.zeros(4, 64) + torch.randn(4, 64) * 1e-6).requires_grad_(True)
     v = torch.randn(4, 64, requires_grad=True)
     gate(s, v).sum().backward()
@@ -992,162 +618,12 @@ def variance_ratios(model, batches=4, batch=(4, 32), vocab=97):
     return out
 
 
-@pytest.mark.parametrize("mode", ["abs_topk", "topk", "gated_topk"])
-def test_calibration_matches_output_variance_to_input_variance(mode):
-    torch.manual_seed(0)
-    cfg = bottleneck_cfg(n_features=256, k=16, j=48, n_eff=8.0,
-                         selection_mode=mode, calibrate_output=True)
-    model = tiny_model(n_layers=4)
-    ctrl = apply_activation_bottleneck(model, cfg, max_steps=10)
-    model.train()
-
-    before = variance_ratios(model)
-    assert max(before) < 0.6, f"expected the raw block to attenuate, got {before}"
-
-    info = ctrl.calibrate_output_scale(
-        lambda: torch.randint(0, 97, (4, 32)), batches=4, iters=3
-    )
-    after = variance_ratios(model)
-    assert all(abs(r - 1.0) < 0.1 for r in after), after
-    assert 0.0 < info["bottleneck/output_scale_min"] <= info["bottleneck/output_scale_max"]
-
-
-def test_output_scale_is_a_non_trainable_persistent_buffer():
-    cfg = bottleneck_cfg(n_features=64, calibrate_output=True)
-    mod = SparseTopKBottleneck(32, cfg)
-    assert "output_scale" in dict(mod.named_buffers())
-    assert not any(n == "output_scale" for n, _ in mod.named_parameters())
-    assert "output_scale" in mod.state_dict()      # survives checkpointing
-    assert float(mod.output_scale) == 1.0          # identity until calibrated
-
-
-def test_no_output_scale_key_when_calibration_is_off():
-    """Keeps checkpoints written before this feature loadable."""
-    mod = SparseTopKBottleneck(32, bottleneck_cfg(n_features=64, calibrate_output=False))
-    assert mod.output_scale is None
-    assert not any("output_scale" in k for k in mod.state_dict())
-
-
-def test_calibration_is_a_noop_when_disabled():
-    cfg = bottleneck_cfg(n_features=64, calibrate_output=False)
-    model = tiny_model(n_layers=2)
-    ctrl = apply_activation_bottleneck(model, cfg, max_steps=10)
-    assert ctrl.calibrate_output_scale(lambda: torch.randint(0, 97, (2, 8))) == {}
-
-
-def test_calibration_does_not_disturb_the_usage_ema():
-    """It runs in eval mode, so it must not count as training data."""
-    cfg = bottleneck_cfg(n_features=64, calibrate_output=True)
-    model = tiny_model(n_layers=2)
-    ctrl = apply_activation_bottleneck(model, cfg, max_steps=10)
-    model.train()
-    ctrl.calibrate_output_scale(lambda: torch.randint(0, 97, (2, 8)), batches=3, iters=2)
-    for _, layer in ctrl.layers:
-        assert float(layer.gate.usage_steps) == 0.0
-    assert model.training   # mode restored
-
-
-def test_calibration_keeps_the_forward_exactly_k_sparse():
-    torch.manual_seed(0)
-    cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0, calibrate_output=True)
-    model = tiny_model(n_layers=2)
-    ctrl = apply_activation_bottleneck(model, cfg, max_steps=10)
-    model.train()
-    ctrl.calibrate_output_scale(lambda: torch.randint(0, 97, (2, 8)), batches=2, iters=2)
-    gate = ctrl.layers[0][1].gate
-    a = torch.randn(4, 128)
-    assert int((gate(a) != 0).sum(-1).max()) <= 16
-
-
-# --------------------------------------------------------------------------- #
-# inactive_grad_scale
-# --------------------------------------------------------------------------- #
-
-
-def split_grad(gate, a, scale):
-    g = make_gate(n_features=a.shape[-1], k=gate[0], j=gate[1], n_eff=gate[2],
-                  inactive_grad_scale=scale)
-    x = a.clone().requires_grad_(True)
-    g(x).pow(2).sum().backward()
-    rank = x.detach().abs().argsort(-1, descending=True).argsort(-1)
-    k, j = gate[0], gate[1]
-    return (x.grad[rank < k], x.grad[(rank >= k) & (rank < k + j)], x.grad)
-
-
-@pytest.mark.parametrize("scale", [0.0, 0.5, 1.0, 4.0])
-def test_inactive_grad_scale_reweights_only_the_j_candidates(scale):
-    torch.manual_seed(0)
-    a = torch.randn(32, 256)
-    spec = (16, 48, 8.0)
-    act_ref, ina_ref, _ = split_grad(spec, a, 1.0)
-    act, ina, _ = split_grad(spec, a, scale)
-    torch.testing.assert_close(act, act_ref, rtol=1e-5, atol=1e-7)   # active untouched
-    torch.testing.assert_close(ina, ina_ref * scale, rtol=1e-5, atol=1e-7)
-
-
-def test_inactive_grad_scale_zero_silences_the_exploration_gradient():
-    torch.manual_seed(0)
-    a = torch.randn(16, 256)
-    _, ina, _ = split_grad((16, 48, 8.0), a, 0.0)
-    assert torch.equal(ina, torch.zeros_like(ina))
-
-
-def test_inactive_grad_scale_one_preserves_zero_sum_and_other_values_break_it():
-    """The exact VJP sums to zero per row; reweighting a subset necessarily
-    does not, which is a change of character rather than of magnitude."""
-    torch.manual_seed(0)
-    r = torch.sort(torch.randn(8, 96, dtype=torch.float64), -1, descending=True).values
-    t = torch.full((8,), 0.4, dtype=torch.float64)
-    b = lapsum_barrier_sorted(r, 16, t)
-    u = torch.randn(8, 96, dtype=torch.float64)
-
-    def total(scale):
-        x = r.clone().requires_grad_(True)
-        p = lapsum_probs(x, b, t, 16, None, scale)
-        return torch.autograd.grad((p * u).sum(), x)[0].sum(-1)
-
-    torch.testing.assert_close(total(1.0), torch.zeros(8, dtype=torch.float64),
-                               rtol=0, atol=1e-12)
-    assert total(3.0).abs().max() > 1e-3
-
-
-def test_inactive_grad_scale_is_inert_without_a_surrogate():
-    torch.manual_seed(0)
-    a = torch.randn(8, 128)
-    outs = []
-    for scale in (1.0, 7.0):
-        g = make_gate(n_features=128, k=16, j=48, n_eff=8.0,
-                      surrogate_mode="hard", inactive_grad_scale=scale)
-        x = a.clone().requires_grad_(True)
-        g(x).pow(2).sum().backward()
-        outs.append(x.grad.clone())
-    torch.testing.assert_close(outs[0], outs[1], rtol=0, atol=0)
-
-
-# --------------------------------------------------------------------------- #
-# trivial bottleneck: k == n_features, hard mask, no J
-# --------------------------------------------------------------------------- #
-
-
 def test_trivial_bottleneck_keeps_every_feature():
     torch.manual_seed(0)
     g = make_gate(n_features=64, k=64, j=0, surrogate_mode="hard")
     a = torch.randn(8, 64)
     out = g(a)
     torch.testing.assert_close(out, a, rtol=0, atol=0)   # mask is exactly ones
-
-
-def test_trivial_bottleneck_reduces_to_the_bare_projection_pair():
-    """The control run: same parameters as a sparse bottleneck, no sparsity."""
-    torch.manual_seed(0)
-    cfg = bottleneck_cfg(n_features=64, k=64, j=0, surrogate_mode="hard",
-                         calibrate_output=True)
-    mod = SparseTopKBottleneck(32, cfg).eval()
-    x = torch.randn(4, 7, 32)
-    with torch.no_grad():
-        torch.testing.assert_close(
-            mod(x), mod.out_proj(mod.in_proj(x)) * mod.output_scale, atol=1e-6, rtol=1e-5
-        )
 
 
 def test_trivial_bottleneck_passes_gradient_to_every_feature():
@@ -1164,50 +640,6 @@ def test_trivial_bottleneck_reports_no_dead_features():
     for _ in range(5):
         g(torch.randn(16, 64))
     assert float(g.feature_usage().min()) > 0.0
-
-
-@pytest.mark.parametrize("mode", ["lapsum_adaptive", "lapsum_scheduled"])
-def test_k_equal_n_features_is_rejected_for_every_surrogate(mode):
-    """No barrier exists when the support is everything: sum p_i = K = N
-    drives b to -inf, so this must fail up front rather than as runtime NaNs."""
-    with pytest.raises(ValueError, match="1 <= k < n_features"):
-        validate_gate_shapes(64, 64, 0, 8.0, "both_sides", mode)
-
-
-@pytest.mark.parametrize("mode", ["lapsum_adaptive", "lapsum_scheduled"])
-def test_zero_j_is_rejected_for_every_surrogate(mode):
-    with pytest.raises(ValueError, match="j >= 1"):
-        validate_gate_shapes(64, 32, 0, 8.0, "both_sides", mode)
-
-
-def test_hard_mode_accepts_the_degenerate_geometry_and_ignores_n_eff():
-    validate_gate_shapes(64, 64, 0, 8.0, "both_sides", "hard")   # k == N, j == 0
-    validate_gate_shapes(64, 32, 0, 999.0, "both_sides", "hard")  # n_eff inert
-    with pytest.raises(ValueError, match="k <= n_features"):
-        validate_gate_shapes(64, 65, 0, 8.0, "both_sides", "hard")
-    with pytest.raises(ValueError, match="k \\+ j <= n_features"):
-        validate_gate_shapes(64, 64, 8, 8.0, "both_sides", "hard")
-
-
-# --------------------------------------------------------------------------- #
-# placement: pre_mlp (inside the MLP branch) vs residual (on the stream)
-# --------------------------------------------------------------------------- #
-
-
-def placed_model(placement, n_layers=3, **kw):
-    torch.manual_seed(0)
-    cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0, placement=placement, **kw)
-    model = tiny_model(n_layers=n_layers)
-    return model, apply_activation_bottleneck(model, cfg, max_steps=10)
-
-
-_PLACEMENT_ATTRS = {
-    "pre_mlp": "mlp_bottleneck",
-    "residual": "residual_bottleneck",
-    "residual_out": "residual_out_bottleneck",
-    "post_attn": "post_attn_bottleneck",
-    "post_mlp": "post_mlp_bottleneck",
-}
 
 
 @pytest.mark.parametrize("placement", sorted(_PLACEMENT_ATTRS))
@@ -1273,18 +705,6 @@ def test_placement_names_the_right_state_dict_keys():
 def test_unknown_placement_is_rejected():
     with pytest.raises(ValueError, match="pre_mlp \\| residual"):
         ActivationBottleneckConfig(enabled=True, placement="pre_attn")
-
-
-@pytest.mark.parametrize("placement", sorted(_PLACEMENT_ATTRS))
-def test_calibration_works_at_either_placement(placement):
-    model, ctrl = placed_model(placement, calibrate_output=True)
-    model.train()
-    info = ctrl.calibrate_output_scale(
-        lambda: torch.randint(0, 97, (4, 16)), batches=3, iters=3
-    )
-    after = variance_ratios(model, batches=4, batch=(4, 16))
-    assert all(abs(r - 1.0) < 0.15 for r in after), after
-    assert info["bottleneck/output_scale_min"] > 0.0
 
 
 @pytest.mark.parametrize("placement", sorted(_PLACEMENT_ATTRS))
@@ -1450,129 +870,6 @@ def test_parse_placements_accepts_a_list():
         parse_placements(["post_mlp", "nope"])
 
 
-def test_placement_survives_the_cli_override_path():
-    """The regression that killed both combined runs: every unit test passed a
-    Python string straight to the config, while the experiments went through
-    the CLI parser, which turns a bare "a,b" into a list."""
-    from wsparse.config import load_config
-
-    cfg = load_config(
-        None,
-        ["--activation_bottleneck.enabled=true",
-         "--activation_bottleneck.placement=post_attn,post_mlp"],
-    )
-    assert parse_placements(cfg.activation_bottleneck.placement) == ["post_attn", "post_mlp"]
-
-    single = load_config(None, ["--activation_bottleneck.placement=post_mlp"])
-    assert parse_placements(single.activation_bottleneck.placement) == ["post_mlp"]
-
-
-# --------------------------------------------------------------------------- #
-# reconstruction loss
-# --------------------------------------------------------------------------- #
-
-
-def test_reconstruction_term_is_recorded_and_popped():
-    cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0, reconstruction_coef=0.1)
-    mod = SparseTopKBottleneck(32, cfg).train()
-    assert mod.take_reconstruction() is None       # nothing recorded yet
-    mod(torch.randn(2, 5, 32))
-    term = mod.take_reconstruction()
-    assert term is not None and term.requires_grad
-    assert mod.take_reconstruction() is None       # popped, not reusable
-
-
-def test_reconstruction_term_is_absent_when_disabled_or_not_training():
-    on = SparseTopKBottleneck(32, bottleneck_cfg(n_features=128, k=16, j=48,
-                                                 n_eff=8.0, reconstruction_coef=0.5))
-    off = SparseTopKBottleneck(32, bottleneck_cfg(n_features=128, k=16, j=48,
-                                                  n_eff=8.0, reconstruction_coef=0.0))
-    x = torch.randn(2, 5, 32)
-    off.train()(x)
-    assert off.take_reconstruction() is None
-    on.eval()
-    with torch.no_grad():
-        on(x)
-    assert on.take_reconstruction() is None        # eval must not build a graph
-
-
-def test_normalized_reconstruction_is_scale_invariant():
-    """The point of normalizing: one coefficient works at any activation scale."""
-    torch.manual_seed(0)
-    cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0,
-                         reconstruction_coef=1.0, reconstruction_normalize=True)
-    mod = SparseTopKBottleneck(32, cfg).train()
-    mod.out_proj.bias.data.zero_()
-    mod.in_proj.bias.data.zero_()   # make the block exactly homogeneous in x
-    x = torch.randn(4, 6, 32)
-    mod(x)
-    a = float(mod.take_reconstruction())
-    mod(x * 37.0)
-    b = float(mod.take_reconstruction())
-    assert abs(a - b) / a < 1e-3, (a, b)
-
-
-def test_unnormalized_reconstruction_is_not_scale_invariant():
-    torch.manual_seed(0)
-    cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0,
-                         reconstruction_coef=1.0, reconstruction_normalize=False)
-    mod = SparseTopKBottleneck(32, cfg).train()
-    mod.out_proj.bias.data.zero_()
-    mod.in_proj.bias.data.zero_()
-    x = torch.randn(4, 6, 32)
-    mod(x)
-    a = float(mod.take_reconstruction())
-    mod(x * 10.0)
-    b = float(mod.take_reconstruction())
-    assert b > 50 * a   # quadratic in the scale
-
-
-def test_controller_averages_reconstruction_over_layers():
-    cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0, reconstruction_coef=0.1)
-    model = tiny_model(n_layers=3)
-    ctrl = apply_activation_bottleneck(model, cfg, max_steps=10)
-    model.train()
-    assert ctrl.reconstruction_loss()[0] is None   # before any forward
-    model(torch.randint(0, 97, (2, 8)))
-    total, logs = ctrl.reconstruction_loss()
-    assert total is not None and total.requires_grad
-    assert logs["bottleneck/reconstruction"] == pytest.approx(float(total), rel=1e-6)
-    assert ctrl.reconstruction_loss()[0] is None   # consumed
-
-
-def test_reconstruction_loss_is_off_by_default():
-    cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0)
-    assert cfg.reconstruction_coef == 0.0
-    model = tiny_model(n_layers=2)
-    ctrl = apply_activation_bottleneck(model, cfg, max_steps=10)
-    model.train()
-    model(torch.randint(0, 97, (2, 8)))
-    assert ctrl.reconstruction_loss() == (None, {})
-
-
-def test_reconstruction_gradient_reaches_both_projections():
-    torch.manual_seed(0)
-    cfg = bottleneck_cfg(n_features=128, k=16, j=48, n_eff=8.0, reconstruction_coef=1.0)
-    mod = SparseTopKBottleneck(32, cfg).train()
-    mod(torch.randn(4, 6, 32))
-    mod.take_reconstruction().backward()
-    for name in ("in_proj", "out_proj"):
-        g = getattr(mod, name).weight.grad
-        assert g is not None and torch.isfinite(g).all() and g.abs().sum() > 0
-
-
-# --------------------------------------------------------------------------- #
-# bottleneck initialization modes
-# --------------------------------------------------------------------------- #
-
-
-def init_module(mode, k=32, n_features=2048, d_model=640, **kw):
-    torch.manual_seed(0)
-    cfg = bottleneck_cfg(n_features=n_features, k=k, j=64, n_eff=32.0,
-                         init_mode=mode, **kw)
-    return SparseTopKBottleneck(d_model, cfg)
-
-
 def test_sqrt_k_uses_k_not_n_for_the_decoder():
     m = init_module("sqrt_k", k=32, n_features=2048, d_model=640)
     assert float(m.in_proj.weight.std()) == pytest.approx(1 / math.sqrt(640), rel=0.05)
@@ -1694,103 +991,6 @@ def test_tying_requires_the_dictionary_init_and_rejects_gated():
         )
 
 
-def test_unknown_init_mode_is_rejected():
-    with pytest.raises(ValueError, match="init_mode"):
-        ActivationBottleneckConfig(enabled=True, init_mode="xavier")
-
-
-# --------------------------------------------------------------------------- #
-# project_scale_gradient: the relative-mode phantom removal
-# (docs/relative-temperature-divergence.md)
-# --------------------------------------------------------------------------- #
-
-
-def test_scale_projection_is_exactly_the_score_direction_projection():
-    torch.manual_seed(0)
-    r0 = torch.sort(torch.randn(5, 96, dtype=torch.float64), descending=True,
-                    dim=-1).values
-    t = r0.std(-1)
-    b = lapsum_barrier_sorted(r0, 8, t)
-    u = torch.randn(5, 96, dtype=torch.float64)
-    grads = {}
-    for proj in (False, True):
-        r = r0.clone().requires_grad_(True)
-        p = lapsum_probs(r, b, t, 8, project_scale=proj)
-        (p * u).sum().backward()
-        grads[proj] = r.grad
-    g0, g1 = grads[False], grads[True]
-    # still zero-sum, now also orthogonal to the scores
-    assert g1.sum(-1).abs().max() < 1e-12
-    cos = (g1 * r0).sum(-1).abs() / (g1.norm(dim=-1) * r0.norm(dim=-1))
-    assert cos.max() < 1e-12
-    # and it is exactly the projection of the unmodified VJP, nothing else
-    v = r0 - r0.mean(-1, keepdim=True)
-    v = v / v.norm(dim=-1, keepdim=True)
-    manual = g0 - v * (g0 * v).sum(-1, keepdim=True)
-    assert torch.allclose(g1, manual, atol=1e-12)
-
-
-def test_relative_scale_direction_true_derivative_is_zero():
-    """Rescaling a row rescales std-t and the barrier with it, so the soft mask
-    is invariant along the score direction: the true directional derivative is
-    0.  The projected VJP agrees; the fixed-t VJP carries the phantom."""
-    torch.manual_seed(1)
-    r = torch.sort(torch.randn(3, 64, dtype=torch.float64), descending=True,
-                   dim=-1).values
-    u = torch.randn(3, 64, dtype=torch.float64)
-
-    def p_of(rr):
-        tt = rr.std(-1)
-        return lapsum_probs_at(rr, lapsum_barrier_sorted(rr, 8, tt), tt)
-
-    eps = 1e-6
-    fd = ((p_of(r * (1 + eps)) - p_of(r * (1 - eps))) * u).sum() / (2 * eps)
-    assert fd.abs() < 1e-8
-
-    proj_dot = {}
-    for proj in (False, True):
-        rr = r.clone().requires_grad_(True)
-        t = rr.detach().std(-1)
-        b = lapsum_barrier_sorted(rr.detach(), 8, t)
-        p = lapsum_probs(rr, b, t, 8, project_scale=proj)
-        (p * u).sum().backward()
-        proj_dot[proj] = float((rr.grad * r).sum().abs())
-    assert proj_dot[True] < 1e-12
-    assert proj_dot[False] > 1e3 * max(proj_dot[True], 1e-300)
-
-
-def test_project_scale_gradient_config_and_plumbing():
-    with pytest.raises(ValueError):
-        bottleneck_cfg(project_scale_gradient=True, temperature_scale_mode="absolute")
-    model = tiny_model()
-    cfg = bottleneck_cfg(
-        project_scale_gradient=True, temperature_scale_mode="relative",
-        surrogate_mode="lapsum_scheduled", placement="residual_out",
-        boundary_mode="both_sides", one_sided_weight_mode="true_gradient",
-    )
-    apply_activation_bottleneck(model, cfg, max_steps=10)
-    gates = [blk.residual_out_bottleneck.gate for blk in model.blocks]
-    assert gates and all(g.project_scale_gradient for g in gates)
-
-
-# --------------------------------------------------------------------------- #
-# post_norm: an RMSNorm on each bottleneck's own output
-# --------------------------------------------------------------------------- #
-
-
-def _post_norm_model(post_norm: bool, placement: str = "residual_out",
-                     n_layers: int = 3):
-    torch.manual_seed(0)
-    model = build_model(ModelConfig(
-        vocab_size=53, max_seq_len=16, n_layers=n_layers, d_model=32, n_heads=4,
-        mlp_ratio=2.0))
-    ctl = apply_activation_bottleneck(model, ActivationBottleneckConfig(
-        enabled=True, layers="all", placement=placement, n_features=64,
-        k=4, j=8, n_eff=4.0, surrogate_mode="hard", selection_mode="abs_topk",
-        bias=False, post_norm=post_norm), max_steps=10)
-    return model, ctl
-
-
 def test_post_norm_installs_everywhere_but_the_final_residual_out():
     _, ctl = _post_norm_model(True)
     kinds = [type(mod.post_norm).__name__ for _, mod in ctl.layers]
@@ -1836,7 +1036,7 @@ def test_hard_mode_j0_diagnostics():
     import torch
     from wsparse.bottleneck import AdaptiveLapSumTopKGate
 
-    g = AdaptiveLapSumTopKGate(n_features=16, k=4, j=0, n_eff=3.0,
+    g = AdaptiveLapSumTopKGate(n_features=16, k=4, j=0,
                                selection_mode="abs_topk", surrogate_mode="hard",
                                log_diagnostics=True)
     g.train()

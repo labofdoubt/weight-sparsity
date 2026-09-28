@@ -17,9 +17,9 @@ from wsparse.config import ActivationBottleneckConfig
 
 def make_gate(mode=None, b0=0.0, T=1.0, k=3, j=4, n=16, supp=1.0):
     return AdaptiveLapSumTopKGate(
-        n_features=n, k=k, j=j, n_eff=3.0, selection_mode="abs_topk",
+        n_features=n, k=k, j=j, selection_mode="abs_topk",
         surrogate_mode="rblapsum_sf", rblapsum_boundary_grad_mode=mode,
-        rblapsum_boundary_floor=b0, rblapsum_temperature=T,
+        rblapsum_boundary_floor=b0, temperature=T,
         rblapsum_support_scale=supp, log_diagnostics=True)
 
 
@@ -55,7 +55,7 @@ def test_forward_is_z_times_p_on_pool_zero_outside():
     scores = a.abs()
     cs, ci = torch.topk(scores, g.m, dim=-1, largest=True, sorted=True)
     b = cs[..., g.k:g.k + 1].clamp(min=0.0)
-    p = laplace_cdf((cs - b) / g.rblapsum_temperature)
+    p = laplace_cdf((cs - b) / g.temperature)
     want = torch.zeros_like(a).scatter(-1, ci, torch.gather(a, -1, ci) * p)
     assert torch.allclose(y, want, atol=1e-12)
     # everything outside the pool is exactly zero
@@ -83,7 +83,7 @@ def test_eval_hard_inference_matches_hard_rblapsum():
     a = torch.randn(6, 16)
     sf = make_gate()
     hard = AdaptiveLapSumTopKGate(
-        n_features=16, k=3, j=4, n_eff=3.0, selection_mode="abs_topk",
+        n_features=16, k=3, j=4, selection_mode="abs_topk",
         surrogate_mode="rblapsum", rblapsum_boundary_floor=0.0)
     sf.eval(), hard.eval()
     with torch.no_grad():
@@ -136,7 +136,7 @@ def _score_grads(gate, a, up):
     scores = a.abs()
     cs, ci = torch.topk(scores, gate.m, dim=-1, largest=True, sorted=True)
     b = cs[..., gate.k:gate.k + 1].clamp(min=gate.rblapsum_boundary_floor)
-    p = laplace_cdf((cs - b) / gate.rblapsum_temperature)
+    p = laplace_cdf((cs - b) / gate.temperature)
     dz = torch.gather(grad_of(gate, a, up), -1, ci)
     u_c = torch.gather(up, -1, ci)
     z_c = torch.gather(a, -1, ci)
@@ -222,9 +222,9 @@ def test_config_rejects_gated_topk():
 
 def make_gate_vg(vg, mode=None, b0=0.0, T=1.0, k=3, j=4, n=16, supp=1.0):
     return AdaptiveLapSumTopKGate(
-        n_features=n, k=k, j=j, n_eff=3.0, selection_mode="abs_topk",
+        n_features=n, k=k, j=j, selection_mode="abs_topk",
         surrogate_mode="rblapsum_sf", rblapsum_boundary_grad_mode=mode,
-        rblapsum_boundary_floor=b0, rblapsum_temperature=T,
+        rblapsum_boundary_floor=b0, temperature=T,
         rblapsum_support_scale=supp, rblapsum_sf_value_grad=vg,
         log_diagnostics=True)
 
@@ -244,7 +244,7 @@ def test_support_masks_exactly_the_tail_value_path():
     scores = a.abs()
     cs, ci = torch.topk(scores, g_pool.m, dim=-1, largest=True, sorted=True)
     b = cs[..., g_pool.k:g_pool.k + 1].clamp(min=0.0)
-    p = laplace_cdf((cs - b) / g_pool.rblapsum_temperature)
+    p = laplace_cdf((cs - b) / g_pool.temperature)
     active = torch.zeros_like(cs)
     active[..., :g_pool.k] = 1.0
     want = torch.zeros_like(a).scatter(

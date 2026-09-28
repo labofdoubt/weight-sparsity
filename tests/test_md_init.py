@@ -29,8 +29,7 @@ def tiny_cfg(**kw):
 def _bottleneck_cfg():
     return ActivationBottleneckConfig(
         enabled=True, layers="all", placement="residual_out", n_features=64,
-        k=4, j=4, n_eff=4.0, surrogate_mode="lapsum_scheduled", bias=False,
-        boundary_mode="both_sides", one_sided_weight_mode="true_gradient",
+        k=4, j=4, surrogate_mode="lapsum", temperature=1.0, bias=False,
     )
 
 
@@ -124,7 +123,9 @@ def test_md_init_steps_leave_the_spheres():
     assert not torch.allclose(rows, torch.ones_like(rows), atol=1e-4)
     w = model.blocks[0].mlp.fc1.weight
     c_f = math.sqrt(w.shape[0] * w.shape[1] / model.cfg.d_model)
-    assert abs(w.norm().item() - c_f) > 1e-3
+    # threshold sized to be far above the decoupled twin's projection residual
+    # (~1e-6) while tolerating the constant-T lapsum gradients' smaller step
+    assert abs(w.norm().item() - c_f) > 3e-4
     # no MD machinery in the optimizer state
     for st in opt.state.values():
         assert "raw_grow" not in st and "raw_gcol" not in st

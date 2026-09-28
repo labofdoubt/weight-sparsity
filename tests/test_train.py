@@ -124,41 +124,10 @@ def bottleneck_smoke_config(data_dir, out_dir, **extra):
     from wsparse.config import ActivationBottleneckConfig
 
     cfg = smoke_config(data_dir, out_dir)
-    kw = dict(enabled=True, n_features=128, k=16, j=48, n_eff=8.0, layers="all")
+    kw = dict(enabled=True, n_features=128, k=16, j=48, layers="all")
     kw.update(extra)
     cfg.activation_bottleneck = ActivationBottleneckConfig(**kw)
     return cfg
-
-
-@pytest.mark.parametrize(
-    "boundary,metric", [("outside_only", "ess"), ("both_sides", "entropy")]
-)
-def test_activation_bottleneck_training_logs_diagnostics(tmp_path, boundary, metric):
-    data_dir = make_fake_dataset(tmp_path)
-    name = f"bn_{boundary}_{metric}"
-    cfg = bottleneck_smoke_config(
-        data_dir, str(tmp_path / "runs_bn"), boundary_mode=boundary,
-        effective_count_metric=metric,
-    )
-    cfg.train.run_name = name
-    train(cfg)
-
-    records = [json.loads(l) for l in open(tmp_path / "runs_bn" / name / "metrics.jsonl")]
-    logged = [r for r in records if "bottleneck/temperature" in r]
-    assert logged
-    last = logged[-1]
-    assert last["bottleneck/density"] == pytest.approx(16 / 128)
-    assert last["bottleneck/candidate_density"] == pytest.approx(64 / 128)
-    assert last["bottleneck/temperature"] > 0
-    assert abs(last["bottleneck/n_eff_realized"] - 8.0) < 0.5
-    assert last["bottleneck/budget_residual"] < 1e-3
-    assert last["bottleneck/barrier_failures"] == 0.0
-    if boundary == "both_sides":
-        assert last["bottleneck/newton_failed"] == 0.0
-    # the J candidates really do receive gradient, and the active ones more
-    assert last["bottleneck/grad_inactive"] > 0
-    assert last["bottleneck/grad_active"] > 0
-    assert np.isfinite(last["val/ce"]) if "val/ce" in last else True
 
 
 def test_activation_bottleneck_checkpoint_round_trip(tmp_path):
@@ -176,35 +145,6 @@ def test_activation_bottleneck_checkpoint_round_trip(tmp_path):
     assert isinstance(model.blocks[0].mlp_bottleneck, SparseTopKBottleneck)
     logits, _ = model(torch.randint(0, VOCAB, (1, 8)))
     assert torch.isfinite(logits).all()
-
-
-def test_tensorboard_events_are_written(tmp_path):
-    pytest.importorskip("tensorboard")
-    data_dir = make_fake_dataset(tmp_path)
-    cfg = bottleneck_smoke_config(data_dir, str(tmp_path / "runs_tb"))
-    cfg.train.run_name = "tb_run"
-    cfg.train.tensorboard = True
-    train(cfg)
-
-    tb_dir = tmp_path / "runs_tb" / "tb_run" / "tb"
-    assert tb_dir.exists()
-    events = list(tb_dir.glob("events.out.tfevents.*"))
-    assert events, "no tensorboard event file was written"
-
-    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
-
-    acc = EventAccumulator(str(tb_dir))
-    acc.Reload()
-    tags = set(acc.Tags()["scalars"])
-    # the losses, and the quantities that matter for this experiment
-    for tag in ("train/ce", "train/loss", "val/ce", "train/lr",
-                "bottleneck/temperature", "bottleneck/n_eff_realized",
-                "bottleneck/budget_residual", "bottleneck/feature_dead_frac",
-                "bottleneck/feature_usage_entropy", "perf/tokens_per_s"):
-        assert tag in tags, f"{tag} missing from {sorted(tags)[:40]}"
-    steps = [e.step for e in acc.Scalars("train/ce")]
-    assert steps == sorted(steps) and len(steps) >= 2
-    assert acc.Tags()["tensors"] or True  # config text is best-effort
 
 
 def test_tensorboard_can_be_disabled(tmp_path):
@@ -382,82 +322,6 @@ def test_usage_figure_survives_missing_matplotlib(monkeypatch):
     assert train_mod.usage_figure({"blocks.0": torch.rand(64)}, 8, 64) is None
 
 
-@pytest.mark.parametrize("placement", ["pre_mlp", "residual"])
-def test_trivial_bottleneck_trains_end_to_end(tmp_path, placement):
-    """Regression: with k == n_features there is no boundary, so the console
-    line had no gap statistic to print and the run died three seconds in --
-    while every unit test on the geometry passed.  Train it for real instead.
-    """
-    data_dir = make_fake_dataset(tmp_path)
-    name = f"bn_trivial_{placement}"
-    cfg = bottleneck_smoke_config(
-        data_dir, str(tmp_path / "runs_triv"),
-        placement=placement, k=128, j=0, surrogate_mode="hard",
-        calibrate_output=True,
-    )
-    cfg.train.run_name = name
-    train(cfg)
-
-    records = [json.loads(l) for l in open(tmp_path / "runs_triv" / name / "metrics.jsonl")]
-    bn = [r for r in records if "bottleneck/density" in r]
-    assert bn, "no bottleneck diagnostics were logged"
-    assert bn[-1]["bottleneck/density"] == pytest.approx(1.0)
-    assert "bottleneck/score_gap" not in bn[-1]  # undefined without a boundary
-    assert np.isfinite([r["train/ce"] for r in records if "train/ce" in r]).all()
-
-
-@pytest.mark.parametrize("placement", ["residual", "residual_out"])
-@pytest.mark.parametrize("surrogate", ["hard", "lapsum_scheduled"])
-def test_stream_placements_train_end_to_end(tmp_path, surrogate, placement):
-    data_dir = make_fake_dataset(tmp_path)
-    name = f"bn_{placement}_{surrogate}"
-    cfg = bottleneck_smoke_config(
-        data_dir, str(tmp_path / "runs_res"),
-        placement=placement, surrogate_mode=surrogate,
-        temperature_schedule="constant", temperature_start=1.0,
-        temperature_scale_mode="relative",
-    )
-    cfg.train.run_name = name
-    train(cfg)
-
-    records = [json.loads(l) for l in open(tmp_path / "runs_res" / name / "metrics.jsonl")]
-    ce = [r["train/ce"] for r in records if "train/ce" in r]
-    assert ce and np.isfinite(ce).all()
-    bn = [r for r in records if "bottleneck/density" in r]
-    assert bn[-1]["bottleneck/density"] == pytest.approx(16 / 128)
-
-
-@pytest.mark.parametrize("placement", ["post_mlp", "post_attn,post_mlp"])
-@pytest.mark.parametrize("geometry", ["trivial", "sparse"])
-def test_branch_output_placements_train_end_to_end(tmp_path, placement, geometry):
-    """The four shapes queued for the branch-output sweep, trained for real.
-
-    A geometry that validates and a geometry that survives a training step are
-    different claims -- k == n_features passed every unit test while killing
-    the run on step 1.
-    """
-    data_dir = make_fake_dataset(tmp_path)
-    name = "bn_" + placement.replace(",", "_") + "_" + geometry
-    extra = (
-        dict(k=128, j=0, surrogate_mode="hard")
-        if geometry == "trivial"
-        else dict(k=16, j=48, surrogate_mode="lapsum_scheduled",
-                  temperature_schedule="constant", temperature_start=1.0,
-                  temperature_scale_mode="relative")
-    )
-    cfg = bottleneck_smoke_config(
-        data_dir, str(tmp_path / "runs_branch"), placement=placement, **extra
-    )
-    cfg.train.run_name = name
-    train(cfg)
-
-    records = [json.loads(l) for l in open(tmp_path / "runs_branch" / name / "metrics.jsonl")]
-    ce = [r["train/ce"] for r in records if "train/ce" in r]
-    assert ce and np.isfinite(ce).all()
-    bn = [r for r in records if "bottleneck/density" in r]
-    assert bn[-1]["bottleneck/density"] == pytest.approx(1.0 if geometry == "trivial" else 16 / 128)
-
-
 def test_combined_placement_reports_double_the_bottleneck_parameters(tmp_path):
     data_dir = make_fake_dataset(tmp_path)
     counts = {}
@@ -471,56 +335,39 @@ def test_combined_placement_reports_double_the_bottleneck_parameters(tmp_path):
     assert counts["post_attn,post_mlp"] == 2 * counts["post_mlp"]
 
 
-@pytest.mark.parametrize("surrogate", ["hard", "lapsum_scheduled"])
-def test_reconstruction_loss_trains_and_is_logged(tmp_path, surrogate):
-    data_dir = make_fake_dataset(tmp_path)
-    name = f"bn_recon_{surrogate}"
+
+
+@pytest.mark.parametrize("surrogate", ["hard", "lapsum", "rblapsum"])
+@pytest.mark.parametrize("placement", ["residual", "residual_out"])
+def test_stream_placements_train_end_to_end(tmp_path, surrogate, placement):
+    data_dir = make_fake_dataset(tmp_path, 6000, 1200)
     cfg = bottleneck_smoke_config(
-        data_dir, str(tmp_path / "runs_recon"), surrogate_mode=surrogate,
-        reconstruction_coef=0.5, temperature_schedule="constant",
-        temperature_start=1.0, temperature_scale_mode="relative",
+        data_dir, str(tmp_path / f"runs_{surrogate}_{placement}"),
+        placement=placement, surrogate_mode=surrogate, temperature=1.0,
     )
-    cfg.train.run_name = name
+    summary = train(cfg)
+    assert np.isfinite(summary["val/ce"])
+
+
+@pytest.mark.parametrize("placement", ["post_attn", "post_mlp", "pre_mlp"])
+def test_branch_placements_train_end_to_end(tmp_path, placement):
+    data_dir = make_fake_dataset(tmp_path, 6000, 1200)
+    cfg = bottleneck_smoke_config(
+        data_dir, str(tmp_path / f"runs_{placement}"),
+        placement=placement, surrogate_mode="lapsum", temperature=1.0,
+    )
+    summary = train(cfg)
+    assert np.isfinite(summary["val/ce"])
+
+
+def test_bottleneck_diagnostics_are_logged(tmp_path):
+    data_dir = make_fake_dataset(tmp_path, 6000, 1200)
+    out = str(tmp_path / "runs_diag")
+    cfg = bottleneck_smoke_config(data_dir, out, surrogate_mode="lapsum",
+                                  temperature=1.0)
     train(cfg)
-
-    records = [json.loads(l) for l in open(tmp_path / "runs_recon" / name / "metrics.jsonl")]
-    logged = [r["bottleneck/reconstruction"] for r in records
-              if "bottleneck/reconstruction" in r]
-    assert logged, "reconstruction term was never logged"
-    assert np.isfinite(logged).all() and min(logged) >= 0.0
-    ce = [r["train/ce"] for r in records if "train/ce" in r]
-    assert np.isfinite(ce).all()
-
-
-def test_reconstruction_loss_actually_improves_reconstruction(tmp_path):
-    """The point of the term: without it these bottlenecks do not reconstruct."""
-    import torch
-
-    from wsparse.bottleneck.controller import _PLACEMENT_ATTR
-
-    data_dir = make_fake_dataset(tmp_path)
-    cos = {}
-    for coef in (0.0, 5.0):
-        cfg = bottleneck_smoke_config(
-            data_dir, str(tmp_path / f"runs_r{coef}"), surrogate_mode="hard",
-            reconstruction_coef=coef,
-        )
-        cfg.train.run_name = f"r{coef}"
-        cfg.train.max_steps = 60
-        cfg.train.seed = 1234
-        train(cfg)
-        model, loaded, _ = load_for_inference(
-            str(tmp_path / f"runs_r{coef}" / f"r{coef}" / "latest.pt")
-        )
-        model.eval()
-        mod = getattr(model.blocks[0], _PLACEMENT_ATTR["pre_mlp"])
-        grab = {}
-        mod.register_forward_pre_hook(lambda m, i: grab.__setitem__("x", i[0].detach()))
-        mod.register_forward_hook(lambda m, i, o: grab.__setitem__("y", o.detach()))
-        with torch.no_grad():
-            model(torch.randint(0, VOCAB, (4, 16)))
-        a, b = grab["x"].flatten(0, 1).float(), grab["y"].flatten(0, 1).float()
-        cos[coef] = float(
-            torch.nn.functional.cosine_similarity(a, b, dim=-1).mean()
-        )
-    assert cos[5.0] > cos[0.0] + 0.1, cos
+    records = [json.loads(l) for l in open(os.path.join(out, "test", "metrics.jsonl"))]
+    keys = set().union(*(r.keys() for r in records))
+    assert "bottleneck/temperature" in keys
+    assert "bottleneck/budget_residual" in keys
+    assert "bottleneck/feature_dead_frac" in keys

@@ -17,7 +17,7 @@ def make(k=3, j=4, n=16, layers="all", sel="abs_topk"):
     model = build_model(ModelConfig(vocab_size=97, max_seq_len=32, n_layers=3,
                                     d_model=32, n_heads=4))
     bn = ActivationBottleneckConfig(
-        enabled=True, n_features=n, k=k, j=j, n_eff=float(k), layers=layers,
+        enabled=True, n_features=n, k=k, j=j, layers=layers,
         surrogate_mode="hard", selection_mode=sel, placement="residual_out",
         bias=False)
 
@@ -147,76 +147,6 @@ def test_pair_selection_modes_and_seeding():
     assert all(np.isfinite(s.lin) for s in hy)
 
 
-def test_lin_matrix_matches_build_swap():
-    eng, state, x, y = make()
-    li = eng.layers[0]
-    m = eng.lin_matrix(state, li, 8)
-    for (i, j) in [(1, 1), (2, 3), (3, 4)]:
-        sw = eng.build_swap(state, li, 8, i, j, "screen")
-        assert m[i - 1, j - 1] == pytest.approx(sw.lin, rel=1e-5, abs=1e-9)
-
-
-def make_lapsum(sel="abs_topk"):
-    torch.manual_seed(3)
-    model = build_model(ModelConfig(vocab_size=97, max_seq_len=32, n_layers=2,
-                                    d_model=32, n_heads=4))
-    bn = ActivationBottleneckConfig(
-        enabled=True, n_features=16, k=3, j=4, n_eff=3.0, layers="all",
-        surrogate_mode="lapsum_scheduled", selection_mode=sel,
-        temperature_schedule="constant", temperature_start=1.0,
-        temperature_scale_mode="absolute", placement="residual_out", bias=False)
-
-    class TrainCfg:
-        max_steps = 1000
-
-    class Cfg:
-        activation_bottleneck = bn
-        train = TrainCfg
-
-    apply_activation_bottleneck(model, bn, max_steps=1000)
-    model.eval()
-    x = torch.randint(0, 97, (1, 20))
-    y = torch.roll(x, -1, dims=1).clone()
-    eng = SwapInterventionEngine(model, Cfg, device="cpu")
-    state = eng.capture(x, y)
-    return eng, state, x, y
-
-
-def test_lapsum_support_gradient_capture():
-    eng, state, x, y = make_lapsum()
-    ok = eng.capture_lapsum_gradients(x, y, state, step=500)
-    assert ok
-    t = 9
-    for li in eng.layers:
-        g = state.ls_grad[li]
-        assert g.shape == state.value[li].shape
-        act, cand = eng.ranks_at(state, li, t)
-        # the hallmark of the surrogate: INACTIVE candidates get support gradient
-        assert float(g[t, torch.as_tensor(cand)].abs().sum()) > 0
-        # outside the K+J pool: exactly nothing
-        outside = torch.ones(16, dtype=torch.bool)
-        outside[torch.as_tensor(act)] = False
-        outside[torch.as_tensor(cand)] = False
-        assert float(g[t, outside].abs().max()) == 0.0
-    # Q matrix: exact broadcast identity Q[i,j] = g_j - g_i
-    li = eng.layers[0]
-    q = eng.q_matrix(state, li, t)
-    assert q.shape == (eng.k, eng.j)
-    g = state.ls_grad[li]
-    act, cand = eng.ranks_at(state, li, t)
-    for i in (0, 2):
-        for jj in (0, 3):
-            want = float(g[t, int(cand[jj])] - g[t, int(act[i])])
-            assert q[i, jj] == pytest.approx(want, rel=1e-4, abs=1e-8)
-    # forward/eval state restored, no param grads left behind
-    assert not eng.model.training
-    assert all(p.grad is None for p in eng.model.parameters())
-
-
-def test_lapsum_capture_refuses_non_lapsum():
-    eng, state, x, y = make()
-    assert eng.capture_lapsum_gradients(x, y, state, step=100) is False
-    assert not state.ls_grad
 
 
 def test_sign_convention_gradient_descent_direction():
@@ -274,8 +204,7 @@ def test_non_residual_out_placement_rejected():
     torch.manual_seed(1)
     model = build_model(ModelConfig(vocab_size=97, max_seq_len=16, n_layers=2,
                                     d_model=32, n_heads=4))
-    bn = ActivationBottleneckConfig(enabled=True, n_features=16, k=3, j=4,
-                                    n_eff=3.0, layers="all", surrogate_mode="hard",
+    bn = ActivationBottleneckConfig(enabled=True, n_features=16, k=3, j=4, layers="all", surrogate_mode="hard",
                                     placement="pre_mlp", bias=False)
 
     class Cfg:

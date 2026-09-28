@@ -15,9 +15,9 @@ from wsparse.config import ActivationBottleneckConfig
 
 def make_gate(rho, mode="through_rank_kappa", supp=1.0, k=3, j=4, n=16):
     return AdaptiveLapSumTopKGate(
-        n_features=n, k=k, j=j, n_eff=3.0, selection_mode="abs_topk",
+        n_features=n, k=k, j=j, selection_mode="abs_topk",
         surrogate_mode="rblapsum", rblapsum_boundary_grad_mode=mode,
-        rblapsum_boundary_floor=0.0, rblapsum_temperature=1.0,
+        rblapsum_boundary_floor=0.0, temperature=1.0,
         rblapsum_support_scale=supp,
         rblapsum_rho_random_perm_prob_grad=rho, log_diagnostics=True)
 

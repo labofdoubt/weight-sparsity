@@ -165,23 +165,10 @@ class SwapInterventionEngine:
             self.model.train(was_training)
 
     def set_prescribed_temperature(self, step: int) -> None:
-        """Fill each gate's scheduled_temperature for this checkpoint step.
-
-        The buffer is non-persistent (a pure function of the step), so a loaded
-        checkpoint carries the ctor default -- wrong for scheduled runs.
-        """
-        from .schedules import build_schedule
-        bn = self.cfg.activation_bottleneck
-        if bn.surrogate_mode == "lapsum_fixed":
-            t = float(bn.fixed_temperature)
-        else:
-            t = float(build_schedule(
-                kind=bn.temperature_schedule, start=bn.temperature_start,
-                end=bn.temperature_end, warmup_steps=bn.temperature_warmup_steps,
-                anneal_steps=bn.temperature_anneal_steps, power=bn.temperature_power,
-                max_steps=int(self.cfg.train.max_steps))(step))
-        for li in self.layers:
-            self.mods[li].gate.scheduled_temperature.fill_(t)
+        """No-op since the 2026-09-28 cleanup: the temperature is the constant
+        ``activation_bottleneck.temperature`` carried by the gate itself, so a
+        loaded checkpoint needs no per-step reconstruction."""
+        del step
 
     def capture_lapsum_gradients(self, x_ids: torch.Tensor, targets: torch.Tensor,
                                  state: BaselineState, step: int) -> bool:

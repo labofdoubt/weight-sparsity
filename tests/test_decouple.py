@@ -37,10 +37,9 @@ def _model(gains="row_col", bottleneck=False):
     if bottleneck:
         bn = ActivationBottleneckConfig(
             enabled=True, layers="all", placement="residual_out", n_features=64,
-            k=4, j=4, n_eff=4.0, surrogate_mode="lapsum_scheduled", bias=False,
+            k=4, j=4, surrogate_mode="lapsum", temperature=1.0, bias=False,
             # the dc runs' calibration pairing; the default one-sided mode
-            # additionally demands 1 < n_eff < j, which k=j=4 cannot satisfy
-            boundary_mode="both_sides", one_sided_weight_mode="true_gradient",
+            # additionally demands 1 < n_eff < j, which k=j=4 cannot satisfy,
         )
         apply_activation_bottleneck(model, bn, max_steps=10)
     md_init_(model, gains)

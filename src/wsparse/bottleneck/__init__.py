@@ -17,21 +17,6 @@ from .lapsum import (
 from .module import SparseTopKBottleneck
 from .rblapsum import GRAD_MODES as RBLAPSUM_GRAD_MODES
 from .rblapsum import rblapsum_gate
-from .temperature import (
-    STATUS_ABOVE_RANGE,
-    STATUS_BELOW_RANGE,
-    STATUS_DEGENERATE,
-    STATUS_NAMES,
-    STATUS_OK,
-    effective_count,
-    gradient_count,
-    gradient_weights,
-    score_softmax_count,
-    solve_joint_temperature,
-    solve_reference_temperature,
-    solve_score_softmax_temperature,
-    status_fractions,
-)
 
 __all__ = [
     "ActivationBottleneckController",
@@ -54,14 +39,7 @@ __all__ = [
     "pl_score_from_order",
     "rblapsum_gate",
     "effective_count",
-    "score_softmax_count",
-    "gradient_count",
     "gradient_weights",
-    "solve_score_softmax_temperature",
-    "solve_joint_temperature",
-    "solve_reference_temperature",
-    "status_fractions",
-    "STATUS_OK",
     "STATUS_BELOW_RANGE",
     "STATUS_ABOVE_RANGE",
     "STATUS_DEGENERATE",

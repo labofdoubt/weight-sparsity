@@ -12,13 +12,13 @@ from wsparse.model import build_model
 def make_gate(mode="detach", sel="abs_topk", b0=0.0, T=1.0, k=3, j=4, n=16):
     # b0=None exercises the mode-dependent default; a float pins it
     return AdaptiveLapSumTopKGate(
-        n_features=n, k=k, j=j, n_eff=3.0, selection_mode=sel,
+        n_features=n, k=k, j=j, selection_mode=sel,
         surrogate_mode="rblapsum", rblapsum_boundary_grad_mode=mode,
-        rblapsum_boundary_floor=b0, rblapsum_temperature=T, log_diagnostics=True)
+        rblapsum_boundary_floor=b0, temperature=T, log_diagnostics=True)
 
 
 def bn_cfg(**kw):
-    cfg = dict(enabled=True, n_features=64, k=8, j=24, n_eff=6.0, layers="all",
+    cfg = dict(enabled=True, n_features=64, k=8, j=24, layers="all",
                surrogate_mode="rblapsum", selection_mode="abs_topk",
                placement="residual_out", bias=False)
     cfg.update(kw)
@@ -33,7 +33,7 @@ def raw_a(gate, a, upstream):
     up_c = torch.gather(upstream, -1, ci)
     b_rank = cs[..., gate.k:gate.k + 1]
     b = torch.clamp(b_rank, min=gate.rblapsum_boundary_floor)
-    kap = laplace_pdf((cs - b) / gate.rblapsum_temperature) / gate.rblapsum_temperature
+    kap = laplace_pdf((cs - b) / gate.temperature) / gate.temperature
     return up_c * z_c * kap, ci, (b_rank > gate.rblapsum_boundary_floor)
 
 
@@ -48,6 +48,25 @@ def z_support_grad(gate, a, upstream):
     with torch.no_grad():
         hard = (gate(a.detach()) != 0).to(a.dtype)
     return g - upstream * hard
+
+
+def tight_batch(n=64, spacing=1e-3, base=1.0, rows=4):
+    """Candidate scores packed within the window: population guard stays off."""
+    a = torch.full((rows, n), 1e-4)
+    vals = base + spacing * torch.arange(40, dtype=torch.float32)
+    a[:, :40] = vals.flip(0)
+    return a
+
+
+
+def _zgrad(gate, a, upstream):
+    x = a.clone().requires_grad_(True)
+    gate.train()
+    y = gate(x)
+    y.backward(upstream)
+    return x.grad.clone()
+
+
 
 
 # --------------------------------------------------------------------------- #
@@ -177,7 +196,7 @@ def test_through_rank_kappa_distributes_the_correction():
     scores = a.abs()
     cs, _ = torch.topk(scores, g.m, dim=-1, largest=True, sorted=True)
     b = torch.clamp(cs[..., g.k:g.k + 1], min=g.rblapsum_boundary_floor)
-    kap = laplace_pdf((cs - b) / g.rblapsum_temperature) / g.rblapsum_temperature
+    kap = laplace_pdf((cs - b) / g.temperature) / g.temperature
     q = kap / kap.sum(-1, keepdim=True)
     g_s = a_ref - q.double() * a_ref.sum(-1, keepdim=True)
     assert float(g_s.sum(-1).abs().max()) < 1e-5              # still zero-sum
@@ -292,177 +311,6 @@ def test_boundary_floor_default_is_mode_dependent():
     # the directly-constructed gate resolves the same way
     assert make_gate(sel="abs_topk", b0=None).rblapsum_boundary_floor == 0.0
     assert make_gate(sel="topk", b0=None).rblapsum_boundary_floor == 0.0
-
-
-def test_config_validation():
-    with pytest.raises(ValueError):
-        bn_cfg(selection_mode="gated_topk")
-    with pytest.raises(ValueError):
-        bn_cfg(rblapsum_boundary_grad_mode="bogus")
-    with pytest.raises(ValueError):
-        bn_cfg(rblapsum_temperature=0.0)
-    with pytest.raises(ValueError):
-        bn_cfg(rblapsum_kernel="gaussian")
-    with pytest.raises(ValueError):
-        bn_cfg(project_scale_gradient=True)
-    cfg = bn_cfg(selection_mode="topk")
-    assert cfg.rblapsum_boundary_grad_mode == "detach"
-
-
-def test_lapsum_gate_unaffected():
-    lap = AdaptiveLapSumTopKGate(n_features=16, k=3, j=4, n_eff=3.0,
-                                 surrogate_mode="lapsum_scheduled")
-    assert [n for n, _ in lap.named_parameters()] == []
-    torch.manual_seed(7)
-    a = torch.randn(2, 16, requires_grad=True)
-    lap.train()
-    lap.scheduled_temperature.fill_(0.5)
-    y = lap(a)
-    assert int((y != 0).sum(-1).max()) == 3        # exactly K, LapSum unchanged
-
-
-# --------------------------------------------------------------------------- #
-# temperature servo (rblapsum_temperature_mode="servo")
-# --------------------------------------------------------------------------- #
-
-
-def make_servo_gate(T=1.0, k=8, j=24, n=64, **kw):
-    return AdaptiveLapSumTopKGate(
-        n_features=n, k=k, j=j, n_eff=3.0, selection_mode="abs_topk",
-        surrogate_mode="rblapsum",
-        rblapsum_boundary_grad_mode="through_rank_kappa",
-        rblapsum_boundary_floor=0.0, rblapsum_temperature=T,
-        rblapsum_temperature_mode="servo", log_diagnostics=True, **kw)
-
-
-def tight_batch(n=64, spacing=1e-3, base=1.0, rows=4):
-    """Candidate scores packed within the window: population guard stays off."""
-    a = torch.full((rows, n), 1e-4)
-    vals = base + spacing * torch.arange(40, dtype=torch.float32)
-    a[:, :40] = vals.flip(0)
-    return a
-
-
-def test_servo_fixed_mode_has_no_state():
-    g = make_gate(mode="through_rank_kappa", T=1.0)
-    assert not hasattr(g, "rb_temp")
-    assert "rb_temp" not in g.state_dict()
-
-
-def test_servo_population_guard_raises_T():
-    g = make_servo_gate(T=0.5)
-    a = torch.zeros(2, 64)
-    a[:, :32] = torch.linspace(3200.0, 100.0, 32)  # spacing 100 >> T
-    g.train()
-    g(a)
-    assert torch.isclose(g.rb_temp, torch.tensor(0.55), atol=1e-6)
-    g(a)
-    assert torch.isclose(g.rb_temp, torch.tensor(0.605), atol=1e-6)
-    g.eval()
-    g(a)
-    assert torch.isclose(g.rb_temp, torch.tensor(0.605), atol=1e-6)  # eval: frozen
-
-
-def test_servo_trim_raises_T_under_kernel_pressure():
-    # dense boundary: delta = 1e-3, b ~ 1 -> chi_geo ~ 500 >> 45 -> T rises
-    g = make_servo_gate(T=1.0)
-    a = tight_batch(spacing=1e-3)
-    g.train()
-    for _ in range(30):
-        g(a)
-    assert 1.2 < float(g.rb_temp) <= 1.02 ** 30 + 1e-6
-    assert float(g.rb_temp) <= g.rblapsum_t_max
-
-
-def test_servo_never_sharpens_below_baseline():
-    # wide boundary: chi_geo ~ 26 < 45 wants T down -- but the trim is
-    # protective-only: T stays pinned at the configured baseline
-    g = make_servo_gate(T=1.0)
-    a = tight_batch(spacing=0.05, base=1.0)
-    g.train()
-    for _ in range(30):
-        g(a)
-    assert abs(float(g.rb_temp) - 1.0) < 1e-6
-
-
-def test_servo_relaxes_back_to_baseline_after_pressure():
-    g = make_servo_gate(T=1.0)
-    g.train()
-    hot = tight_batch(spacing=1e-3)          # chi_geo ~ 500 -> T rises
-    for _ in range(40):
-        g(hot)
-    assert float(g.rb_temp) > 1.3
-    calm = tight_batch(spacing=0.05, base=1.0)  # chi_geo ~ 26 -> relax
-    for _ in range(300):
-        g(calm)
-    assert abs(float(g.rb_temp) - 1.0) < 0.02   # back to baseline, not below
-
-
-def test_servo_state_roundtrip():
-    g = make_servo_gate(T=1.0)
-    a = torch.zeros(2, 64)
-    a[:, :32] = torch.linspace(3200.0, 100.0, 32)
-    g.train()
-    g(a)
-    sd = g.state_dict()
-    assert "rb_temp" in sd and "rb_b_ema" in sd and "rb_delta_ema" in sd
-    g2 = make_servo_gate(T=1.0)
-    g2.load_state_dict(sd)
-    assert torch.isclose(g2.rb_temp, g.rb_temp)
-
-
-def test_servo_validation():
-    with pytest.raises(ValueError):
-        AdaptiveLapSumTopKGate(
-            n_features=64, k=8, j=24, n_eff=3.0, selection_mode="abs_topk",
-            surrogate_mode="rblapsum",
-            rblapsum_boundary_grad_mode="through_rank_kappa",
-            rblapsum_temperature_mode="auto")  # unknown mode
-    with pytest.raises(ValueError):
-        make_servo_gate(T=10.0)                     # T0 above t_max
-    with pytest.raises(ValueError):
-        make_servo_gate(T=1.0, k=4)                 # spacing needs k > 4
-    with pytest.raises(ValueError):
-        make_servo_gate(T=1.0, j=4)                 # spacing needs j >= 8
-    with pytest.raises(ValueError):
-        bn_cfg(rblapsum_temperature_mode="servo", rblapsum_t_min=2.0)
-    with pytest.raises(ValueError):
-        bn_cfg(rblapsum_temperature_mode="servo", rblapsum_chi_target=0.0)
-    # a valid servo config passes end to end
-    assert bn_cfg(rblapsum_temperature_mode="servo").rblapsum_temperature_mode == "servo"
-
-
-def test_servo_through_model_and_stats():
-    torch.manual_seed(7)
-    model = build_model(ModelConfig(vocab_size=97, max_seq_len=32, n_layers=2,
-                                    d_model=32, n_heads=4))
-    ctl = apply_activation_bottleneck(
-        model, bn_cfg(rblapsum_boundary_grad_mode="through_rank_kappa",
-                      rblapsum_temperature_mode="servo"), max_steps=10)
-    model.train()
-    x = torch.randint(0, 97, (2, 16))
-    _, loss = model(x, x)
-    loss.backward()
-    _, loss = model(x, x)   # second step: servo diag now has kick history
-    loss.backward()
-    stats = ctl.stats()
-    for key in ("bottleneck/rb_temp", "bottleneck/rb_win_count",
-                "bottleneck/rb_chi"):
-        assert key in stats, key
-    assert stats["bottleneck/rb_temp"] > 0
-
-
-# --------------------------------------------------------------------------- #
-# experiment knobs: support_scale and view_scale
-# --------------------------------------------------------------------------- #
-
-
-def _zgrad(gate, a, upstream):
-    x = a.clone().requires_grad_(True)
-    gate.train()
-    y = gate(x)
-    y.backward(upstream)
-    return x.grad.clone()
 
 
 def test_support_scale_zero_is_pure_hard_path():

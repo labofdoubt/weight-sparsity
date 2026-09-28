@@ -308,12 +308,7 @@ class ActivationBottleneckConfig:
     The forward pass is exact hard TopK.  The backward pass additionally lets
     the next ``j`` candidates move, through a LapSum (Laplace-CDF) soft mask
     whose temperature is re-derived every step from a target effective number
-    ``n_eff`` of features participating in the boundary exchange.
-
-    ``k`` is how many features are *active*; ``k + j`` is how many are eligible
-    for the backward surrogate; ``n_eff`` is how concentrated the surrogate
-    gradient is *within* that candidate pool.  They are three different knobs --
-    ``j`` is not ``n_eff``.
+    the surrogate's boundary exchange.
     """
 
     enabled: bool = False
@@ -340,7 +335,6 @@ class ActivationBottleneckConfig:
     n_features: int = 4096  # N
     k: int = 256  # active in the forward pass
     j: int = 768  # extra candidates that only receive gradient
-    n_eff: float = 128.0  # target effective boundary participants
 
     # topk / abs_topk rank by the single projection's output (or its
     # magnitude).  gated_topk adds an independent score projection: the support
@@ -348,23 +342,17 @@ class ActivationBottleneckConfig:
     # hard-mask gradient while dL/ds is the constrained LapSum VJP.
     selection_mode: str = "abs_topk"  # topk | abs_topk | gated_topk
 
-    effective_count_metric: str = "ess"  # ess | entropy
-    boundary_mode: str = "outside_only"  # outside_only | both_sides
-    # Only consulted for boundary_mode: outside_only.
-    #   score_softmax  cheap decoupled approximation: q = softmax(r/t) over the
-    #                  inactive candidates.  b cancels, so t solves without any
-    #                  barrier solve.  Equals the normalized LapSum gradient
-    #                  weights only while r_{K+1} < b.
-    #   true_gradient  the actual normalized kappa weights over the inactive
-    #                  candidates.  Exact, but depends on b, so (b, log t) are
-    #                  solved jointly.
-    one_sided_weight_mode: str = "score_softmax"
+    # lapsum      -> soft-in-gradient LapSum: hard TopK forward, exact
+    #                fixed-temperature barrier VJP (sum p_i = K) in the backward
+    # rblapsum    -> hard forward, rank-boundary local kernel (see below)
+    # rblapsum_sf -> the probabilities in the forward: y_i = z_i p_i
+    # hard        -> plain hard-mask backward, no surrogate
+    surrogate_mode: str = "hard"
 
-    # lapsum_adaptive   -> solve t from n_eff every step (the experiment)
-    # lapsum_scheduled  -> t follows temperature_schedule from _start to _end
-    # lapsum_fixed      -> baseline: constant absolute fixed_temperature, no solve
-    # hard              -> baseline: plain hard-mask backward, no surrogate
-    surrogate_mode: str = "lapsum_adaptive"
+    # Constant kernel/barrier temperature shared by the lapsum and rblapsum
+    # modes (unified 2026-09-28; formerly fixed_temperature and
+    # rblapsum_temperature).  Deliberately not score-scaled.
+    temperature: float = 1.0
 
 
     # ---- rblapsum (surrogate_mode: rblapsum | rblapsum_sf) ------------------ #
@@ -453,130 +441,23 @@ class ActivationBottleneckConfig:
     # neutral 0.0.  Set explicitly to reproduce the old behaviour.)
     # Resolved to a concrete float in __post_init__.
     rblapsum_boundary_floor: Optional[float] = None
-    # CONSTANT kernel temperature -- deliberately not score-scaled, to avoid a
-    # second score-dependent quantity while testing rblapsum.
-    rblapsum_temperature: float = 1.0
-    rblapsum_kernel: str = "exponential"
-    # Temperature control.  "fixed": the constant above, throughout.  "servo":
-    # a per-layer scalar T adapted online to the boundary-neighbourhood
-    # geometry (evidence: docs/rblapsum-kappa-stability.md).  Two controls:
-    # (a) population floor -- if fewer than rblapsum_window_floor candidates sit
-    #     inside the kernel window on a batch, T grows 10% that step.  The
-    #     divergence cliff is the window emptying: the kappa zero-sum then
-    #     lands on one feature (= through_rank's point sink) and the boundary
-    #     runs away.  The guard makes that state unreachable.
-    # (b) geometric-pressure trim -- otherwise T moves (<= 2%/step) to hold
-    #     chi_geo = EMA(b) / (2 T EMA(delta)) at rblapsum_chi_target, where
-    #     delta is the per-rank score spacing at the boundary.  Dimensionless
-    #     pure forward geometry: no gradient units, so it transfers across
-    #     batch sizes (a kick-based trim was falsified by its own telemetry).
-    #     Campaign calibration: every run that kept chi_geo <= ~55 survived;
-    #     every death carried >= ~58 somewhere; >= ~110 is seed-roulette
-    #     territory.  The trim is PROTECTIVE-ONLY: it never sharpens T below
-    #     the configured rblapsum_temperature (symmetric trimming walked a
-    #     k32 run into the marginal band as its geometry relaxed -- the
-    #     servo rises above the baseline when needed and relaxes back to
-    #     it, never below).  Set rblapsum_temperature to the value you
-    #     would run fixed (1.0).
-    # Servo state (T and both EMAs) is a persistent per-layer buffer, so
-    # checkpoints carry it and resumes continue the trajectory.
-    rblapsum_temperature_mode: str = "fixed"
-    rblapsum_chi_target: float = 45.0
-    rblapsum_window_floor: float = 16.0
-    rblapsum_t_min: float = 0.25
-    rblapsum_t_max: float = 8.0
-    rblapsum_servo_rate: float = 0.02
 
-    surrogate_grad_scale: float = 1.0
-    # Reweights only the gradient reaching the J candidates outside the forward
-    # support.  1.0 leaves the exact VJP alone; anything else breaks its
-    # zero-sum property, so the surrogate can move the budget instead of purely
-    # redistributing it.  No effect under surrogate_mode: hard.
-    inactive_grad_scale: float = 1.0
-    fixed_temperature: float = 1.0
-
-    # ---- output-variance calibration (before training) -------------------- #
-    # Fit a fixed, non-trainable scalar after out_proj so each block's output
-    # variance matches its input's at init.  The block projects into a K-sparse
-    # code and back, so its output variance need not resemble its input's --
-    # and it sits in front of an MLP initialized expecting the latter.
-    # How the bottleneck's own projections are initialized.  They are spliced in
-    # after the model's _init_weights pass, so "default" means PyTorch's
-    # nn.Linear defaults -- U(+-1/sqrt(fan_in)) with random biases -- which is
-    # what every run before this option used.
-    #   sqrt_k               encoder std 1/sqrt(d_model), decoder std 1/sqrt(k).
-    #                        The decoder's fan-in is n_features but only k
-    #                        coefficients are non-zero, so scaling by n_features
-    #                        under-scales the output by sqrt(n/k).  Correcting
-    #                        to k overshoots, since the survivors are the
-    #                        largest coefficients rather than typical ones.
-    #   sqrt_k_selection_corrected
-    #                        sqrt_k divided by E[|z| | selected], the mean
-    #                        magnitude of a surviving coefficient.  Lands at
-    #                        unit output scale.
-    #   unit_norm_dictionary both std 1/sqrt(d_model): decoder columns have
-    #                        expected unit norm, the usual sparse-coding
-    #                        convention.
-    # default | sqrt_k | sqrt_k_selection_corrected | unit_norm_dictionary
     init_mode: str = "default"
     # Share one matrix between encoder and decoder (decoder = encoder^T).  Only
     # meaningful when both sides have the same scale, so it requires
     # unit_norm_dictionary.  Halves the bottleneck's parameters.
     tie_encoder_decoder: bool = False
 
-    # Pull the bottleneck output back towards its input.  Without it these
-    # bottlenecks are not autoencoders at all -- the output is a learned
-    # transform of the input, measured cos(x, x_hat) ~ 0 -- which is fine for
-    # language modelling but makes "did the concept survive the bottleneck"
-    # unanswerable in the input's coordinates.
-    reconstruction_coef: float = 0.0
-    # normalized: ||x_hat - x||^2 / ||x||^2, so the coefficient means the same
-    # thing at any activation scale and at any placement
-    reconstruction_normalize: bool = True
 
-    calibrate_output: bool = False
-    calibration_batches: int = 4  # batches per pass
-    calibration_iters: int = 3  # passes; layers are sequential, so rescaling
-    #                             one changes what the next one sees  # lapsum_fixed only, always absolute
 
-    # ---- prescribed temperature (surrogate_mode: lapsum_scheduled) ----------- #
-    # t is held at temperature_start for temperature_warmup_steps, annealed to
-    # temperature_end over temperature_anneal_steps, then held there.  Falling
-    # (start > end) is the usual direction: a broad boundary gradient early, a
-    # sharp one late -- the mirror image of the weight-sparsity beta anneal.
-    temperature_schedule: str = "exponential"  # constant|linear|exponential|cosine|polynomial
-    temperature_start: float = 0.5
-    temperature_end: float = 0.02
-    temperature_warmup_steps: int = 0
-    temperature_anneal_steps: Optional[int] = None  # None -> rest of training
-    temperature_power: float = 2.0
-    # relative: t = schedule(step) * std(candidate scores), per row.  The score
-    # scale drifts across layers and over training, so an absolute temperature
-    # silently means something different at every point -- which is the whole
-    # reason the adaptive mode exists.  relative keeps the schedule comparable
-    # and is what bottleneck/temperature_rel reports directly.
-    temperature_scale_mode: str = "relative"  # relative | absolute
-
-    temperature_solver_tol: float = 1.0e-5
-    temperature_solver_max_iters: int = 12
     barrier_solver_tol: float = 1.0e-6
 
     solver_dtype: str = "float32"
     log_diagnostics: bool = True
 
-    bias: bool = True
+    bias: bool = False  # biasless projections (the family convention)
     # skip the whole LapSum/temperature machinery when not training
     hard_inference: bool = True
-    # an implicit gradient through t(r) is not implemented; the solved
-    # temperature is a detached bandwidth choice (spec section 20)
-    differentiate_temperature: bool = False
-    # Remove the surrogate VJP's component along the score direction.  Under
-    # temperature_scale_mode="relative" the soft mask is exactly invariant to a
-    # common rescaling of a row's scores, so that component is a phantom the
-    # forward can never realize -- descending along it inflates activations
-    # (docs/relative-temperature-divergence.md).  Requires relative mode: with
-    # an absolute temperature the component is a genuine gradient.
-    project_scale_gradient: bool = False
 
     def __post_init__(self) -> None:
         if not self.enabled:
@@ -612,40 +493,13 @@ class ActivationBottleneckConfig:
                 f"unknown selection_mode: {self.selection_mode} "
                 "(topk | abs_topk | gated_topk)"
             )
-        if self.effective_count_metric not in ("ess", "entropy"):
-            raise ValueError(
-                f"unknown effective_count_metric: {self.effective_count_metric} (ess | entropy)"
-            )
-        if self.boundary_mode not in ("outside_only", "both_sides"):
-            raise ValueError(
-                f"unknown boundary_mode: {self.boundary_mode} (outside_only | both_sides)"
-            )
-        if self.one_sided_weight_mode not in ("score_softmax", "true_gradient"):
-            raise ValueError(
-                f"unknown one_sided_weight_mode: {self.one_sided_weight_mode} "
-                "(score_softmax | true_gradient)"
-            )
-        if self.surrogate_mode not in (
-            "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed",
-            "rblapsum", "rblapsum_sf", "hard"
-        ):
+        if self.surrogate_mode not in ("lapsum", "rblapsum", "rblapsum_sf", "hard"):
             raise ValueError(
                 f"unknown surrogate_mode: {self.surrogate_mode} "
-                "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed "
-                "| rblapsum | rblapsum_sf | hard)"
+                "(lapsum | rblapsum | rblapsum_sf | hard)"
             )
-        from .schedules import SCHEDULE_KINDS
-
-        if self.temperature_schedule not in SCHEDULE_KINDS:
-            raise ValueError(
-                f"unknown temperature_schedule: {self.temperature_schedule} "
-                f"({' | '.join(SCHEDULE_KINDS)})"
-            )
-        if self.temperature_scale_mode not in ("relative", "absolute"):
-            raise ValueError(
-                f"unknown temperature_scale_mode: {self.temperature_scale_mode} "
-                "(relative | absolute)"
-            )
+        if self.temperature <= 0:
+            raise ValueError("temperature must be positive")
         if self.rblapsum_boundary_floor is None:
             # concrete float in the dumped config
             self.rblapsum_boundary_floor = 0.0
@@ -690,63 +544,12 @@ class ActivationBottleneckConfig:
                     f"applied by surrogate_mode={self.surrogate_mode!r}; "
                     "leave it at 'pool'"
                 )
-            if self.rblapsum_kernel != "exponential":
-                raise ValueError("rblapsum_kernel: only 'exponential' is implemented")
-            if self.rblapsum_temperature <= 0:
-                raise ValueError("rblapsum_temperature must be positive")
-            if self.rblapsum_temperature_mode not in ("fixed", "servo"):
-                raise ValueError(
-                    "rblapsum_temperature_mode must be fixed | servo, "
-                    f"got {self.rblapsum_temperature_mode!r}")
-            if self.rblapsum_temperature_mode == "servo":
-                if not (0 < self.rblapsum_t_min <= self.rblapsum_temperature
-                        <= self.rblapsum_t_max):
-                    raise ValueError(
-                        "servo needs 0 < rblapsum_t_min <= "
-                        "rblapsum_temperature <= rblapsum_t_max")
-                if self.rblapsum_chi_target <= 0:
-                    raise ValueError("rblapsum_chi_target must be positive")
-                if self.rblapsum_window_floor < 1:
-                    raise ValueError("rblapsum_window_floor must be >= 1")
-                if not 0 < self.rblapsum_servo_rate <= 0.2:
-                    raise ValueError("rblapsum_servo_rate must be in (0, 0.2]")
-            if self.inactive_grad_scale != 1.0:
-                raise ValueError(
-                    "inactive_grad_scale is a LapSum-VJP knob and is not applied by "
-                    f"surrogate_mode={self.surrogate_mode!r}; leave it at 1.0"
-                )
-            if self.project_scale_gradient:
-                raise ValueError(
-                    "project_scale_gradient is LapSum-specific; rblapsum has its own "
-                    "boundary_grad_mode ('project') for common-mode removal"
-                )
-        if self.surrogate_mode == "lapsum_scheduled":
-            # both read the prescribed temperature schedule, so both need t > 0
-            if self.temperature_start <= 0 or self.temperature_end <= 0:
-                raise ValueError("temperature_start and temperature_end must be positive")
-        if self.surrogate_mode == "lapsum_fixed" and self.fixed_temperature <= 0:
-            raise ValueError("fixed_temperature must be positive")
         if self.solver_dtype not in ("float32", "float64"):
             raise ValueError(f"unknown solver_dtype: {self.solver_dtype} (float32 | float64)")
-        if self.differentiate_temperature:
-            raise ValueError(
-                "differentiate_temperature=true is not implemented: the adaptive "
-                "temperature is a detached bandwidth choice"
-            )
-        if self.project_scale_gradient and self.temperature_scale_mode != "relative":
-            raise ValueError(
-                "project_scale_gradient=true requires temperature_scale_mode="
-                "'relative': with an absolute temperature the soft mask is not "
-                "scale-invariant, so the score-direction gradient component is "
-                "genuine and must be kept"
-            )
         # shape rules live with the gate so the module can be built standalone
         from .bottleneck.gate import validate_gate_shapes
 
-        validate_gate_shapes(
-            self.n_features, self.k, self.j, self.n_eff,
-            self.boundary_mode, self.surrogate_mode,
-        )
+        validate_gate_shapes(self.n_features, self.k, self.j, self.surrogate_mode)
 
 
 # --------------------------------------------------------------------------- #
@@ -947,11 +750,58 @@ def _migrate_legacy(tree: Dict[str, Any]) -> None:
         )
         for k in _REMOVED_AB:
             ab.pop(k, None)
-        if ab.get("surrogate_mode") in ("swap_gibbs", "jumprelu", "reinforce_topk"):
+        mode = ab.get("surrogate_mode")
+        if mode in ("swap_gibbs", "jumprelu", "reinforce_topk"):
             raise ValueError(
-                f"surrogate_mode={ab['surrogate_mode']!r} was removed in the "
+                f"surrogate_mode={mode!r} was removed in the "
                 "2026-09-28 cleanup; check out an earlier commit to rebuild "
                 "such a run")
+        if (mode == "lapsum_scheduled"
+                and ab.get("temperature_schedule") == "constant"
+                and ab.get("temperature_scale_mode") == "absolute"):
+            # a constant absolute schedule IS the surviving constant-T mode
+            ab["surrogate_mode"] = mode = "lapsum"
+            ab.setdefault("temperature", ab.get("temperature_start", 1.0))
+        if mode in ("lapsum_adaptive", "lapsum_scheduled"):
+            raise ValueError(
+                f"surrogate_mode={mode!r} (adaptive/scheduled temperature) was "
+                "removed in the 2026-09-28 cleanup; only the constant-"
+                "temperature 'lapsum' survives.  Check out an earlier commit "
+                "to rebuild such a run")
+        if mode == "lapsum_fixed":
+            if ab.get("temperature_scale_mode", "relative") != "absolute":
+                raise ValueError(
+                    "lapsum_fixed with a RELATIVE temperature scale was removed "
+                    "in the 2026-09-28 cleanup; check out an earlier commit")
+            ab["surrogate_mode"] = "lapsum"
+            ab.setdefault("temperature", ab.get("fixed_temperature", 1.0))
+        if ab.get("rblapsum_temperature_mode") == "servo":
+            raise ValueError(
+                "the rblapsum temperature servo was removed in the 2026-09-28 "
+                "cleanup; check out an earlier commit to rebuild such a run")
+        if "temperature" not in ab and "rblapsum_temperature" in ab:
+            ab["temperature"] = ab["rblapsum_temperature"]
+        if float(ab.get("reconstruction_coef", 0.0) or 0.0) != 0.0:
+            raise ValueError("reconstruction_coef was removed in the 2026-09-28 "
+                             "cleanup; check out an earlier commit")
+        if ab.get("calibrate_output"):
+            raise ValueError("calibrate_output was removed in the 2026-09-28 "
+                             "cleanup; check out an earlier commit")
+        for k in ("n_eff", "effective_count_metric", "boundary_mode",
+                  "one_sided_weight_mode", "fixed_temperature",
+                  "temperature_schedule", "temperature_start", "temperature_end",
+                  "temperature_warmup_steps", "temperature_anneal_steps",
+                  "temperature_power", "temperature_scale_mode",
+                  "temperature_solver_tol", "temperature_solver_max_iters",
+                  "differentiate_temperature", "project_scale_gradient",
+                  "inactive_grad_scale", "surrogate_grad_scale",
+                  "rblapsum_temperature", "rblapsum_kernel",
+                  "rblapsum_temperature_mode", "rblapsum_chi_target",
+                  "rblapsum_window_floor", "rblapsum_t_min", "rblapsum_t_max",
+                  "rblapsum_servo_rate", "reconstruction_coef",
+                  "reconstruction_normalize", "calibrate_output",
+                  "calibration_batches", "calibration_iters"):
+            ab.pop(k, None)
     """Pin pre-``logit_scale`` checkpoints to the behaviour they were trained with.
 
     A checkpoint saved before ``logit_scale`` existed was trained with a tied head

@@ -13,7 +13,6 @@ import torch
 import torch.nn as nn
 
 from ..config import ActivationBottleneckConfig
-from ..schedules import Schedule, build_schedule
 from .module import SparseTopKBottleneck
 
 
@@ -95,41 +94,14 @@ class ActivationBottleneckController:
         self.model = model
         self.enabled = cfg.enabled
         self.layers: List[Tuple[str, SparseTopKBottleneck]] = []
-        self.schedule: Schedule = build_schedule(
-            kind=cfg.temperature_schedule,
-            start=cfg.temperature_start,
-            end=cfg.temperature_end,
-            warmup_steps=cfg.temperature_warmup_steps,
-            anneal_steps=cfg.temperature_anneal_steps,
-            power=cfg.temperature_power,
-            max_steps=max_steps,
-        )
-        self._temperature = float(cfg.temperature_start)
         if self.enabled:
             self._install()
-            self.set_step(0)
-
-    # ---- temperature schedule ------------------------------------------------ #
-    @property
-    def temperature(self) -> float:
-        """The current scheduled temperature (before any per-row scaling)."""
-        return self._temperature
 
     def set_step(self, step: int) -> float:
-        """Update the prescribed temperature for this optimizer step.
+        """No-op kept for probe compatibility: temperatures are constants now."""
+        del step
+        return 0.0
 
-        A no-op for the adaptive and hard modes, which never read it -- the
-        adaptive solvers derive ``t`` from the score geometry instead.
-        """
-        if not self.enabled:
-            return 0.0
-        if self.cfg.surrogate_mode == "lapsum_fixed":
-            self._temperature = float(self.cfg.fixed_temperature)
-        else:
-            self._temperature = float(self.schedule(step))
-        for _, layer in self.layers:
-            layer.gate.scheduled_temperature.fill_(self._temperature)
-        return self._temperature
 
     def _install(self) -> None:
         cfg = self.cfg
@@ -158,25 +130,6 @@ class ActivationBottleneckController:
                 label = f"blocks.{i}" if len(placements) == 1 else f"blocks.{i}.{name}"
                 self.layers.append((label, bottleneck))
 
-    # ---- objective ----------------------------------------------------------- #
-    def reconstruction_loss(self):
-        """Mean reconstruction error over the installed bottlenecks.
-
-        Must be called after each forward and before the matching backward: the
-        terms are activation-dependent, so unlike the weight-sparsity penalty
-        they cannot be recomputed once per optimizer step.
-
-        Returns ``(None, {})`` when the loss is disabled, so the caller can skip
-        it without building a graph.
-        """
-        if not self.enabled or not self.cfg.reconstruction_coef:
-            return None, {}
-        terms = [t for t in (layer.take_reconstruction() for _, layer in self.layers)
-                 if t is not None]
-        if not terms:
-            return None, {}
-        total = torch.stack(terms).mean()
-        return total, {"bottleneck/reconstruction": float(total.detach())}
 
     def parameters(self) -> List[nn.Parameter]:
         params: List[nn.Parameter] = []
@@ -188,59 +141,6 @@ class ActivationBottleneckController:
     def n_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters())
 
-    @torch.no_grad()
-    def calibrate_output_scale(self, next_batch, batches: int = 4, iters: int = 3) -> Dict[str, float]:
-        """Fit each bottleneck's output gain so ``var(y) ~ var(x)`` at init.
-
-        The block is a projection into a K-sparse code and back, so its output
-        variance need not resemble its input's -- and it is inserted in front of
-        an MLP that was initialized expecting the latter.  This measures both
-        with forward hooks over a handful of batches and sets a fixed scalar
-        ``sqrt(var_in / var_out)`` after ``out_proj``.
-
-        Applied multiplicatively over ``iters`` passes because the layers are
-        sequential: rescaling layer *l* changes what layer *l+1* sees.  Runs in
-        eval mode under no_grad so it neither trains anything nor pollutes the
-        feature-usage EMA.
-        """
-        if not self.enabled or not self.cfg.calibrate_output:
-            return {}
-        mods = [layer for _, layer in self.layers]
-        was_training = self.model.training
-        self.model.eval()
-        acc: Dict[nn.Module, List[torch.Tensor]] = {}
-
-        def hook(mod, inp, out):
-            x = inp[0].detach().float()
-            y = out.detach().float()
-            a = acc[mod]
-            a[0] += x.sum(); a[1] += x.pow(2).sum(); a[2] += x.numel()
-            a[3] += y.sum(); a[4] += y.pow(2).sum(); a[5] += y.numel()
-
-        for _ in range(max(1, iters)):
-            acc = {m: [0.0] * 6 for m in mods}
-            handles = [m.register_forward_hook(hook) for m in mods]
-            try:
-                for _ in range(max(1, batches)):
-                    self.model(next_batch())
-            finally:
-                for h in handles:
-                    h.remove()
-            for m in mods:
-                sx, sxx, nx, sy, syy, ny = acc[m]
-                var_in = sxx / nx - (sx / nx) ** 2
-                var_out = syy / ny - (sy / ny) ** 2
-                if float(var_out) <= 0 or float(var_in) <= 0:
-                    continue
-                m.output_scale.mul_((var_in / var_out).sqrt())
-
-        self.model.train(was_training)
-        scales = [float(m.output_scale) for m in mods]
-        return {
-            "bottleneck/output_scale": sum(scales) / len(scales),
-            "bottleneck/output_scale_min": min(scales),
-            "bottleneck/output_scale_max": max(scales),
-        }
 
     @torch.no_grad()
     def usage_vectors(self) -> Dict[str, torch.Tensor]:
@@ -274,8 +174,7 @@ class ActivationBottleneckController:
             out[f"bottleneck/{key}"] = sum(values) / len(values)
         if out:
             out["bottleneck/layers"] = float(len(self.layers))
-            if self.cfg.surrogate_mode in ("lapsum_scheduled", "lapsum_fixed"):
-                out["bottleneck/temperature_target"] = self._temperature
+
             out["bottleneck/density"] = self.cfg.k / self.cfg.n_features
             out["bottleneck/candidate_density"] = (
                 self.cfg.k + self.cfg.j
