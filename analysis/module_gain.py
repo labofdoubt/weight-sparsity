@@ -94,6 +94,10 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--offset", type=int, default=4242)
+    ap.add_argument("--proj-scale", type=float, default=1.0,
+                    help="multiply BOTH bottleneck projections' weights by this "
+                         "after initialization, so the product of their stds "
+                         "scales by its square; the identity is 1.0")
     ap.add_argument("--override", action="append", default=[],
                     help="config override applied to the loaded run config, "
                          "e.g. --override activation_bottleneck.k=64 "
@@ -126,6 +130,16 @@ def main() -> None:
             from wsparse.decouple import md_init_
             md_init_(model, cfg.model.decouple_gains)
         step = 0
+    if args.proj_scale != 1.0:
+        # A tied decoder IS the encoder transposed, so scaling in_proj already
+        # scales both sides; touching out_proj as well would square the factor.
+        with torch.no_grad():
+            for _, mod in bn.layers:
+                mod.in_proj.weight.mul_(args.proj_scale)
+                if not getattr(mod, "tied", False):
+                    mod.out_proj.weight.mul_(args.proj_scale)
+        print(f"[gain] scaled both projections by {args.proj_scale:.4f} "
+              f"(std product x{args.proj_scale ** 2:.4f})")
     model.to(device).train()
 
     cb = cfg.activation_bottleneck
@@ -181,7 +195,8 @@ def main() -> None:
         "n_layers": int(cfg.model.n_layers), "placement": str(cb.placement),
         "post_norm": bool(cb.post_norm), "surrogate_mode": str(cb.surrogate_mode),
         "batch": int(args.batch), "seq_len": int(cfg.data.seq_len),
-        "offset": int(args.offset), "layers": [],
+        "offset": int(args.offset), "proj_scale": float(args.proj_scale),
+        "layers": [],
     }
     for li in range(len(bn.layers)):
         rec = {"layer": li}
