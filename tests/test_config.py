@@ -20,7 +20,7 @@ def test_d_mlp_rounding():
 
 @pytest.mark.parametrize(
     "name", ["bn_hard.yaml", "bn_lapsum.yaml", "bn_dense.yaml",
-             "fineweb_rbk_500m.yaml"]
+             "fineweb_rbk_500m.yaml", "ca_rbk_k32_j32_stab_pnorm_md.yaml"]
 )
 def test_shipped_configs_load(name):
     cfg = load_config(os.path.join(CONFIG_DIR, name))
