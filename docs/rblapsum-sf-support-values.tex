@@ -255,26 +255,26 @@ horizon is 10k steps. The soft-eval figure repeats \code{val\_soft/ce} for
 the sf-vsup family against the same ladder.
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/sfv_pool_k64.png}
+\includegraphics[width=\textwidth]{figures/sfv/sfv_pool_k64.png}
 \caption{Pool $\Kp=64$. The single cell $(32,32)$ sits $0.07$--$0.10$ nats
 above its twin under hard eval -- the same offset the unrestricted soft
 forward shows here.}
 \end{figure}
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/sfv_pool_k128.png}
+\includegraphics[width=\textwidth]{figures/sfv/sfv_pool_k128.png}
 \caption{Pool $\Kp=128$. Both cells trail their twins by $0.06$--$0.24$
 nats; the ordering and the $J$-dependence match the unrestricted family.}
 \end{figure}
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/sfv_pool_k256.png}
+\includegraphics[width=\textwidth]{figures/sfv/sfv_pool_k256.png}
 \caption{Pool $\Kp=256$. The $T=2$ cell at $(128,128)$ ends at its guard
 stop (cross), the second soft-forward death of this cell at 3.5k steps.}
 \end{figure}
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/sfv_pool_k512.png}
+\includegraphics[width=\textwidth]{figures/sfv/sfv_pool_k512.png}
 \caption{Pool $\Kp=512$. The widest windows: the orange family sits
 $0.05$--$0.9$ nats above the blues under hard eval. Unlike the unrestricted
 soft forward, the $T=2$ cells at $K=128$ and $256$ do not drift upward late
@@ -282,7 +282,7 @@ soft forward, the $T=2$ cells at $K=128$ and $256$ do not drift upward late
 \end{figure}
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/sfv_soft_eval.png}
+\includegraphics[width=\textwidth]{figures/sfv/sfv_soft_eval.png}
 \caption{sf-vsup under its own forward (\code{val\_soft/ce}), per pool,
 against the pool-matched hard Top-$\Kp$ baseline (dashed). Solid $T=2$,
 dotted post-norm. Every curve ends below the dashed reference; the cluster

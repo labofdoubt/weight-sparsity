@@ -223,7 +223,7 @@ $k$ & $j$ & $T$ & onset & final CE & $k$ & $j$ & $T$ & onset & final CE \\
 \end{table}
 
 \begin{figure}[h]\centering
-\includegraphics[width=\textwidth]{figures/kstab_fate_grid.png}
+\includegraphics[width=\textwidth]{figures/kstab/kstab_fate_grid.png}
 \caption{Train-loss fate grid of the 22 \code{through\_rank\_kappa} campaign
 runs; dotted lines mark destabilisation onsets.}
 \end{figure}
@@ -247,7 +247,7 @@ Facts the TB signals add (all runs, dying and stable):
 \end{itemize}
 
 \begin{figure}[h]\centering
-\includegraphics[width=\textwidth]{figures/kstab_boundary_inflation.png}
+\includegraphics[width=\textwidth]{figures/kstab/kstab_boundary_inflation.png}
 \caption{The boundary score inflates for thousands of steps before the loss
 reacts. Left: the $k{=}64$ axis; right: the $k{=}32$, $T{=}0.5$ row.}
 \end{figure}
@@ -435,7 +435,7 @@ outlived detach $4\times$), and what kills it is the burst that transiently
 strips its window. Consistent with v3.
 
 \begin{figure}[h]\centering
-\includegraphics[width=\textwidth]{figures/kstab_cascade_and_geometry.png}
+\includegraphics[width=\textwidth]{figures/kstab/kstab_cascade_and_geometry.png}
 \caption{Left: once past the point of no return the inflation is a clean depth
 cascade --- each block amplifies the scale handed up by the one below
 (\code{residual\_out} replaces the residual, so scale multiplies through
@@ -445,13 +445,13 @@ fixed $T$'' always fails eventually.}
 \end{figure}
 
 \begin{figure}[h]\centering
-\includegraphics[width=.72\textwidth]{figures/kstab_dose_response.png}
+\includegraphics[width=.72\textwidth]{figures/kstab/kstab_dose_response.png}
 \caption{Kernel pressure $\chi$ sets the burst rate; bursts kill
 (cross = died, circle = survived 20k).}
 \end{figure}
 
 \begin{figure}[h]\centering
-\includegraphics[width=.8\textwidth]{figures/kstab_t01_anatomy.png}
+\includegraphics[width=.8\textwidth]{figures/kstab/kstab_t01_anatomy.png}
 \caption{Anatomy of the $T{=}0.1$ collapse ($k{=}32$, $j{=}96$, layer 4).}
 \end{figure}
 
@@ -600,7 +600,7 @@ death this time --- but two discoveries below & partial \\
 Two refinements from the gradient-resolved replica (figure below):
 
 \begin{figure}[h]\centering
-\includegraphics[width=\textwidth]{figures/kstab_probe5k_dip_creep.png}
+\includegraphics[width=\textwidth]{figures/kstab/kstab_probe5k_dip_creep.png}
 \caption{Gradient-resolved replica of $k64/j448/T1$. Left: the early
 transient's window-population dive. Right: kernel pressure creeps upward
 through training.}
@@ -729,7 +729,7 @@ fixed $T{=}0.1$: dead in 640 steps; fixed $T{=}1$ same $j$: 1.525 \\
 \end{center}
 
 \begin{figure}[h]\centering
-\includegraphics[width=\textwidth]{figures/kstab_servo_headline.png}
+\includegraphics[width=\textwidth]{figures/kstab/kstab_servo_headline.png}
 \caption{Servo vs.\ fixed temperature. Left: $k{=}64$, $j{=}448$; middle:
 $k{=}96$, $j{=}416$; right: the temperatures the servo discovers and tracks.}
 \end{figure}
@@ -749,7 +749,7 @@ and the roulette picked the null test. A cruel but perfect demonstration of
 the theory's own dose--response claim.
 
 \begin{figure}[h]\centering
-\includegraphics[width=\textwidth]{figures/kstab_nulltest_postmortem.png}
+\includegraphics[width=\textwidth]{figures/kstab/kstab_nulltest_postmortem.png}
 \caption{Null-test post-mortem. Left: the symmetric trim walks $T$ into the
 marginal band; the boundary inflates; the late burst is unrecoverable. Right:
 the stable fixed $k32/T1$ run's $\chigeo$ falls over training --- holding 45

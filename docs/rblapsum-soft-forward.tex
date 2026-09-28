@@ -231,13 +231,13 @@ figure that follows them shows \code{val\_soft/ce} for the soft family
 against the same hard ladder.
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/sf_pool_k64.png}
+\includegraphics[width=\textwidth]{figures/sf/sf_pool_k64.png}
 \caption{Pool $\Kp=64$. The single cell $(32,32)$: the soft model's hard-eval
 curve runs $\sim0.13$ nats above its twin in both variants.}
 \end{figure}
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/sf_pool_k128.png}
+\includegraphics[width=\textwidth]{figures/sf/sf_pool_k128.png}
 \caption{Pool $\Kp=128$. The $T=2$ soft cells drift \emph{upward} over the
 second half of training as the tail mass grows; the post-norm holds flat but
 offset. The kappa family and the hard baseline are unchanged from the earlier
@@ -245,14 +245,14 @@ note.}
 \end{figure}
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/sf_pool_k256.png}
+\includegraphics[width=\textwidth]{figures/sf/sf_pool_k256.png}
 \caption{Pool $\Kp=256$. The soft $T=2$ cell at $(128,128)$ ends at its
 guard stop (cross). Hard-eval damage orders inversely with $K$ in both
 variants.}
 \end{figure}
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/sf_pool_k512.png}
+\includegraphics[width=\textwidth]{figures/sf/sf_pool_k512.png}
 \caption{Pool $\Kp=512$. The widest windows: the soft family sits
 $0.09$--$1.1$ nats above the blue twins under hard eval, with the $(128,384)$
 $T=2$ excursion near step 7000 visible; the recovered curve returns to its
@@ -260,7 +260,7 @@ trend.}
 \end{figure}
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/sf_soft_eval.png}
+\includegraphics[width=\textwidth]{figures/sf/sf_soft_eval.png}
 \caption{The soft family under its own forward (\code{val\_soft/ce}), one
 panel per pool, against the pool-matched hard Top-$\Kp$ baseline (dashed).
 Solid $T=2$, dotted post-norm. Every curve ends below the dashed reference;

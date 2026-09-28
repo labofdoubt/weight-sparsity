@@ -210,7 +210,7 @@ stays moderate) --- visible as the rightmost points of
 Fig.~1; where it matters, the exact \(\Pisurr\) should be used.
 
 \begin{figure}[h]\centering
-\includegraphics[width=.9\textwidth]{figures/sdn_Pi.png}
+\includegraphics[width=.9\textwidth]{figures/scale-dynamics/sdn_Pi.png}
 \caption{Left: exact \(\Pisurr\) against the realized gain
 \(\lVert g_s\rVert^2/\lVert u\rVert^2\) across states and blocks. Right:
 exact \(\Pisurr\) against the dense-boundary approximation. Each point is
@@ -244,7 +244,7 @@ implies instability is a separate question (H3).
 \section{Results 3: signed drift versus heating (H3)}
 
 \begin{figure}[h]\centering
-\includegraphics[width=\textwidth]{figures/sdn_decomposition.png}
+\includegraphics[width=\textwidth]{figures/scale-dynamics/sdn_decomposition.png}
 \caption{One-step change of \(\log R_{\mathrm{all}}\) per training step,
 decomposed into signed task drift, signed surrogate drift (antithetic odd
 parts) and heating (even part), pooled over blocks, at thirteen states.}
@@ -278,7 +278,7 @@ halving, i.e.\ there it \emph{is} mostly stochastic.
 \end{enumerate}
 
 \begin{figure}[h]\centering
-\includegraphics[width=\textwidth]{figures/sdn_lr_scaling.png}
+\includegraphics[width=\textwidth]{figures/scale-dynamics/sdn_lr_scaling.png}
 \caption{\label{fig:lr}Drift and heating versus learning-rate multiplier at
 three states, with reference slopes \(\propto\) lr and \(\propto\)
 lr\(^2\).}
@@ -294,7 +294,7 @@ range with decreasing strength. The task drift is exactly
 be so, which also validates the isolation of the surrogate path.
 
 \begin{figure}[h]\centering
-\includegraphics[width=\textwidth]{figures/sdn_Falpha.png}
+\includegraphics[width=\textwidth]{figures/scale-dynamics/sdn_Falpha.png}
 \caption{\label{fig:falpha}Surrogate and task signed drift as functions of
 an imposed function-preserving scale factor \(\alpha\) at four states.}
 \end{figure}
@@ -318,7 +318,7 @@ Instability corresponds to heating exceeding restoration, layer by layer.
 \section{Results 4: counterfactual interventions and the death arc (H4, causality)}
 
 \begin{figure}[h]\centering
-\includegraphics[width=\textwidth]{figures/sdn_interventions.png}
+\includegraphics[width=\textwidth]{figures/scale-dynamics/sdn_interventions.png}
 \caption{Left: continuations from a marginal \(k96/T1\) state (step 2000);
 three normal seeds against support-off and \(T\times3\), applied from the
 start (solid) or at a boundary-inflation trigger (dashed). Middle:
@@ -463,7 +463,7 @@ predicts. The one new terminal death (\(k48\), \(T = 0.75\)) lands among
 the high-\(\Pisurr\) deaths.
 
 \begin{figure}[h]\centering
-\includegraphics[width=.94\textwidth]{figures/sdn_pi_fate_map.png}
+\includegraphics[width=.94\textwidth]{figures/scale-dynamics/sdn_pi_fate_map.png}
 \caption{Exact surrogate gain \(\Pisurr\) versus fate, per block and
 training step. Deaths separate from survivors within blocks (upper
 panels); the worst-block \(\Pisurr\) of every dying run rises toward the
@@ -474,7 +474,7 @@ worst-block \(\Pisurr\) (lower right).}
 \end{figure}
 
 \begin{figure}[h]\centering
-\includegraphics[width=.94\textwidth]{figures/sdn_piapprox_fate_map.png}
+\includegraphics[width=.94\textwidth]{figures/scale-dynamics/sdn_piapprox_fate_map.png}
 \caption{The same construction with the simplified parameter
 \(b^2/(4T\delta)\). The dose--response ordering survives, but the
 within-block separation is weaker than with the exact \(\Pisurr\) (compare
@@ -484,7 +484,7 @@ where the tensors are available.}
 \end{figure}
 
 \begin{figure}[h]\centering
-\includegraphics[width=.97\textwidth]{figures/sdn_dose_by_block_pi.png}
+\includegraphics[width=.97\textwidth]{figures/scale-dynamics/sdn_dose_by_block_pi.png}
 \caption{Per-block dose--response: each panel plots the run-level pre-onset
 burst rate against that block's exact \(\Pisurr\) at step 2000. The
 monotone relation holds in every block; blocks 0--4 separate the eventual
@@ -493,7 +493,7 @@ runs and overlap more.}
 \end{figure}
 
 \begin{figure}[h]\centering
-\includegraphics[width=.97\textwidth]{figures/sdn_dose_by_block_approx.png}
+\includegraphics[width=.97\textwidth]{figures/scale-dynamics/sdn_dose_by_block_approx.png}
 \caption{The same per-block dose--response using the approximation
 \(b^2/(4T\delta)\).}
 \end{figure}

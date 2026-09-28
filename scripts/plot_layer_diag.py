@@ -32,8 +32,8 @@ ax.set_title("gradient to MLP hidden activations, mean |dL/dh|")
 
 for ax in axes.ravel():
     ax.grid(alpha=0.3); ax.set_xlabel("layer")
-fig.suptitle(f"al_500m_hard_k32_pnorm_md @ step {d['step']}  (batch CE {d['ce']:.3f})",
-             fontsize=13)
+title = sys.argv[3] if len(sys.argv) > 3 else "layer diagnostics"
+fig.suptitle(f"{title} @ step {d['step']}  (batch CE {d['ce']:.3f})", fontsize=13)
 fig.tight_layout()
 fig.savefig(sys.argv[2], dpi=160, bbox_inches="tight")
 print(sys.argv[2])

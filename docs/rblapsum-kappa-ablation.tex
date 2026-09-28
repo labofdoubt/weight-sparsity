@@ -108,7 +108,7 @@ Final validation CE after 20k steps, or the step at which the run was
 stopped as diverged.
 
 \begin{figure}[h]\centering
-\includegraphics[width=.82\textwidth]{figures/kappa_val_k32.png}
+\includegraphics[width=.82\textwidth]{figures/kappa-ablation/kappa_val_k32.png}
 \caption{$K=32$, $T=1$: both modes survive. The plain
 \code{through\_rank} runs (dashed) sit $\sim$0.1 nats above their kappa
 counterparts throughout training and undergo repeated large excursions,
@@ -117,7 +117,7 @@ including a recovered burst of the $J=480$ run around steps
 \end{figure}
 
 \begin{figure}[h]\centering
-\includegraphics[width=.82\textwidth]{figures/kappa_val_k64.png}
+\includegraphics[width=.82\textwidth]{figures/kappa-ablation/kappa_val_k64.png}
 \caption{$K=64$, $T=1$: both \code{through\_rank} runs diverge within the
 first $\sim$1600 steps (crosses at the top edge). With the kappa
 correction, $J=448$ converges to $1.4776$ while $J=64$ survives to step
@@ -125,7 +125,7 @@ correction, $J=448$ converges to $1.4776$ while $J=64$ survives to step
 \end{figure}
 
 \begin{figure}[h]\centering
-\includegraphics[width=.82\textwidth]{figures/kappa_val_k128_t2.png}
+\includegraphics[width=.82\textwidth]{figures/kappa-ablation/kappa_val_k128_t2.png}
 \caption{$K=128$, $T=2$: both \code{through\_rank} runs diverge within the
 first $\sim$1700 steps; both kappa runs converge.}
 \end{figure}
@@ -209,7 +209,7 @@ training trajectory is unaffected. Profiles below are block 4 at one token;
 the mass was also recorded for all eight blocks at four token positions.
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/mass_vs_step.png}
+\includegraphics[width=\textwidth]{figures/kappa-ablation/mass_vs_step.png}
 \caption{Total surrogate mass $\sum_i p_i$, normalized by $K$, against
 training step (log scale); dashed curves are the part carried by the inactive
 candidates, ranks $>K$. With the kappa correction (blue) the mass stays above
@@ -219,7 +219,7 @@ $(128,128)$ -- and the total falls onto exactly $K+\tfrac12$.}
 \end{figure}
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/mass_profile_k64_j448.png}
+\includegraphics[width=\textwidth]{figures/kappa-ablation/mass_profile_k64_j448.png}
 \caption{$K=64$, $J=448$, $T=1$: $p_i$ against the feature's score at six
 steps, kappa above and plain \code{through\_rank} below; the red line is the
 $K/K{+}1$ boundary. Both start from the same smooth profile. Without the
@@ -231,7 +231,7 @@ inside the transition.}
 \end{figure}
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/mass_profile_k128_j128.png}
+\includegraphics[width=\textwidth]{figures/kappa-ablation/mass_profile_k128_j128.png}
 \caption{$K=128$, $J=128$, $T=2$: the same comparison. The hardening happens
 later here (between steps 700 and 1000) and from a narrower starting profile,
 but ends in the same saturated step.}
@@ -325,7 +325,7 @@ restored, as before. Measured every 100 steps to step 1200, which covers both
 collapses.
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/grad_dLdp_k64_j448.png}
+\includegraphics[width=\textwidth]{figures/kappa-ablation/grad_dLdp_k64_j448.png}
 \caption{$K=64$, $J=448$: signed $\partial L/\partial p_i$ against the
 feature's score. Active candidates are dark blue, inactive light blue, and
 the boundary feature (rank $K{+}1$, whose score defines $b$) red. The two
@@ -337,7 +337,7 @@ magnitude smaller.}
 \end{figure}
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/grad_dLds_k64_j448.png}
+\includegraphics[width=\textwidth]{figures/kappa-ablation/grad_dLds_k64_j448.png}
 \caption{$K=64$, $J=448$: signed $\partial L/\partial s_i$, same encoding.
 Here the two modes differ sharply. Without the kappa correction the boundary
 feature carries a single spike that dominates the pool -- it is the point mass
@@ -348,7 +348,7 @@ neighbours.}
 \end{figure}
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/grad_dLds_k128_j128.png}
+\includegraphics[width=\textwidth]{figures/kappa-ablation/grad_dLds_k128_j128.png}
 \caption{$K=128$, $J=128$, $T=2$: the same contrast in
 $\partial L/\partial s_i$, with the boundary spike up to $6.9\times$ the
 largest other candidate.}
@@ -405,7 +405,7 @@ Summing each gradient over the top-$(K+J)$ candidates separates what the two
 modes share from what distinguishes them.
 
 \begin{figure}[htb]\centering
-\includegraphics[width=\textwidth]{figures/grad_sums.png}
+\includegraphics[width=\textwidth]{figures/kappa-ablation/grad_sums.png}
 \caption{Pool sums over training (symlog axes, so both signs are visible).
 Top: $\sum_i \partial L/\partial p_i$, which is nonzero and changes sign from
 step to step in both modes. Bottom: $\sum_i \partial L/\partial s_i$ (solid)
