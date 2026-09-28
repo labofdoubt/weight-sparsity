@@ -13,6 +13,7 @@ from wsparse.decouple import (
     DecoupledAdamW,
     build_decoupled_optimizer,
     md_init_,
+    md_spread_gain_,
 )
 from wsparse.model import build_model
 
@@ -126,6 +127,95 @@ def test_gain_placement(gains, fc1, fc2, proj):
         st = opt.state[mod.weight]
         have = tuple(k for k in ("raw_grow", "raw_gcol") if k in st)
         assert have == expect, (tuple(mod.weight.shape), have, expect)
+
+
+def _materialize_state(model, opt, lr=0.0):
+    """Create optimizer state without moving anything (state is lazy).
+
+    A zero-lr step is also the sharpest check of the decomposition: the step
+    recovers W_hat from the fused weight, projects it onto c_F and re-fuses, so
+    if c_F did not match the direction's norm the fused weight would come back
+    rescaled.
+    """
+    saved = [g["lr"] for g in opt.param_groups]
+    for g in opt.param_groups:
+        g["lr"] = lr
+    x = torch.randint(0, 97, (2, 8))
+    opt.zero_grad(set_to_none=True)
+    _, loss = model(x, x)
+    loss.backward()
+    opt.step()
+    for g, old in zip(opt.param_groups, saved):
+        g["lr"] = old
+    opt.zero_grad(set_to_none=True)
+
+
+@pytest.mark.parametrize("gains,per_matrix", [("row_col", 4.0), ("up_down", 9.0)])
+def test_spread_gain_lands_in_the_gains_not_the_sphere(gains, per_matrix):
+    """md_spread_gain_ must scale the fused weight and start the gains there.
+
+    The factor has to end up in softplus(raw), with c_F still the direction's
+    own norm, or the decomposition W = diag(g_row) W_hat diag(g_col) no longer
+    holds at step 0 and the sphere silently freezes the scale.
+    """
+    torch.manual_seed(0)
+    model = _model(gains=gains, bottleneck=True)
+    mods = [m for m in model.modules() if hasattr(m, "in_proj") and hasattr(m, "gate")]
+    assert mods, "no bottleneck modules found"
+    n_gains = 2 if gains == "row_col" else 1
+    before = {}
+    for m in mods:
+        for proj in (m.in_proj, m.out_proj):
+            before[id(proj.weight)] = proj.weight.detach().clone()
+            g0 = md_spread_gain_(proj.weight, per_matrix, gains)
+            assert g0 == pytest.approx(per_matrix ** (1.0 / n_gains))
+
+    opt = build_decoupled_optimizer(model, _Train(), gain_mode=gains)
+    _materialize_state(model, opt)
+
+    for m in mods:
+        for proj in (m.in_proj, m.out_proj):
+            w = proj.weight
+            # the fused weight moved by exactly the requested factor, and the
+            # zero-lr step did not move it back
+            assert torch.allclose(w, before[id(w)] * per_matrix, atol=1e-5)
+            st = opt.state[w]
+            gain_keys = [k for k in ("raw_grow", "raw_gcol") if k in st]
+            assert len(gain_keys) == n_gains
+            want = per_matrix ** (1.0 / n_gains)
+            for k in gain_keys:
+                g = F.softplus(st[k])
+                assert torch.allclose(g, torch.full_like(g, want), atol=1e-5)
+            # c_F is the direction's norm, not the fused one
+            w_hat = w.detach().float()
+            if "raw_grow" in st:
+                w_hat = w_hat / F.softplus(st["raw_grow"]).unsqueeze(1)
+            if "raw_gcol" in st:
+                w_hat = w_hat / F.softplus(st["raw_gcol"]).unsqueeze(0)
+            assert float(w_hat.norm()) == pytest.approx(float(st["c_f"]), rel=1e-4)
+
+    # and it still trains: one real step keeps every constraint
+    x = torch.randint(0, 97, (2, 8))
+    opt.zero_grad(set_to_none=True)
+    _, loss = model(x, x)
+    loss.backward()
+    opt.step()
+    _check_constraints(model, opt)
+
+
+def test_untagged_matrices_start_at_gain_one():
+    """The default path is untouched: raw gains RAW_GAIN_ONE, c_F = ||W||."""
+    torch.manual_seed(0)
+    model = _model()
+    w = model.blocks[0].mlp.fc1.weight
+    norm0 = float(w.detach().float().norm())
+    assert not hasattr(w, "_md_gain0")
+    opt = build_decoupled_optimizer(model, _Train())
+    _materialize_state(model, opt)
+    st = opt.state[w]
+    for k in ("raw_grow", "raw_gcol"):
+        assert torch.all(st[k] == RAW_GAIN_ONE)
+    assert float(st["c_f"]) == pytest.approx(norm0, rel=1e-6)
 
 
 def test_resume_roundtrip():

@@ -112,6 +112,32 @@ def md_init_(model, gain_mode: str = "row_col") -> Dict[str, int]:
     return counts
 
 
+@torch.no_grad()
+def md_spread_gain_(p: torch.Tensor, scale: float, gain_mode: str = "row_col") -> float:
+    """Put a scale into a matrix's MD **gains**, not into its sphere radius.
+
+    Multiplies the fused weight by ``scale`` and splits that factor equally
+    across the matrix's gain vectors -- both of them under ``row_col``, the
+    single one under ``up_down`` -- by tagging the parameter with the initial
+    gain the optimizer should start from.  ``DecoupledAdamW`` then sets
+    ``softplus(raw) = scale**(1/n_gains)`` and keeps ``c_F`` at the *direction's*
+    norm, so ``W = diag(g_row) W_hat diag(g_col)`` still holds exactly at step 0.
+
+    Scaling the fused weight on its own would put the factor into ``c_F``
+    instead, where the sphere freezes it for the whole run; in the gains it
+    stays learnable, which is the point of asking for it there.
+
+    Returns the per-gain factor.  Call it after ``md_init_``, before the
+    optimizer is built.
+    """
+    row, col = _wants_gains(p.shape, gain_mode)
+    n_gains = int(row) + int(col)
+    g0 = float(scale) ** (1.0 / n_gains)
+    p.mul_(float(scale))
+    p._md_gain0 = g0  # read once, in DecoupledAdamW._state_for
+    return g0
+
+
 class DecoupledAdamW(torch.optim.Optimizer):
     """Adam with magnitude-direction decoupling for matrix weights.
 
@@ -160,20 +186,26 @@ class DecoupledAdamW(torch.optim.Optimizer):
         state["v"] = torch.zeros_like(p)
         if kind == "md":
             row, col = _wants_gains(p.shape, gain_mode)
+            # 1 unless md_spread_gain_ asked for a different starting gain
+            g0 = float(getattr(p, "_md_gain0", 1.0))
+            raw0 = RAW_GAIN_ONE if g0 == 1.0 else math.log(math.expm1(g0))
             if row:
-                state["raw_grow"] = torch.full((p.shape[0],), RAW_GAIN_ONE,
+                state["raw_grow"] = torch.full((p.shape[0],), raw0,
                                                device=p.device, dtype=p.dtype)
                 state["grow_m"] = torch.zeros_like(state["raw_grow"])
                 state["grow_v"] = torch.zeros_like(state["raw_grow"])
             if col:
-                state["raw_gcol"] = torch.full((p.shape[1],), RAW_GAIN_ONE,
+                state["raw_gcol"] = torch.full((p.shape[1],), raw0,
                                                device=p.device, dtype=p.dtype)
                 state["gcol_m"] = torch.zeros_like(state["raw_gcol"])
                 state["gcol_v"] = torch.zeros_like(state["raw_gcol"])
-            # The sphere radius is the *initialization* norm, captured at first
-            # sight (gains are exactly 1 then, so ||W|| is ||W_hat||) and kept in
-            # the state so resume preserves it.
-            state["c_f"] = p.detach().float().norm().clone()
+            # The sphere radius is the DIRECTION's initialization norm, captured
+            # at first sight and kept in the state so resume preserves it.  With
+            # gains at 1 that is just ||W||; a spread gain divides back out.
+            c_f = p.detach().float().norm()
+            if g0 != 1.0:
+                c_f = c_f / g0 ** (int(row) + int(col))
+            state["c_f"] = c_f.clone()
         return state
 
     @torch.no_grad()

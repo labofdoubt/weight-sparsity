@@ -74,6 +74,10 @@ def gain(sq_in: torch.Tensor, sq_out: torch.Tensor, forward: bool) -> dict:
     }
 
 
+def cb_k(cfg) -> int:
+    return int(cfg.activation_bottleneck.k)
+
+
 def overridden(tree: dict, overrides) -> dict:
     """The run config with CLI-style overrides applied (never in place)."""
     if not overrides:
@@ -94,6 +98,12 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--offset", type=int, default=4242)
+    ap.add_argument("--md-alpha", default="1.0",
+                    help="total scale for each bottleneck's OUTPUT, put into "
+                         "the MD gains (md_spread_gain_) and split equally "
+                         "across the four gain vectors of its two projections; "
+                         "\"auto\" resolves to sqrt(d_model / K), the factor "
+                         "that makes the bottleneck's gradient gain 1")
     ap.add_argument("--proj-scale", type=float, default=1.0,
                     help="multiply BOTH bottleneck projections' weights by this "
                          "after initialization, so the product of their stds "
@@ -130,6 +140,24 @@ def main() -> None:
             from wsparse.decouple import md_init_
             md_init_(model, cfg.model.decouple_gains)
         step = 0
+    md_alpha = (math.sqrt(cfg.model.d_model / cb_k(cfg))
+                if str(args.md_alpha) == "auto" else float(args.md_alpha))
+    if md_alpha != 1.0:
+        if not cfg.model.decouple:
+            raise SystemExit("--md-alpha needs model.decouple=true (the gains "
+                             "it spreads into are MD's)")
+        from wsparse.decouple import md_spread_gain_
+        per_matrix = math.sqrt(md_alpha)  # two matrices in series
+        gains = []
+        for _, mod in bn.layers:
+            gains.append(md_spread_gain_(mod.in_proj.weight, per_matrix,
+                                         cfg.model.decouple_gains))
+            if not getattr(mod, "tied", False):
+                md_spread_gain_(mod.out_proj.weight, per_matrix,
+                                cfg.model.decouple_gains)
+        print(f"[gain] md gain spread: alpha={md_alpha:.4f} on each bottleneck's "
+              f"output = {per_matrix:.4f} per matrix = {gains[0]:.4f} per gain "
+              f"vector ({cfg.model.decouple_gains})")
     if args.proj_scale != 1.0:
         # A tied decoder IS the encoder transposed, so scaling in_proj already
         # scales both sides; touching out_proj as well would square the factor.
@@ -196,6 +224,7 @@ def main() -> None:
         "post_norm": bool(cb.post_norm), "surrogate_mode": str(cb.surrogate_mode),
         "batch": int(args.batch), "seq_len": int(cfg.data.seq_len),
         "offset": int(args.offset), "proj_scale": float(args.proj_scale),
+        "md_alpha": float(md_alpha),
         "layers": [],
     }
     for li in range(len(bn.layers)):
