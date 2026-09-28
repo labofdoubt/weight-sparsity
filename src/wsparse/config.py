@@ -363,52 +363,9 @@ class ActivationBottleneckConfig:
     # lapsum_adaptive   -> solve t from n_eff every step (the experiment)
     # lapsum_scheduled  -> t follows temperature_schedule from _start to _end
     # lapsum_fixed      -> baseline: constant absolute fixed_temperature, no solve
-    # swap_gibbs        -> exact hard forward; backward models all K*J one-swap
-    #                      supports S - a_i + c_j between the K active features
-    #                      and the next J candidates, Gibbs-weighted by
-    #                      exp((s_cj - s_ai) / t).  t comes from the same
-    #                      prescribed path as lapsum_scheduled (schedule x
-    #                      temperature_scale_mode); n_eff and the LapSum solvers
-    #                      are not involved.  O(K+J) -- no K x J tensor exists.
     # hard              -> baseline: plain hard-mask backward, no surrogate
     surrogate_mode: str = "lapsum_adaptive"
-    # swap_gibbs only: prior mass allowed off the current support.  "default"
-    # is rho = 1, the original construction (equivalent to lambda = KJ/(KJ+1));
-    # a numerical 0 <= lambda < 1 bounds the total swap probability R <= lambda
-    # (lambda = 0 turns the surrogate gradient off entirely).  Typed Any so the
-    # sentinel string and a float both round-trip through YAML/CLI.
-    swap_lambda: Any = "default"
 
-    # ---- jumprelu (surrogate_mode: jumprelu) -------------------------------- #
-    # Independent-threshold JumpReLU gate: every feature owns a trainable
-    # threshold theta_i = exp(log_theta_i); the Top(K+J) pool is ranked by the
-    # margin score - theta; candidates output value * H(margin), everything
-    # else is zero.  The forward is completely hard and does NOT force exactly
-    # K active features -- the count loss below steers L0 toward K.  Boundary
-    # gradients reach ONLY theta, via a rectangular kernel of ONE-SIDED width
-    # jumprelu_kernel_width (window [-T, +T]; the JumpReLU paper's rectangle
-    # on (-1/2, 1/2) makes its one-sided width eps/2 -- here T is one-sided by
-    # definition).  z never receives a kernel/STE term.
-    jumprelu_kernel_width: float = 0.5
-    # lambda_count on the target-K loss lambda * (K - L0)^2, computed from the
-    # HARD active count over the candidate pool and differentiated to theta
-    # only.  0 disables the loss (thresholds then move only via the task term).
-    jumprelu_count_coef: float = 0.0
-    # initial threshold value (theta, not log_theta).  None -> calibrated from
-    # data on the FIRST training forward: every threshold starts at the batch's
-    # median k-th candidate score, i.e. at the boundary the k-th survivor
-    # actually sits at, inside the kernel window where the rectangle can move
-    # it -- whatever this config's score scale is.  (Until that forward the
-    # placeholder is the expected k-th largest |N(0,1)| score, the same
-    # inverse-Mills geometry as init_mode's selection_gain.)  A numeric value
-    # skips calibration and fixes the start exactly.
-    jumprelu_theta_init: Optional[float] = None
-    # One-sided count loss: penalize only over-activation, relu(L0 - K)^2
-    # instead of (K - L0)^2.  Tokens at or under K contribute zero loss and
-    # zero theta gradient from the count term (relu's dead zone does the
-    # gating, so this costs nothing) -- the count loss becomes a pure L0 cap,
-    # and recruitment below K is left entirely to the task gradient.
-    jumprelu_count_one_sided: bool = False
 
     # ---- rblapsum (surrogate_mode: rblapsum | rblapsum_sf) ------------------ #
     # Rank-Boundary LapSum: LapSum's hard TopK forward, Top(K+J) candidates and
@@ -530,33 +487,6 @@ class ActivationBottleneckConfig:
     rblapsum_t_max: float = 8.0
     rblapsum_servo_rate: float = 0.02
 
-    # ---- reinforce_topk (surrogate_mode: reinforce_topk) --------------------- #
-    # Stochastic hard support trained with a REINFORCE / score-function
-    # estimator: deterministic Top(K+J) candidates, an exact-K subset sampled
-    # per token and layer, hard forward y = z * stopgrad(mask), ordinary
-    # gradient to selected values, and the support learned ONLY through
-    # advantage * d log pi(sample)/d a with a = s/T.  Eval uses deterministic
-    # TopK.  Distributions: gumbel_pl (Gumbel-TopK, ordered Plackett-Luce
-    # estimator, O(q+K)) | conditional_bernoulli (exact-K conditional law,
-    # set-symmetric mask-minus-marginal score, O(qK) DP).
-    reinforce_distribution: str = "gumbel_pl"
-    # CONSTANT temperature on the logits a = s / T -- deliberately not derived
-    # from the score scale for the first experiments.  Pick it near the typical
-    # deterministic boundary gap s_(K) - s_(K+1) so ranks K+1..K+J actually
-    # enter the support sometimes.
-    reinforce_temperature: float = 1.0
-    # Advantage baseline, applied in the training loop (the gate cannot know
-    # the loss): batch_loo (leave-one-out over the micro-batch's per-example
-    # losses; needs micro_batch_size > 1) | ema (detached scalar EMA of the
-    # mean loss) | none (raw loss -- debugging reference).
-    reinforce_baseline: str = "batch_loo"
-    reinforce_baseline_ema_decay: float = 0.99
-    # Global coefficient on the policy-gradient term.  Per-example policy
-    # scores are SUMS over tokens/layers (the exact joint score); use this
-    # knob, never a silent sum->mean change, if the scale is wrong.
-    reinforce_coef: float = 1.0
-    # Sample in eval too (diagnostics only; the policy loss stays train-only).
-    reinforce_stochastic_eval: bool = False
     surrogate_grad_scale: float = 1.0
     # Reweights only the gradient reaching the J candidates outside the forward
     # support.  1.0 leaves the exact VJP alone; anything else breaks its
@@ -609,7 +539,7 @@ class ActivationBottleneckConfig:
     calibration_iters: int = 3  # passes; layers are sequential, so rescaling
     #                             one changes what the next one sees  # lapsum_fixed only, always absolute
 
-    # ---- prescribed temperature (surrogate_mode: lapsum_scheduled, swap_gibbs) #
+    # ---- prescribed temperature (surrogate_mode: lapsum_scheduled) ----------- #
     # t is held at temperature_start for temperature_warmup_steps, annealed to
     # temperature_end over temperature_anneal_steps, then held there.  Falling
     # (start > end) is the usual direction: a broad boundary gradient early, a
@@ -696,30 +626,14 @@ class ActivationBottleneckConfig:
                 "(score_softmax | true_gradient)"
             )
         if self.surrogate_mode not in (
-            "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed", "swap_gibbs",
-            "jumprelu", "rblapsum", "rblapsum_sf", "reinforce_topk", "hard"
+            "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed",
+            "rblapsum", "rblapsum_sf", "hard"
         ):
             raise ValueError(
                 f"unknown surrogate_mode: {self.surrogate_mode} "
-                "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed | swap_gibbs "
-                "| jumprelu | rblapsum | rblapsum_sf | reinforce_topk | hard)"
+                "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed "
+                "| rblapsum | rblapsum_sf | hard)"
             )
-        from .bottleneck.swap import swap_log_rho
-
-        # validates swap_lambda ("default" | [0, 1)) whatever the mode, so a
-        # typo fails here rather than lying dormant until the mode is switched
-        swap_log_rho(self.swap_lambda, max(self.k, 1), max(self.j, 1))
-        if self.surrogate_mode == "swap_gibbs":
-            if self.inactive_grad_scale != 1.0:
-                raise ValueError(
-                    "inactive_grad_scale is a LapSum-VJP knob and is not applied "
-                    "by surrogate_mode='swap_gibbs'; leave it at 1.0"
-                )
-            if self.project_scale_gradient:
-                raise ValueError(
-                    "project_scale_gradient is LapSum-specific and is not applied "
-                    "by surrogate_mode='swap_gibbs'"
-                )
         from .schedules import SCHEDULE_KINDS
 
         if self.temperature_schedule not in SCHEDULE_KINDS:
@@ -806,66 +720,7 @@ class ActivationBottleneckConfig:
                     "project_scale_gradient is LapSum-specific; rblapsum has its own "
                     "boundary_grad_mode ('project') for common-mode removal"
                 )
-        if self.surrogate_mode == "reinforce_topk":
-            if self.selection_mode not in ("topk", "abs_topk"):
-                raise ValueError(
-                    "surrogate_mode='reinforce_topk' requires selection_mode "
-                    "'topk' or 'abs_topk' (not gated_topk)"
-                )
-            if self.reinforce_distribution not in ("gumbel_pl", "conditional_bernoulli"):
-                raise ValueError(
-                    "reinforce_distribution must be gumbel_pl | conditional_bernoulli, "
-                    f"got {self.reinforce_distribution!r}"
-                )
-            if self.reinforce_baseline not in ("batch_loo", "ema", "none"):
-                raise ValueError(
-                    "reinforce_baseline must be batch_loo | ema | none, "
-                    f"got {self.reinforce_baseline!r}"
-                )
-            if self.reinforce_temperature <= 0:
-                raise ValueError("reinforce_temperature must be positive")
-            if not 0.0 < self.reinforce_baseline_ema_decay < 1.0:
-                raise ValueError("reinforce_baseline_ema_decay must be in (0, 1)")
-            if self.inactive_grad_scale != 1.0:
-                raise ValueError(
-                    "inactive_grad_scale is a LapSum-VJP knob and is not applied by "
-                    "surrogate_mode='reinforce_topk'; leave it at 1.0"
-                )
-            if self.project_scale_gradient:
-                raise ValueError(
-                    "project_scale_gradient is LapSum-specific; the REINFORCE score "
-                    "gradients are shift-invariant already (sum to zero)"
-                )
-        if self.surrogate_mode == "jumprelu":
-            if self.selection_mode != "abs_topk":
-                raise ValueError(
-                    "surrogate_mode='jumprelu' requires selection_mode='abs_topk': "
-                    "theta = exp(log_theta) is positive by construction, which only "
-                    "matches the non-negative |a| score convention"
-                )
-            if self.inactive_grad_scale != 1.0:
-                raise ValueError(
-                    "inactive_grad_scale is a LapSum-VJP knob and is not applied "
-                    "by surrogate_mode='jumprelu'; leave it at 1.0"
-                )
-            if self.project_scale_gradient:
-                raise ValueError(
-                    "project_scale_gradient is LapSum-specific and is not applied "
-                    "by surrogate_mode='jumprelu'"
-                )
-            if self.jumprelu_kernel_width <= 0:
-                raise ValueError(
-                    "jumprelu_kernel_width must be positive: it is the one-sided "
-                    "width T of the rectangular kernel"
-                )
-            if self.jumprelu_count_coef < 0:
-                raise ValueError("jumprelu_count_coef must be >= 0")
-            if self.jumprelu_theta_init is not None and self.jumprelu_theta_init <= 0:
-                raise ValueError(
-                    "jumprelu_theta_init is a threshold value theta = exp(log_theta) "
-                    "and must be positive (or None for the order-statistic default)"
-                )
-        if self.surrogate_mode in ("lapsum_scheduled", "swap_gibbs"):
+        if self.surrogate_mode == "lapsum_scheduled":
             # both read the prescribed temperature schedule, so both need t > 0
             if self.temperature_start <= 0 or self.temperature_end <= 0:
                 raise ValueError("temperature_start and temperature_end must be positive")
@@ -1081,6 +936,22 @@ def _migrate_legacy(tree: Dict[str, Any]) -> None:
                 "this config enables the removed weight-sparsity subsystem; "
                 "check out a commit before the 2026-09-28 cleanup to use it")
         del tree["sparsity"]
+    ab = tree.get("activation_bottleneck")
+    if isinstance(ab, dict):
+        _REMOVED_AB = (
+            "swap_lambda", "jumprelu_kernel_width", "jumprelu_count_coef",
+            "jumprelu_theta_init", "jumprelu_count_one_sided",
+            "reinforce_distribution", "reinforce_temperature",
+            "reinforce_baseline", "reinforce_baseline_ema_decay",
+            "reinforce_coef", "reinforce_stochastic_eval",
+        )
+        for k in _REMOVED_AB:
+            ab.pop(k, None)
+        if ab.get("surrogate_mode") in ("swap_gibbs", "jumprelu", "reinforce_topk"):
+            raise ValueError(
+                f"surrogate_mode={ab['surrogate_mode']!r} was removed in the "
+                "2026-09-28 cleanup; check out an earlier commit to rebuild "
+                "such a run")
     """Pin pre-``logit_scale`` checkpoints to the behaviour they were trained with.
 
     A checkpoint saved before ``logit_scale`` existed was trained with a tied head

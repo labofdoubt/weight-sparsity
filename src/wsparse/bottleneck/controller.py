@@ -178,45 +178,6 @@ class ActivationBottleneckController:
         total = torch.stack(terms).mean()
         return total, {"bottleneck/reconstruction": float(total.detach())}
 
-    def count_loss(self):
-        """Mean raw ``(K - L0)^2`` over the installed jumprelu bottlenecks.
-
-        Same contract as :meth:`reconstruction_loss`: activation-dependent, so
-        it must be collected after each forward and before the matching
-        backward, and the coefficient (``jumprelu_count_coef``) is applied by
-        the caller.  ``(None, {})`` when disabled.
-        """
-        if (not self.enabled or self.cfg.surrogate_mode != "jumprelu"
-                or not self.cfg.jumprelu_count_coef):
-            return None, {}
-        terms = [t for t in (layer.gate.take_count_loss() for _, layer in self.layers)
-                 if t is not None]
-        if not terms:
-            return None, {}
-        total = torch.stack(terms).mean()
-        return total, {"bottleneck/count_loss": float(total.detach())}
-
-    def policy_score(self):
-        """Per-token policy-score surrogate summed over the installed gates.
-
-        Shape (batch, tokens); grad w.r.t. the live logits equals
-        ``sum_d d log pi_d(sample_d) / d a`` -- the exact joint score, so the
-        layers are SUMMED, never averaged.  Same collect-after-forward contract
-        as :meth:`reconstruction_loss`; the caller weights it by the detached
-        advantage.  ``None`` when not in reinforce mode or nothing was stored.
-        """
-        if not self.enabled or self.cfg.surrogate_mode != "reinforce_topk":
-            return None
-        terms = [t for t in (layer.gate.take_policy_score() for _, layer in self.layers)
-                 if t is not None]
-        if not terms:
-            return None
-        total = terms[0]
-        for t in terms[1:]:
-            total = total + t
-        return total
-
-    # ---- parameters ---------------------------------------------------------- #
     def parameters(self) -> List[nn.Parameter]:
         params: List[nn.Parameter] = []
         for _, layer in self.layers:
@@ -313,7 +274,7 @@ class ActivationBottleneckController:
             out[f"bottleneck/{key}"] = sum(values) / len(values)
         if out:
             out["bottleneck/layers"] = float(len(self.layers))
-            if self.cfg.surrogate_mode in ("lapsum_scheduled", "lapsum_fixed", "swap_gibbs"):
+            if self.cfg.surrogate_mode in ("lapsum_scheduled", "lapsum_fixed"):
                 out["bottleneck/temperature_target"] = self._temperature
             out["bottleneck/density"] = self.cfg.k / self.cfg.n_features
             out["bottleneck/candidate_density"] = (

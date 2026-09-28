@@ -16,10 +16,6 @@ One ``torch.topk`` per call supplies the sorted candidate pool that the hard
 mask, the temperature solve, the barrier solve, the probabilities, the backward
 and the diagnostics all share -- nothing is sorted twice.
 
-``surrogate_mode="swap_gibbs"`` swaps the LapSum relaxation for the local
-one-swap Gibbs model in :mod:`.swap` over the same Top(K+J) pool; it reads its
-effective temperature from the same prescribed path as the scheduled modes and
-touches none of the solvers.
 """
 
 from __future__ import annotations
@@ -31,11 +27,7 @@ import torch
 import torch.nn as nn
 
 from .lapsum import lapsum_barrier_sorted, lapsum_budget, lapsum_probs, laplace_cdf
-from .jumprelu import default_log_theta, jumprelu_count, jumprelu_forward
 from .rblapsum import GRAD_MODES, VALUE_GRAD_MODES, rblapsum_gate, rblapsum_sf_gate
-from .reinforce import DISTRIBUTIONS as RF_DISTRIBUTIONS
-from .reinforce import sample_exact_k
-from .swap import swap_gibbs_mask, swap_log_rho, swap_weights
 from .temperature import (
     STATUS_OK,
     gradient_count,
@@ -63,11 +55,6 @@ class AdaptiveLapSumTopKGate(nn.Module):
         boundary_mode: str = "outside_only",
         one_sided_weight_mode: str = "score_softmax",
         surrogate_mode: str = "lapsum_adaptive",
-        swap_lambda="default",
-        jumprelu_kernel_width: float = 0.5,
-        jumprelu_count_coef: float = 0.0,
-        jumprelu_theta_init=None,
-        jumprelu_count_one_sided: bool = False,
         rblapsum_boundary_grad_mode: Optional[str] = None,
         rblapsum_boundary_floor=None,
         rblapsum_support_scale: float = 1.0,
@@ -81,9 +68,6 @@ class AdaptiveLapSumTopKGate(nn.Module):
         rblapsum_servo_rate: float = 0.02,
         rblapsum_sf_value_grad: str = "pool",
         rblapsum_rho_random_perm_prob_grad: float = 0.0,
-        reinforce_distribution: str = "gumbel_pl",
-        reinforce_temperature: float = 1.0,
-        reinforce_stochastic_eval: bool = False,
         surrogate_grad_scale: float = 1.0,
         inactive_grad_scale: float = 1.0,
         project_scale_gradient: bool = False,
@@ -116,13 +100,13 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 "(score_softmax | true_gradient)"
             )
         if surrogate_mode not in (
-            "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed", "swap_gibbs",
-            "jumprelu", "rblapsum", "rblapsum_sf", "reinforce_topk", "hard"
+            "lapsum_adaptive", "lapsum_scheduled", "lapsum_fixed",
+            "rblapsum", "rblapsum_sf", "hard"
         ):
             raise ValueError(
                 f"unknown surrogate_mode: {surrogate_mode!r} "
-                "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed | swap_gibbs "
-                "| jumprelu | rblapsum | rblapsum_sf | reinforce_topk | hard)"
+                "(lapsum_adaptive | lapsum_scheduled | lapsum_fixed "
+                "| rblapsum | rblapsum_sf | hard)"
             )
         if temperature_scale_mode not in ("relative", "absolute"):
             raise ValueError(
@@ -144,45 +128,6 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self.boundary_mode = boundary_mode
         self.one_sided_weight_mode = one_sided_weight_mode
         self.surrogate_mode = surrogate_mode
-        self.swap_lambda = swap_lambda
-        # log rho for the swap_gibbs surrogate; validated here even when the
-        # mode is different so a bad value fails at construction, not mid-run
-        self.swap_log_rho = swap_log_rho(swap_lambda, max(self.k, 1), max(self.j, 1))
-        self.jumprelu_kernel_width = float(jumprelu_kernel_width)
-        self.jumprelu_count_coef = float(jumprelu_count_coef)
-        self.jumprelu_count_one_sided = bool(jumprelu_count_one_sided)
-        if surrogate_mode == "jumprelu":
-            if selection_mode != "abs_topk":
-                raise ValueError(
-                    "surrogate_mode='jumprelu' requires selection_mode='abs_topk': "
-                    "thresholds are parameterized as exp(log_theta), which only "
-                    "makes sense against the non-negative |a| score convention"
-                )
-            if self.jumprelu_kernel_width <= 0:
-                raise ValueError("jumprelu_kernel_width must be positive (one-sided width T)")
-            if jumprelu_theta_init is None:
-                theta0 = default_log_theta(self.k, self.n_features)
-            else:
-                if float(jumprelu_theta_init) <= 0:
-                    raise ValueError("jumprelu_theta_init must be positive (theta = exp(log_theta))")
-                theta0 = math.log(float(jumprelu_theta_init))
-            # one trainable threshold per feature; 1-D, so the optimizer's
-            # existing dim<2 grouping already exempts it from weight decay
-            self.log_theta = nn.Parameter(
-                torch.full((self.n_features,), theta0, dtype=torch.float32)
-            )
-            # With jumprelu_theta_init=None the order-statistic value above is
-            # only a placeholder: the first *training* forward re-centres every
-            # threshold at the batch's median k-th candidate score, so training
-            # starts with the boundary where the scores actually are -- inside
-            # the kernel window -- whatever the score scale of this config.
-            # Persistent, so a resumed run never re-calibrates.
-            self.register_buffer(
-                "theta_calibrated",
-                torch.tensor(0 if jumprelu_theta_init is None else 1,
-                             dtype=torch.uint8),
-            )
-        self._count_sq = None
         # None mirrors the config default: detach for the hard forward,
         # through_rank_kappa for the soft forward (see ActivationBottleneckConfig)
         self.rblapsum_boundary_grad_mode = (
@@ -287,23 +232,6 @@ class AdaptiveLapSumTopKGate(nn.Module):
             # by validate_gate_shapes for every non-hard mode) guarantees it
             if self.j < 1:
                 raise ValueError("surrogate_mode='rblapsum' needs j >= 1 (the K+1 boundary)")
-        self.reinforce_distribution = reinforce_distribution
-        self.reinforce_temperature = float(reinforce_temperature)
-        self.reinforce_stochastic_eval = bool(reinforce_stochastic_eval)
-        self._policy_score = None
-        if surrogate_mode == "reinforce_topk":
-            if selection_mode not in ("topk", "abs_topk"):
-                raise ValueError(
-                    "surrogate_mode='reinforce_topk' requires selection_mode "
-                    "'topk' or 'abs_topk' (not gated_topk)"
-                )
-            if reinforce_distribution not in RF_DISTRIBUTIONS:
-                raise ValueError(
-                    f"unknown reinforce_distribution: {reinforce_distribution!r} "
-                    f"({' | '.join(RF_DISTRIBUTIONS)})"
-                )
-            if self.reinforce_temperature <= 0:
-                raise ValueError("reinforce_temperature must be positive")
         self.surrogate_grad_scale = float(surrogate_grad_scale)
         self.inactive_grad_scale = float(inactive_grad_scale)
         self.project_scale_gradient = bool(project_scale_gradient)
@@ -491,14 +419,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 self._record_usage(hard_mask)
             return value * hard_mask
 
-        if self.surrogate_mode == "jumprelu":
-            return self._jumprelu(scores, value)
-
         if self.surrogate_mode in ("rblapsum", "rblapsum_sf"):
             return self._rblapsum(scores, value)
-
-        if self.surrogate_mode == "reinforce_topk":
-            return self._reinforce(scores, value)
 
         cand_scores, cand_idx = torch.topk(
             scores, self.m, dim=-1, largest=True, sorted=True
@@ -527,25 +449,6 @@ class AdaptiveLapSumTopKGate(nn.Module):
             cand.register_hook(lambda g, _cap=_cap: _cap.__setitem__("grad", g.detach()))
         detached = cand.detach()
         sink = self._grad_sink if self.log_diagnostics else None
-
-        if self.surrogate_mode == "swap_gibbs":
-            # The one-swap Gibbs surrogate.  No barrier and no solve: the
-            # effective temperature is the same prescribed value the scheduled
-            # LapSum modes use (controller schedule x temperature_scale_mode),
-            # resolved here and saved by the Function so backward reuses this
-            # exact T.  The pool mask is numerically the hard mask, so the
-            # composition below matches the LapSum path bit for bit in forward.
-            t = self.prescribed_temperature(detached)
-            m_pool = swap_gibbs_mask(cand, t, self.k, self.swap_log_rho, sink)
-            m_full = (
-                torch.zeros_like(scores, dtype=m_pool.dtype)
-                .scatter(-1, cand_idx, m_pool)
-                .to(value.dtype)
-            )
-            mask = hard_mask + self.surrogate_grad_scale * (m_full - m_full.detach())
-            if self.log_diagnostics:
-                self._record_swap(detached, t)
-            return value * mask
 
         b, t, solver_diag = self.solve(detached)
         # Evaluate the probabilities about r_K.  Shifting by a detached constant
@@ -733,152 +636,6 @@ class AdaptiveLapSumTopKGate(nn.Module):
             d.update(self._rb_servo_diag)
         self._forward_diag = {key: value.detach() for key, value in d.items()}
 
-    # ---- reinforce_topk -------------------------------------------------------- #
-    def _reinforce(self, scores: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
-        """Stochastic exact-K hard support with a score-function surrogate.
-
-        Candidates are the deterministic Top(K+J) (indices found on detached
-        scores; membership gets no derivative).  In training an exact-K subset
-        is sampled from the configured distribution; the forward is hard
-        (``y = z * stopgrad(mask)``), the selected values keep their ordinary
-        gradient, and the gate stores the per-token gradient-only surrogate
-
-            local_policy_score = sum_i a_i * stopgrad(score_grad_i),
-
-        whose grad w.r.t. the live logits a = s_c / T is d log pi(sample)/da.
-        The training loop multiplies by the detached advantage (the gate cannot
-        know the loss yet) -- see ``take_policy_score``.  In eval the support
-        is the deterministic TopK (unless reinforce_stochastic_eval).
-        """
-        q = self.m
-        cand_scores, cand_idx = torch.topk(
-            scores.detach(), q, dim=-1, largest=True, sorted=True
-        )
-        stochastic = self.training or self.reinforce_stochastic_eval
-        if not stochastic:
-            hard_mask = torch.zeros_like(scores).scatter(-1, cand_idx[..., : self.k], 1.0)
-            return value * hard_mask
-
-        value_c = torch.gather(value, -1, cand_idx)
-        s_c = torch.gather(scores, -1, cand_idx)          # differentiable (sign chain)
-        a = s_c.float() / self.reinforce_temperature
-        res = sample_exact_k(a, self.k, self.reinforce_distribution)
-        mask_c = res["selected_mask"]                     # detached, exact-K
-        y = torch.zeros_like(value).scatter(
-            -1, cand_idx, value_c * mask_c.to(value.dtype)
-        )
-        if self.training and torch.is_grad_enabled():
-            # gradient-only surrogate: grad_a == d log pi / d a; per-token, kept
-            # for the controller/training loop to weight by the advantage
-            self._policy_score = (a * res["score_grad"]).sum(-1)
-        if self.log_diagnostics and self.training:
-            with torch.no_grad():
-                mask_full = torch.zeros_like(scores).scatter(
-                    -1, cand_idx, mask_c.to(scores.dtype))
-                self._record_usage(mask_full)
-                self._record_reinforce(res, mask_c)
-        return y
-
-    def take_policy_score(self):
-        """Pop the per-token policy-score surrogate from the last forward."""
-        term, self._policy_score = self._policy_score, None
-        return term
-
-    @torch.no_grad()
-    def _record_reinforce(self, res, mask_c) -> None:
-        sg = res["score_grad"]
-        d = {
-            "rf_temperature": torch.tensor(self.reinforce_temperature),
-            "rf_log_prob": res["log_prob"].mean(),
-            "rf_nll_per_selected": -res["log_prob"].mean() / max(1, self.k),
-            # candidates arrive sorted by score, so deterministic TopK is the
-            # first k positions: overlap needs no second topk
-            "rf_overlap": mask_c[..., : self.k].mean() if self.k <= mask_c.shape[-1]
-            else mask_c.mean(),
-            "rf_rankJ_inclusion": mask_c[..., self.k:].mean()
-            if mask_c.shape[-1] > self.k else torch.tensor(0.0),
-            "rf_score_grad_norm": sg.norm(dim=-1).mean(),
-            "rf_score_grad_sum_abs": sg.sum(-1).abs().mean(),
-        }
-        if "mu_sum_error" in res:
-            d["rf_cb_mu_err"] = res["mu_sum_error"]
-        self._forward_diag = {key: value.detach() for key, value in d.items()}
-
-    # ---- jumprelu ------------------------------------------------------------- #
-    def _jumprelu(self, scores: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
-        """Hard independent-threshold forward over the Top(K+J) margin pool.
-
-        The pool is ranked by the *margin* ``score - theta`` (how far a feature
-        is from its own boundary), selected on detached values -- nothing
-        differentiates through the topk.  Candidates output ``value * H(m)``;
-        the kernel pseudo-derivative reaches only ``log_theta`` (see
-        :mod:`.jumprelu`).  The same hard forward runs in train and eval.
-        """
-        s_det = scores.detach().to(self.solver_dtype)
-        if self.training and not bool(self.theta_calibrated):
-            with torch.no_grad():
-                kth = s_det.topk(self.k, dim=-1).values[..., -1]
-                boundary = kth.reshape(-1).median().clamp_min(1e-6)
-                self.log_theta.fill_(float(boundary.log()))
-                self.theta_calibrated.fill_(1)
-        theta = self.log_theta.exp()
-        margin_det = s_det - theta.detach().to(self.solver_dtype)
-        _, cand_idx = torch.topk(margin_det, self.m, dim=-1, largest=True, sorted=True)
-        value_c = torch.gather(value, -1, cand_idx).to(self.solver_dtype)
-        score_c = torch.gather(s_det, -1, cand_idx)
-        theta_c = theta.to(self.solver_dtype)[cand_idx]
-        y_c = jumprelu_forward(value_c, theta_c, score_c, self.jumprelu_kernel_width)
-        y = torch.zeros_like(value).scatter(-1, cand_idx, y_c.to(value.dtype))
-
-        if self.training and torch.is_grad_enabled() and self.jumprelu_count_coef:
-            # raw (K - L0)^2 per row, held for the controller; the coefficient
-            # is applied by the training loop, mirroring reconstruction_coef
-            l0 = jumprelu_count(theta_c, score_c, self.jumprelu_kernel_width)
-            if self.jumprelu_count_one_sided:
-                # relu's dead zone is the flag: rows at or under K contribute
-                # zero loss and zero theta gradient, so the term only caps L0
-                self._count_sq = (torch.relu(l0 - float(self.k)) ** 2).mean()
-            else:
-                self._count_sq = ((float(self.k) - l0) ** 2).mean()
-
-        if self.log_diagnostics and self.training:
-            with torch.no_grad():
-                h_c = (score_c > theta_c).to(scores.dtype)
-                mask_full = torch.zeros_like(scores).scatter(-1, cand_idx, h_c)
-                self._record_usage(mask_full)
-                self._record_jumprelu(score_c, theta_c, h_c)
-        return y
-
-    def take_count_loss(self):
-        """Pop the raw ``(K - L0)^2`` term from the last forward (None if absent)."""
-        term, self._count_sq = self._count_sq, None
-        return term
-
-    @torch.no_grad()
-    def _record_jumprelu(self, score_c, theta_c, h_c) -> None:
-        """Forward diagnostics for jumprelu.
-
-        ``active_count`` is the *hard* per-row L0 (never a kernel-weighted
-        proxy); ``in_window_frac`` is the share of the candidate pool inside
-        the rectangle, i.e. the features whose thresholds can currently move.
-        """
-        l0 = h_c.sum(-1)
-        margin = score_c - theta_c
-        theta = self.log_theta.exp()
-        d = {
-            "active_count": l0.mean(),
-            "active_count_max": l0.max(),
-            "count_sq": ((float(self.k) - l0) ** 2).mean(),
-            "in_window_frac": (margin.abs() < self.jumprelu_kernel_width)
-            .float().mean(),
-            "theta_mean": theta.mean(),
-            "theta_min": theta.min(),
-            "theta_max": theta.max(),
-            "score_gap": margin[..., self.k - 1].mean() if self.k <= margin.shape[-1]
-            else margin[..., -1].mean(),
-        }
-        self._forward_diag = {key: value.detach() for key, value in d.items()}
-
     # ---- diagnostics --------------------------------------------------------- #
     @torch.no_grad()
     def feature_usage(self) -> torch.Tensor:
@@ -936,30 +693,6 @@ class AdaptiveLapSumTopKGate(nn.Module):
             "grad_active": zero,
         }
         self._grad_sink.clear()
-
-    @torch.no_grad()
-    def _record_swap(self, cand, t) -> None:
-        """Forward diagnostics for the swap_gibbs surrogate.
-
-        ``alpha``/``beta`` are recomputed here under no_grad (O(K+J), only when
-        logging) rather than threaded out of the autograd Function.  ``swap_R``
-        is the total probability the surrogate puts off the current support --
-        the quantity ``swap_lambda`` bounds.
-        """
-        k = self.k
-        _, _, r = swap_weights(cand, t, k, self.swap_log_rho)
-        std = cand.std(-1).clamp_min(torch.finfo(cand.dtype).tiny)
-        d = {
-            "temperature": t.mean(),
-            "temperature_rel": (t / std).mean(),
-            "temperature_scheduled": self.scheduled_temperature,
-            "swap_R": r.mean(),
-            "swap_R_median": r.median(),
-            "swap_R_max": r.max(),
-            "score_gap": (cand[..., k - 1] - cand[..., k]).mean(),
-            "score_span": (cand[..., k - 1] - cand[..., -1]).mean(),
-        }
-        self._forward_diag = {key: value.detach() for key, value in d.items()}
 
     @torch.no_grad()
     def _record(self, cand, b, t, p, solver_diag) -> None:
@@ -1036,12 +769,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
             f"surrogate={self.surrogate_mode}"
             + (
                 f", t_scale={self.temperature_scale_mode}"
-                if self.surrogate_mode in ("lapsum_scheduled", "lapsum_fixed", "swap_gibbs")
-                else ""
-            )
-            + (
-                f", swap_lambda={self.swap_lambda}"
-                if self.surrogate_mode == "swap_gibbs"
+                if self.surrogate_mode in ("lapsum_scheduled", "lapsum_fixed")
                 else ""
             )
         )
@@ -1084,7 +812,7 @@ def validate_gate_shapes(
         raise ValueError(
             f"require k + j <= n_features, got k={k}, j={j}, n_features={n_features}"
         )
-    if surrogate_mode in ("swap_gibbs", "jumprelu", "rblapsum", "reinforce_topk"):
+    if surrogate_mode in ("rblapsum", "rblapsum_sf"):
         # same pool geometry as the LapSum modes, but n_eff is inert: these
         # modes replace the effective-count calibration rather than aiming at it
         return
