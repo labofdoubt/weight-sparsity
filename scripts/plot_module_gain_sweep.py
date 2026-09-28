@@ -76,7 +76,7 @@ def main() -> None:
         ax.legend(fontsize=8.5, loc="best")
 
     d0 = runs[0]
-    tail = ("\n" + r"with $lpha=\sqrt{d_{model}/K}$ on each bottleneck's output, "
+    tail = ("\n" + r"with $\alpha=\sqrt{d_{model}/K}$ on each bottleneck's output, "
             r"spread equally over the 4 MD gain vectors of its two projections"
             if scaled else "")
     fig.suptitle(
