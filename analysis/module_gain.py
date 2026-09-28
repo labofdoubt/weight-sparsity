@@ -55,15 +55,21 @@ def token_sq(t: torch.Tensor) -> torch.Tensor:
     return (f * f).sum(-1).reshape(-1)
 
 
-def ratio(num: torch.Tensor, den: torch.Tensor) -> dict:
-    """Energy gain and the median per-token gain, from two [B*T] vectors."""
+def gain(sq_in: torch.Tensor, sq_out: torch.Tensor, forward: bool) -> dict:
+    """Gain along the direction of propagation, from two [B*T] vectors.
+
+    ``sq_in`` / ``sq_out`` are always keyed by NETWORK POSITION -- the module's
+    input side and output side -- whichever direction is being measured, so a
+    reader never has to work out what "in" meant for a backward pass.  The gain
+    then runs with the flow: out/in going forward, in/out going backward.
+    """
     eps = torch.finfo(torch.float32).tiny
-    per_token = num / den.clamp_min(eps)
+    num, den = (sq_out, sq_in) if forward else (sq_in, sq_out)
     return {
         "gain": float(num.mean() / den.mean().clamp_min(eps)),
-        "gain_median_token": float(per_token.median()),
-        "in_sq_mean": float(den.mean()),
-        "out_sq_mean": float(num.mean()),
+        "gain_median_token": float((num / den.clamp_min(eps)).median()),
+        "sq_input_side": float(sq_in.mean()),
+        "sq_output_side": float(sq_out.mean()),
     }
 
 
@@ -166,17 +172,17 @@ def main() -> None:
         rec = {"layer": li}
         # bottleneck: x -> y  (encoder through decoder, post-norm excluded)
         if ("y", li) in fwd:
-            rec["fwd_bottleneck"] = ratio(fwd[("y", li)], fwd[("x", li)])
+            rec["fwd_bottleneck"] = gain(fwd[("x", li)], fwd[("y", li)], True)
         if ("y", li) in bwd and ("x", li) in bwd:
-            rec["bwd_bottleneck"] = ratio(bwd[("x", li)], bwd[("y", li)])
+            rec["bwd_bottleneck"] = gain(bwd[("x", li)], bwd[("y", li)], False)
         # post-norm: y -> z
         if ("z", li) in fwd and ("y", li) in fwd:
-            rec["fwd_post_norm"] = ratio(fwd[("z", li)], fwd[("y", li)])
+            rec["fwd_post_norm"] = gain(fwd[("y", li)], fwd[("z", li)], True)
         if ("z", li) in bwd and ("y", li) in bwd:
-            rec["bwd_post_norm"] = ratio(bwd[("y", li)], bwd[("z", li)])
+            rec["bwd_post_norm"] = gain(bwd[("y", li)], bwd[("z", li)], False)
         out["layers"].append(rec)
 
-    def compound(field):
+    def compounded(field):
         vals = [r[field]["gain"] for r in out["layers"] if field in r]
         if not vals:
             return None
@@ -185,7 +191,7 @@ def main() -> None:
                 "geometric_mean": math.exp(sum(logs) / len(logs)),
                 "min": min(vals), "max": max(vals)}
 
-    out["summary"] = {f: compound(f) for f in
+    out["summary"] = {f: compounded(f) for f in
                       ("fwd_bottleneck", "fwd_post_norm",
                        "bwd_bottleneck", "bwd_post_norm")}
     with open(args.out, "w") as f:
