@@ -44,7 +44,7 @@ def make(cfg, decouple: bool, device):
         opt = build_decoupled_optimizer(model, c.train,
                                         gain_mode=c.model.decouple_gains)
     else:
-        opt = build_optimizer(model, c.train, c.sparsity, mask_param_ids=set())
+        opt = build_optimizer(model, c.train)
     return model, opt, c
 
 

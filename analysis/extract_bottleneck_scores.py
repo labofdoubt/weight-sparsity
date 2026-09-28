@@ -185,25 +185,12 @@ def main() -> None:
         selection_mode=sel,
         placement=cfg.activation_bottleneck.placement,
         surrogate_mode=cfg.activation_bottleneck.surrogate_mode,
-        swap_lambda=cfg.activation_bottleneck.swap_lambda,
         rblapsum_boundary_floor=cfg.activation_bottleneck.rblapsum_boundary_floor,
-        rblapsum_temperature=cfg.activation_bottleneck.rblapsum_temperature,
         rblapsum_boundary_grad_mode=cfg.activation_bottleneck.rblapsum_boundary_grad_mode,
-        # Enough of the temperature configuration to reconstruct the LapSum
-        # barrier offline.  The gate's own `scheduled_temperature` buffer is
-        # registered persistent=False, so it is *not* in the checkpoint -- the
-        # schedule has to be re-evaluated from these fields at the right step.
-        temperature=dict(
-            scale_mode=cfg.activation_bottleneck.temperature_scale_mode,
-            schedule=cfg.activation_bottleneck.temperature_schedule,
-            start=cfg.activation_bottleneck.temperature_start,
-            end=cfg.activation_bottleneck.temperature_end,
-            warmup_steps=cfg.activation_bottleneck.temperature_warmup_steps,
-            anneal_steps=cfg.activation_bottleneck.temperature_anneal_steps,
-            power=cfg.activation_bottleneck.temperature_power,
-            fixed=cfg.activation_bottleneck.fixed_temperature,
-            max_steps=int(cfg.train.max_steps),
-        ),
+        # The kernel/barrier temperature is one constant shared by the lapsum
+        # and rblapsum modes, so the offline barrier reconstruction in
+        # score_explorer.py needs nothing step-dependent.
+        temperature=float(cfg.activation_bottleneck.temperature),
         n_layers=int(cfg.model.n_layers),
         batch=int(args.batch),
         n_pos=n_pos,

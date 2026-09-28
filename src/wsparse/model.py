@@ -252,29 +252,11 @@ class TransformerLM(nn.Module):
             nn.init.normal_(module.weight, mean=0.0, std=self._embedding_std(module))
 
     # ---- bookkeeping ------------------------------------------------------ #
-    def _mask_parameter_ids(self) -> set:
-        """ids of the auxiliary sparsity parameters, if any layer is masked.
-
-        Duck-typed on ``mask_parameters`` to avoid importing ``wsparse.sparsity``
-        here (that module imports this one).
-        """
-        ids = set()
-        for module in self.modules():
-            fn = getattr(module, "mask_parameters", None)
-            if callable(fn):
-                ids.update(id(p) for p in fn())
-        return ids
-
-    def num_parameters(self, non_embedding: bool = False, include_mask: bool = False) -> int:
-        """Count model parameters.
-
-        By default the sparsity parameters (LTP thresholds / CS gates) are
-        excluded, so the number stays comparable to the dense model.
-        """
-        skip = set() if include_mask else self._mask_parameter_ids()
+    def num_parameters(self, non_embedding: bool = False) -> int:
+        """Count model parameters, each shared tensor once."""
         seen, total = set(), 0
         for p in self.parameters():
-            if id(p) in seen or id(p) in skip:
+            if id(p) in seen:
                 continue
             seen.add(id(p))
             total += p.numel()

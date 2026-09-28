@@ -54,7 +54,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from wsparse.config import config_from_dict  # noqa: E402
 from wsparse.data import TokenStream  # noqa: E402
 from wsparse.model import build_model  # noqa: E402
-from wsparse.sparsity import apply_sparsity  # noqa: E402
 from wsparse.bottleneck import apply_activation_bottleneck  # noqa: E402
 from wsparse.train import lr_at, set_lr, train  # noqa: E402
 from wsparse.utils import autocast_context, resolve_device, resolve_dtype  # noqa: E402
@@ -68,19 +67,16 @@ def load_ckpt(path: str, device: str):
     payload = torch.load(path, map_location=device, weights_only=False)
     cfg = config_from_dict(payload["config"])
     model = build_model(cfg.model)
-    sctl = apply_sparsity(model, cfg.sparsity, max_steps=cfg.train.max_steps)
     bctl = apply_activation_bottleneck(
         model, cfg.activation_bottleneck, max_steps=cfg.train.max_steps)
     model.load_state_dict(payload["model"])
     model.to(device)
     step = int(payload.get("step", 0))
-    sctl.set_step(step)
     bctl.set_step(step)
     assert cfg.model.decouple, "scale_dynamics expects the MD/decouple optimizer"
     from wsparse.decouple import build_decoupled_optimizer
     opt = build_decoupled_optimizer(
-        model, cfg.train, gain_mode=cfg.model.decouple_gains,
-        mask_param_ids=sctl.mask_parameter_ids() or None)
+        model, cfg.train, gain_mode=cfg.model.decouple_gains)
     opt.load_state_dict(payload["optimizer"])
     lr = lr_at(step, cfg.train)
     set_lr(opt, lr)
@@ -158,7 +154,7 @@ def eval_scale(model, bctl, x, y):
 def layer_state_metrics(z, gate, alpha: float) -> dict:
     """Geometry of the gate view (scores scaled by alpha, fixed T)."""
     K, J = gate.k, gate.j
-    T = float(gate.rblapsum_temperature)
+    T = float(gate.temperature)
     b0 = float(gate.rblapsum_boundary_floor)
     s = z.abs().reshape(-1, z.shape[-1]) * alpha
     q = K + J
@@ -189,7 +185,7 @@ def layer_grad_metrics(z, u, gate, alpha: float, n_perm: int) -> dict:
     """Surrogate force analytics; the reconstruction was validated against the
     captured dL/dz earlier in the investigation (relative error ~0)."""
     K, J = gate.k, gate.j
-    T = float(gate.rblapsum_temperature)
+    T = float(gate.temperature)
     b0 = float(gate.rblapsum_boundary_floor)
     F = z.shape[-1]
     zf = z.reshape(-1, F)
@@ -267,7 +263,7 @@ def run_drift(args):
     set_knob(bctl, "rblapsum_view_scale", args.alpha)
     if args.temp_mult != 1.0:
         for _, g in gates_of(bctl):
-            g.rblapsum_temperature = float(g.rblapsum_temperature) * args.temp_mult
+            g.temperature = float(g.temperature) * args.temp_mult
 
     seq = int(cfg.data.seq_len)
     train_stream = TokenStream(os.path.join(args.data_dir, "train.bin"), seq, seed=1234)
@@ -413,7 +409,7 @@ def run_drift(args):
            "batches": args.batches, "accum": accum, "micro": micro,
            "batch_mult": args.batch_mult,
            "k": cfg.activation_bottleneck.k, "j": cfg.activation_bottleneck.j,
-           "T": cfg.activation_bottleneck.rblapsum_temperature,
+           "T": cfg.activation_bottleneck.temperature,
            "R0": R0, "layers": layers_out}
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     json.dump(out, open(args.out, "w"), indent=1)
@@ -437,7 +433,7 @@ def run_reparam(args):
         dtype = resolve_dtype(cfg.train.dtype, device)
         set_knob(bctl, "rblapsum_view_scale", c)
         for _, g in gates_of(bctl):
-            g.rblapsum_temperature = float(g.rblapsum_temperature) * c
+            g.temperature = float(g.temperature) * c
         stream = TokenStream(os.path.join(args.data_dir, "train.bin"),
                              int(cfg.data.seq_len), seed=1234)
         x, y = stream.batch(int(cfg.train.micro_batch_size), device,
@@ -502,7 +498,7 @@ def run_continue(args):
         set_knob(bctl, "rblapsum_support_scale", args.supp_scale)
         if args.temp_mult != 1.0:
             for _, g in gates_of(bctl):
-                g.rblapsum_temperature = float(g.rblapsum_temperature) * args.temp_mult
+                g.temperature = float(g.temperature) * args.temp_mult
         rec["applied"] = True
 
     def hook(step, model, bctl, optimizer):

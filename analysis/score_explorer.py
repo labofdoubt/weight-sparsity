@@ -32,9 +32,9 @@ did not select) and **dL/dz** at its input, after the LapSum surrogate (exactly
 zero outside Top(K+J)).  Each reports the pool's sign agreement, which is the
 number that answers whether the surrogate drives the pool one way.
 
-Both score-axis views carry the LapSum **barrier** ``b`` and the ``b ± t`` window
-(for ``swap_gibbs`` there is no barrier: the line is the TopK boundary and
-``± T`` is the scale on which swaps happen -- see :func:`barrier_at`) -- the
+Both score-axis views carry the surrogate's boundary and its ``± T`` window
+(the LapSum **barrier** ``b`` from the budget solve, or the rblapsum modes' hard
+rank boundary ``max(b0, s_(K+1))`` -- see :func:`barrier_at`) -- the
 candidates inside it are the ones whose surrogate
 gradient is not saturated away.  It is drawn on whichever axis carries the score,
 so it runs horizontally on view 1 and vertically on view 2.
@@ -149,9 +149,9 @@ def load_run(key: str):
 def available_runs(kind: str):
     """Run names for one kind, grouped and ordered by metadata, not by name.
 
-    Order: gate type (hard, soft/LapSum, swap, jumprelu, rblapsum, reinforce)
-    -> temperature (relative before absolute at equal value) -> k -> effective
-    j -> name.  Metadata-driven so new families slot in without name parsing,
+    Order: gate type (hard, LapSum, rblapsum, rblapsum soft-forward)
+    -> temperature -> k -> effective j -> name.  Metadata-driven so new
+    families slot in without name parsing,
     and the first entry stays a safe default (hard, smallest k) rather than
     whichever diverged run sorts first alphabetically.
     """
@@ -169,8 +169,7 @@ def available_runs(kind: str):
                  for p in glob.glob(os.path.join(SCORES_DIR, "*.npy"))]
         meta_dir = SCORES_DIR
 
-    GROUP = ("hard", "lapsum", "swap_gibbs", "jumprelu", "rblapsum",
-             "reinforce_topk")
+    GROUP = ("hard", "lapsum", "rblapsum", "rblapsum_sf")
 
     def sort_key(n):
         try:
@@ -178,18 +177,11 @@ def available_runs(kind: str):
             mode = str(m.get("surrogate_mode", ""))
             base = "lapsum" if mode.startswith("lapsum") else mode
             g = GROUP.index(base) if base in GROUP else len(GROUP)
-            tc = m.get("temperature") or {}
-            if mode == "rblapsum":
-                t = float(m.get("rblapsum_temperature") or 0.0)
-            elif mode == "hard":
-                t = 0.0
-            else:
-                t = float(tc.get("fixed") or tc.get("start") or 0.0)
-            rel = 0 if tc.get("scale_mode", "relative") == "relative" else 1
+            t = 0.0 if mode == "hard" else (meta_temperature(m) or 0.0)
             jj = 0 if mode == "hard" else int(m.get("j", 0))
-            return (0, g, t, rel, int(m.get("k", 0)), jj, n)
+            return (0, g, t, int(m.get("k", 0)), jj, n)
         except Exception:
-            return (1, 9, 0.0, 0, 0, 0, n)
+            return (1, 9, 0.0, 0, 0, n)
 
     return sorted(names, key=sort_key)
 
@@ -263,74 +255,72 @@ def run_range(run: str, norm: str, k: int) -> tuple:
     return float(pos.min()), float(flat.max())
 
 
+def meta_temperature(meta: dict):
+    """The constant kernel/barrier temperature from a sidecar, or None.
+
+    Sidecars written since the 2026-09-28 cleanup carry the unified scalar
+    ``temperature``.  Ones cached before it carry a prescribed-schedule *dict*
+    there instead, plus ``rblapsum_temperature`` for the rblapsum modes; a
+    schedule that was score-relative or non-constant has no single temperature
+    to report, so those legacy cells get None and no band.
+    """
+    t = meta.get("temperature")
+    if isinstance(t, dict):  # legacy: the prescribed-temperature block
+        rb = meta.get("rblapsum_temperature")
+        if rb is not None:
+            return float(rb)
+        if t.get("scale_mode") == "absolute" and t.get("schedule") == "constant":
+            return float(t.get("fixed") or t.get("start") or 0.0)
+        if str(meta.get("surrogate_mode", "")) == "lapsum_fixed" \
+                and t.get("scale_mode") == "absolute":
+            return float(t["fixed"])
+        return None
+    if t is None:
+        t = meta.get("rblapsum_temperature")
+    return None if t is None else float(t)
+
+
 @st.cache_data(show_spinner=False)
 def barrier_at(run: str, ci: int, li: int, bi: int, ti: int, k: int, j: int):
     """``(center, t, kind, extra)`` for one cell, or None.
 
-    ``kind="barrier"``: the LapSum barrier ``b`` (budget solve).
-    ``kind="boundary"``: swap_gibbs has no barrier -- the meaningful line is the
-    TopK boundary (midpoint of the k-th and (k+1)-th scores) and ``± T`` is the
-    scale on which one-swap Gibbs weights ``exp((s_c - s_a)/T)`` are O(1), i.e.
-    where swaps actually happen; ``extra["R"]`` is the cell's total swap
-    probability.
+    ``kind="barrier"``: the LapSum barrier ``b`` (budget solve, ``sum_i
+    F((r_i - b)/t) = k`` over the k+j pool -- note the budget is ``k``, not
+    ``k+j``).  ``kind="rank_boundary"``: the rblapsum modes' hard rank
+    boundary ``max(b0, s_(K+1))``.
 
-    Reconstructed rather than read back: the gate's ``scheduled_temperature``
-    buffer is ``persistent=False``, so it is not in the checkpoint.  Follows
-    ``AdaptiveLapSumTopKGate.prescribed_temperature`` / ``solve`` exactly --
+    Reconstructed from the scores rather than read back -- no per-cell boundary
+    is stored -- and through the project's own ``lapsum_barrier_sorted``, not a
+    reimplementation of the closed form.  The temperature is the run's
+    constant, so nothing depends on the step.
 
-        t = schedule(step) * std(top-(k+j) scores)     [scale_mode="relative"]
-        b  solves  sum_i F((r_i - b)/t) = k            over the k+j pool
-
-    and calls the project's own ``lapsum_barrier_sorted`` rather than
-    reimplementing the closed form.  Note the budget is ``k``, not ``k+j``.
-
-    Returns None where no barrier exists: a hard gate never solves one, and the
-    adaptive modes derive ``t`` from a Newton solve on the score geometry rather
-    than from the schedule, which this does not attempt to reproduce.
+    Returns None where no boundary exists: a hard gate never solves one, and a
+    legacy sidecar whose temperature was scheduled or score-relative has no
+    constant to draw the window from (see :func:`meta_temperature`).
     """
     _, meta, _ = load_run(run)
     mode = str(meta.get("surrogate_mode", ""))
-    tc = meta.get("temperature")
-    if j == 0 or tc is None or mode not in ("lapsum_scheduled", "lapsum_fixed",
-                                            "swap_gibbs", "rblapsum"):
+    t_const = meta_temperature(meta)
+    if j == 0 or t_const is None or not (
+            mode.startswith("lapsum") or mode.startswith("rblapsum")):
         return None
     import torch  # deferred: keeps app start-up off the torch import path
     from wsparse.bottleneck.lapsum import lapsum_barrier_sorted
-    from wsparse.schedules import build_schedule
 
     arr, _, _ = load_run(run)
     r = np.abs(np.asarray(arr[ci, li, bi, ti], dtype=np.float32))
     cand = torch.from_numpy(np.sort(r)[::-1][: k + j].copy()).unsqueeze(0)
-    if mode == "rblapsum":
+    if mode.startswith("rblapsum"):
         # boundary is the HARD rank: b = max(b0, s_(K+1)); T is a fixed constant
         # (not score-scaled).  s_(K+1) is candidate index k (0-based, sorted desc).
         s_k1 = float(cand[0, k]) if k < cand.shape[1] else float(cand[0, -1])
         b0 = float(meta.get("rblapsum_boundary_floor", 0.0))
-        t_rb = float(meta.get("rblapsum_temperature", 1.0))
-        return max(b0, s_k1), t_rb, "rank_boundary", {
+        return max(b0, s_k1), t_const, "rank_boundary", {
             "floor": b0, "cap_active": bool(s_k1 > b0),
             "mode": meta.get("rblapsum_boundary_grad_mode", "detach")}
-    if mode == "lapsum_fixed":
-        t_sched = float(tc["fixed"])
-    else:
-        t_sched = float(build_schedule(
-            kind=tc["schedule"], start=tc["start"], end=tc["end"],
-            warmup_steps=tc["warmup_steps"], anneal_steps=tc["anneal_steps"],
-            power=tc["power"], max_steps=tc["max_steps"],
-        )(meta["steps"][ci]))
-    # torch's std is unbiased (ddof=1); numpy's default is not, so go through
-    # torch to match the gate bit-for-bit.
-    scale = cand.std(-1) if tc["scale_mode"] == "relative" else torch.ones(1)
-    t = t_sched * torch.where(scale > 0, scale, torch.ones_like(scale))
-    if mode == "swap_gibbs":
-        from wsparse.bottleneck.swap import swap_log_rho, swap_weights
-
-        centre = float(cand[0, k - 1] + cand[0, k]) / 2.0
-        log_rho = swap_log_rho(meta.get("swap_lambda", "default"), k, j)
-        _, _, r_swap = swap_weights(cand, t, k, log_rho)
-        return centre, float(t[0]), "boundary", {"R": float(r_swap[0])}
+    t = torch.full((1,), t_const)
     b = lapsum_barrier_sorted(cand, k, t)
-    return float(b[0]), float(t[0]), "barrier", None
+    return float(b[0]), t_const, "barrier", None
 
 
 def min_cut_slider(label: str, key: str, lo: float, hi: float, log: bool) -> float:
@@ -1283,12 +1273,6 @@ if bt is not None:
             + f"; grad mode = {bt[3].get('mode', 'detach')}. Candidates within "
             f"the violet band feel the local kernel."
         )
-    if bt[2] == "boundary":
-        st.caption(
-            f"swap window: TopK boundary ± T = {bt[1]:.3g} -- the score scale on "
-            f"which one-swap Gibbs weights are O(1); total swap probability "
-            f"R ≈ {bt[3]['R']:.3f} for this cell "
-            f"(λ = {load_run(run)[1].get('swap_lambda', 'default')})")
 st.plotly_chart(fig, width="stretch", theme=None)
 if bt is None and hard_gate:
     st.caption(

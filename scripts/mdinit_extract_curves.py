@@ -18,8 +18,11 @@ for run_dir in sorted(glob.glob(os.path.join(runs_dir, "ca_rout_*"))):
         b, m, t = cfg["activation_bottleneck"], cfg["model"], cfg["train"]
         rec["k"], rec["j"] = b["k"], b["j"]
         rec["surrogate"] = b["surrogate_mode"]
-        rec["T"] = (b["rblapsum_temperature"] if b["surrogate_mode"] == "rblapsum"
-                    else b["temperature_start"])
+        # new schema: one shared "temperature"; archived configs carry the
+        # per-mode keys this campaign was launched with.
+        rec["T"] = b.get("temperature", b.get("rblapsum_temperature")
+                         if b["surrogate_mode"] == "rblapsum"
+                         else b.get("temperature_start"))
         rec["regime"] = ("md" if m.get("decouple") else
                          "mdinit_wd%g" % t["weight_decay"] if m.get("md_init") else "plain")
         rec["weight_decay"] = t["weight_decay"]

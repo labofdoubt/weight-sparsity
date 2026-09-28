@@ -77,7 +77,7 @@ class GainProbe:
         # gate mutates are still restored, so the run is unaffected either way.
         snaps = [(m.gate.usage_ema.clone(), m.gate.usage_steps.clone(),
                   dict(m.gate._forward_diag), dict(m.gate._usage_diag),
-                  dict(m.gate._grad_sink), m._reconstruction)
+                  dict(m.gate._grad_sink))
                  for _, m in layers]
         was_training = model.training
         model.eval()
@@ -136,7 +136,6 @@ class GainProbe:
             g_ = mod.gate
             g_.usage_ema.copy_(s[0]); g_.usage_steps.copy_(s[1])
             g_._forward_diag, g_._usage_diag, g_._grad_sink = s[2], s[3], s[4]
-            mod._reconstruction = s[5]
         model.train(was_training)
         cap.clear()
         if (step // self.every) % 10 == 0:

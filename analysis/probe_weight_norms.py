@@ -116,7 +116,7 @@ class WeightProbe:
         # ---- activation context, forward only ------------------------------ #
         snaps = [(m.gate.usage_ema.clone(), m.gate.usage_steps.clone(),
                   dict(m.gate._forward_diag), dict(m.gate._usage_diag),
-                  dict(m.gate._grad_sink), m._reconstruction)
+                  dict(m.gate._grad_sink))
                  for _, m in bottleneck.layers] if bottleneck.enabled else []
         was_training = model.training
         model.eval()
@@ -184,7 +184,6 @@ class WeightProbe:
             g_ = mod.gate
             g_.usage_ema.copy_(sn[0]); g_.usage_steps.copy_(sn[1])
             g_._forward_diag, g_._usage_diag, g_._grad_sink = sn[2], sn[3], sn[4]
-            mod._reconstruction = sn[5]
         model.train(was_training)
         cap.clear()
         if (step // self.every) % 20 == 0:

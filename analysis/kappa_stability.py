@@ -54,6 +54,21 @@ def parse_run(name: str) -> dict:
     return {"k": int(m.group(1)), "j": int(m.group(2)), "T": T}
 
 
+def _meta_T(meta: dict, default: float = 1.0) -> float:
+    """Kernel temperature from a sidecar, either schema.
+
+    Sidecars cached before the 2026-09-28 cleanup name it
+    ``rblapsum_temperature`` and keep a prescribed-schedule dict under
+    ``temperature``; newer ones store the unified scalar there.
+    """
+    t = meta.get("temperature")
+    if isinstance(t, dict):
+        t = None
+    if t is None:
+        t = meta.get("rblapsum_temperature", default)
+    return float(t)
+
+
 def _save_json(path: str, obj) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
@@ -62,6 +77,10 @@ def _save_json(path: str, obj) -> None:
 
 
 # ------------------------------------------------------------------- tb dump
+# Tags to pull when they exist -- missing ones are skipped, so this list
+# deliberately still names the servo-era series (rb_temp, rb_chi, rb_win_count,
+# rb_kick, in_window_frac) that only the runs archived before the 2026-09-28
+# cleanup carry.
 TB_TAGS = [
     "val/ce", "train/loss", "train/grad_norm",
     "bottleneck/rb_boundary", "bottleneck/rb_b_rank",
@@ -161,7 +180,7 @@ def cmd_ladder(args) -> None:
         name = meta["run"]
         info = parse_run(name)
         K, J = meta["k"], meta["j"]
-        T = float(meta.get("rblapsum_temperature", info.get("T", 1.0)))
+        T = _meta_T(meta, info.get("T", 1.0))
         arr = np.load(mp[:-5] + ".npy", mmap_mode="r")  # [C, L, B, P, F]
         C, L = arr.shape[0], arr.shape[1]
         steps = meta["steps"]
@@ -200,7 +219,7 @@ def cmd_probe(args) -> None:
         meta = json.load(open(mp))
         name = meta["run"]
         K, J = meta["k"], meta["j"]
-        T = float(meta.get("rblapsum_temperature", 1.0))
+        T = _meta_T(meta)
         base = mp[:-5]
         try:
             z_a = np.load(base + ".score.npy", mmap_mode="r")

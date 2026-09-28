@@ -6,8 +6,9 @@ minimum-x display cut, TopK / J-candidate / rest marks in the viewer's colours
 and sizes, deterministic per-feature jitter (so a circle moves only when the
 model does), rings against the previous probe step (black = was TopK, magenta
 = was a J candidate), k / k+j edges at the score-threshold midpoints, and the
-mode-appropriate temperature band: violet b ± t for the prescribed LapSum
-modes, TopK-boundary ± T for swap_gibbs, none for hard.  The x range is frozen
+mode-appropriate temperature band: violet b ± T at the LapSum barrier, the
+hard rank boundary ± T for the rblapsum modes, none for hard.  The x range is
+frozen
 across frames so motion is training dynamics, not axis rescaling.
 
     python analysis/halfline_gif.py --run probe_dc_rout_soft_k32_j128 \
@@ -39,19 +40,39 @@ RING_WAS_TOPK, RING_WAS_CAND = INK, "#d55181"
 BARRIER, BARRIER_FILL = "#4a3aa7", (74 / 255, 58 / 255, 167 / 255, 0.10)
 
 
-def band_at(meta, band_sorted, t_sched):
-    """(center, t, label) for one frame's sorted candidate band, or None."""
+def const_temperature(meta):
+    """The run's constant kernel/barrier temperature, or None.
+
+    Probe sidecars written since the 2026-09-28 cleanup carry the unified
+    scalar ``temperature``; older ones carry a prescribed-schedule dict there
+    plus ``rblapsum_temperature``, and a schedule that was score-relative or
+    non-constant has no single temperature to draw a band from.
+    """
+    t = meta.get("temperature")
+    if isinstance(t, dict):
+        rb = meta.get("rblapsum_temperature")
+        if rb is not None:
+            return float(rb)
+        if t.get("scale_mode") != "absolute":
+            return None
+        if t.get("schedule") == "constant" or meta.get("surrogate_mode") == "lapsum_fixed":
+            return float(t.get("fixed") or t.get("start") or 0.0)
+        return None
+    return None if t is None else float(t)
+
+
+def band_at(meta, band_sorted, t):
+    """(center, T, label) for one frame's sorted candidate band, or None."""
     mode = meta.get("surrogate_mode", "")
-    tc = meta.get("temperature")
-    if tc is None or mode == "hard":
+    if t is None or mode == "hard":
         return None
     import torch
     k = int(meta["k"])
+    if mode.startswith("rblapsum"):
+        # hard rank boundary b = max(b0, s_(K+1)); band_sorted is descending
+        b0 = float(meta.get("rblapsum_boundary_floor", 0.0))
+        return (max(b0, float(band_sorted[k])), t, "b")
     cand = torch.from_numpy(band_sorted[None].copy())
-    scale = float(cand.std(-1, unbiased=True)) if tc["scale_mode"] == "relative" else 1.0
-    t = t_sched * (scale if scale > 0 else 1.0)
-    if mode == "swap_gibbs":
-        return (float(band_sorted[k - 1] + band_sorted[k]) / 2.0, t, "K|K+1")
     from wsparse.bottleneck.lapsum import lapsum_barrier_sorted
     b = lapsum_barrier_sorted(cand, k, torch.tensor([t], dtype=cand.dtype))
     return (float(b[0]), t, "b")
@@ -82,18 +103,9 @@ def main() -> None:
     x_hi = float(cell.max()) * 1.15
     jt = np.random.default_rng(0).uniform(-1.0, 1.0, size=N)
 
-    t_scheds = None
-    if meta.get("surrogate_mode") not in ("hard", None) and meta.get("temperature"):
-        tc = meta["temperature"]
-        if meta["surrogate_mode"] == "lapsum_fixed":
-            t_scheds = [float(tc["fixed"])] * len(steps)
-        else:
-            from wsparse.schedules import build_schedule
-            sched = build_schedule(kind=tc["schedule"], start=tc["start"], end=tc["end"],
-                                   warmup_steps=tc["warmup_steps"],
-                                   anneal_steps=tc["anneal_steps"], power=tc["power"],
-                                   max_steps=tc["max_steps"])
-            t_scheds = [float(sched(s)) for s in steps]
+    t_const = None
+    if meta.get("surrogate_mode") not in ("hard", None):
+        t_const = const_temperature(meta)
 
     frames = []
     prev_topk = prev_cand = None
@@ -111,8 +123,8 @@ def main() -> None:
         fig, ax = plt.subplots(figsize=(10.0, 2.9), dpi=110)
         fig.patch.set_facecolor(SURFACE); ax.set_facecolor(SURFACE)
         bt = None
-        if t_scheds is not None and j:
-            bt = band_at(meta, r[order[:k + j]], t_scheds[ci])
+        if t_const is not None and j:
+            bt = band_at(meta, r[order[:k + j]], t_const)
         if bt is not None:
             c, t, lab = bt
             lo, hi = max(c - t, cut), c + t

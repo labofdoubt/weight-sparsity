@@ -115,7 +115,7 @@ class MassProbe:
         self.prof_tokens = list(prof_tokens)
         b = cfg.activation_bottleneck
         self.k, self.j = int(b.k), int(b.j)
-        self.t = float(b.rblapsum_temperature)
+        self.t = float(b.temperature)
         self.b0 = float(b.rblapsum_boundary_floor)
         self.x = self.y = None
         self.steps, self.mass, self.prof_s, self.prof_p, self.ce = [], [], [], [], []
@@ -143,7 +143,7 @@ class MassProbe:
             g = mod.gate
             snaps.append((g.usage_ema.clone(), g.usage_steps.clone(),
                           dict(g._forward_diag), dict(g._usage_diag),
-                          dict(g._grad_sink), mod._reconstruction))
+                          dict(g._grad_sink)))
         was_training = model.training
 
         cap = {}
@@ -181,7 +181,6 @@ class MassProbe:
             g = mod.gate
             g.usage_ema.copy_(sn[0]); g.usage_steps.copy_(sn[1])
             g._forward_diag, g._usage_diag, g._grad_sink = sn[2], sn[3], sn[4]
-            mod._reconstruction = sn[5]
         model.train(was_training)
         torch.set_rng_state(rng_cpu)
         if rng_cuda is not None:
@@ -224,7 +223,7 @@ class GradProbe:
         self.prof_layers, self.prof_tokens = list(prof_layers), list(prof_tokens)
         b = cfg.activation_bottleneck
         self.k, self.j = int(b.k), int(b.j)
-        self.t = float(b.rblapsum_temperature)
+        self.t = float(b.temperature)
         self.b0 = float(b.rblapsum_boundary_floor)
         self.mode = str(b.rblapsum_boundary_grad_mode)
         self.x = self.y = None
@@ -251,7 +250,7 @@ class GradProbe:
             g = mod.gate
             snaps.append((g.usage_ema.clone(), g.usage_steps.clone(),
                           dict(g._forward_diag), dict(g._usage_diag),
-                          dict(g._grad_sink), mod._reconstruction))
+                          dict(g._grad_sink)))
         was_training = model.training
         model.train()
 
@@ -295,7 +294,6 @@ class GradProbe:
             g = mod.gate
             g.usage_ema.copy_(sn[0]); g.usage_steps.copy_(sn[1])
             g._forward_diag, g._usage_diag, g._grad_sink = sn[2], sn[3], sn[4]
-            mod._reconstruction = sn[5]
         model.train(was_training)
         torch.set_rng_state(rng_cpu)
         if rng_cuda is not None:
@@ -414,7 +412,7 @@ class RowProbe:
         self.layer, self.token = int(layer), int(token)
         b = cfg.activation_bottleneck
         self.k, self.j = int(b.k), int(b.j)
-        self.t = float(b.rblapsum_temperature)
+        self.t = float(b.temperature)
         self.b0 = float(b.rblapsum_boundary_floor)
         self.x = self.y = None
         self.out = {n: [] for n in ("steps", "x_norm", "s", "row_fused",
@@ -445,7 +443,7 @@ class RowProbe:
             g = m_.gate
             snaps.append((g.usage_ema.clone(), g.usage_steps.clone(),
                           dict(g._forward_diag), dict(g._usage_diag),
-                          dict(g._grad_sink), m_._reconstruction))
+                          dict(g._grad_sink)))
         was_training = model.training
 
         cap = {}
@@ -488,7 +486,6 @@ class RowProbe:
             g = m_.gate
             g.usage_ema.copy_(sn[0]); g.usage_steps.copy_(sn[1])
             g._forward_diag, g._usage_diag, g._grad_sink = sn[2], sn[3], sn[4]
-            m_._reconstruction = sn[5]
         model.train(was_training)
         torch.set_rng_state(rng_cpu)
         if rng_cuda is not None:
@@ -598,7 +595,7 @@ def main() -> None:
             cfg.data.data_dir = args.data_dir
             b = cfg.activation_bottleneck
             k, j = int(b.k), int(b.j)
-            t, b0 = float(b.rblapsum_temperature), float(b.rblapsum_boundary_floor)
+            t, b0 = float(b.temperature), float(b.rblapsum_boundary_floor)
             tr, _ = build_streams(cfg.data, seed=cfg.train.seed)
             device = next(model.parameters()).device
             x, y = tr.batch(4, device, deterministic_offset=4242)

@@ -391,8 +391,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
         collapse: a subset of features wins every token and the rest are never
         selected, so their ``W_in``/``W_out`` columns stop receiving gradient
         entirely and the effective width is far below N.  Nothing else logged
-        here would show that -- the loss, the budget and N_eff all look healthy
-        while it happens -- so it is tracked over an EMA window rather than a
+        here would show that -- the loss and the budget both look healthy while
+        it happens -- so it is tracked over an EMA window rather than a
         single batch, which a small batch would make far too noisy.
         """
         rate = hard_mask.reshape(-1, self.n_features).mean(0).float()
@@ -456,8 +456,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
         Scores arrive already rounded, so ``(r_i - b)`` carries an absolute
         error of about ``eps * |r|``, which dividing by ``t`` amplifies into the
         exponent.  Only the candidates within a few ``t`` of the barrier have an
-        appreciable ``dF/dz``, so roughly ``n_eff`` of them contribute at up to
-        ``1/4`` each.  Comparing against a flat ``barrier_solver_tol * K`` would
+        appreciable ``dF/dz``, so only an effective few of them contribute, at
+        up to ``1/4`` each.  Comparing against a flat ``barrier_solver_tol * K`` would
         report a failure on every batch of offset activations even though the
         solver is exact -- the limit is the input representation.
         """

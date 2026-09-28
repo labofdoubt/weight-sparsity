@@ -228,7 +228,7 @@ class TrainConfig:
     weight_decay: float = 0.1
     grad_clip: float = 1.0
     # weight decay is only applied to >= 2D parameters (matmul weights);
-    # norm gains, biases and all sparsity parameters are excluded.
+    # norm gains and biases are excluded.
 
     # ---- lr schedule ----------------------------------------------------- #
     lr_schedule: str = "cosine"  # cosine | linear | constant
@@ -299,16 +299,15 @@ class TrainConfig:
 class ActivationBottleneckConfig:
     """A hard-TopK activation bottleneck inserted in front of selected MLPs.
 
-    This is an **activation**-sparsity experiment and is entirely separate from
-    the weight-sparsity methods above: ``W_in`` and ``W_out`` are dense and
-    trained normally, and enabling both experiments at once is a config error.
+    ``W_in`` and ``W_out`` are dense and trained normally; what is sparse is
+    the code between them.
 
         x_mlp -> W_in -> TopK/AbsTopK (exactly k of n_features) -> W_out -> MLP
 
     The forward pass is exact hard TopK.  The backward pass additionally lets
-    the next ``j`` candidates move, through a LapSum (Laplace-CDF) soft mask
-    whose temperature is re-derived every step from a target effective number
-    the surrogate's boundary exchange.
+    the next ``j`` candidates move, through a Laplace-CDF soft mask at the
+    constant ``temperature`` below; ``surrogate_mode`` picks the variant and
+    with it what the backward does at the surrogate's boundary exchange.
     """
 
     enabled: bool = False
@@ -388,9 +387,6 @@ class ActivationBottleneckConfig:
     # for rblapsum_sf (the soft forward's natural companion).  Set explicitly
     # for the ablations.
     rblapsum_boundary_grad_mode: Optional[str] = None
-    # b0: a FIXED bottleneck-level activation floor (never data-dependent).  For
-    # abs_topk, b0=0 makes almost every feature eligible, so L0 stays ~K; a
-    # positive b0 is needed to get L0 < K on some tokens.  Strict s > b0.
     # Multiplies the rblapsum SUPPORT gradient -- the boundary-exchange term
     # g_s -- in the backward, after the mode correction, so the zero-sum
     # structure of through_rank_kappa is preserved and the term is uniformly
@@ -435,6 +431,9 @@ class ActivationBottleneckConfig:
     # residual_out in the final block, which feeds norm_f -- does not get one.
     post_norm: bool = False
 
+    # b0: a FIXED bottleneck-level activation floor (never data-dependent).
+    # For abs_topk, b0=0 makes almost every feature eligible, so L0 stays ~K; a
+    # positive b0 is needed to get L0 < K on some tokens.  Strict s > b0.
     # None -> 0.0: no floor.  (Earlier campaigns ran abs_topk with a 0.1
     # default; measurements on those runs showed the floor essentially never
     # binds -- mean boundary 8-40x above it -- so the default is now the
@@ -442,21 +441,39 @@ class ActivationBottleneckConfig:
     # Resolved to a concrete float in __post_init__.
     rblapsum_boundary_floor: Optional[float] = None
 
+    # How the bottleneck's own projections are initialized.  They are spliced in
+    # after the model's _init_weights pass, so "default" means PyTorch's
+    # nn.Linear defaults -- U(+-1/sqrt(fan_in)) with random biases -- which is
+    # what every run before this option used.
+    #   sqrt_k               encoder std 1/sqrt(d_model), decoder std 1/sqrt(k).
+    #                        The decoder's fan-in is n_features but only k
+    #                        coefficients are non-zero, so scaling by n_features
+    #                        under-scales the output by sqrt(n/k).  Correcting
+    #                        to k overshoots, since the survivors are the
+    #                        largest coefficients rather than typical ones.
+    #   sqrt_k_selection_corrected
+    #                        sqrt_k divided by E[|z| | selected], the mean
+    #                        magnitude of a surviving coefficient.  Lands at
+    #                        unit output scale.
+    #   unit_norm_dictionary both std 1/sqrt(d_model): decoder columns have
+    #                        expected unit norm, the usual sparse-coding
+    #                        convention.
+    # default | sqrt_k | sqrt_k_selection_corrected | unit_norm_dictionary
     init_mode: str = "default"
     # Share one matrix between encoder and decoder (decoder = encoder^T).  Only
     # meaningful when both sides have the same scale, so it requires
     # unit_norm_dictionary.  Halves the bottleneck's parameters.
     tie_encoder_decoder: bool = False
 
-
-
+    # LapSum barrier solve: bisection stops at this absolute residual on
+    # sum p_i = K, in solver_dtype (float32 keeps the boundary reproducible
+    # under bf16 training).
     barrier_solver_tol: float = 1.0e-6
-
     solver_dtype: str = "float32"
     log_diagnostics: bool = True
 
     bias: bool = False  # biasless projections (the family convention)
-    # skip the whole LapSum/temperature machinery when not training
+    # skip the whole soft-mask machinery when not training
     hard_inference: bool = True
 
     def __post_init__(self) -> None:

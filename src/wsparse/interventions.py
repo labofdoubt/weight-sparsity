@@ -167,7 +167,7 @@ class SwapInterventionEngine:
     def set_prescribed_temperature(self, step: int) -> None:
         """No-op since the 2026-09-28 cleanup: the temperature is the constant
         ``activation_bottleneck.temperature`` carried by the gate itself, so a
-        loaded checkpoint needs no per-step reconstruction."""
+        loaded checkpoint has nothing to re-derive per step."""
         del step
 
     def capture_lapsum_gradients(self, x_ids: torch.Tensor, targets: torch.Tensor,

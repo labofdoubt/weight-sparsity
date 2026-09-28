@@ -1,8 +1,8 @@
 """Installs activation bottlenecks into a model and aggregates their diagnostics.
 
-Deliberately independent of ``wsparse.sparsity``: this is an activation-sparsity
-experiment, and its two projections are dense parameters trained normally.  The
-two experiments are mutually exclusive (see ``Config.__post_init__``).
+The bottleneck's two projections are dense parameters trained normally; what
+is sparse is the code between them.  Each module keeps its own diagnostics and
+the controller only aggregates them.
 """
 
 from __future__ import annotations

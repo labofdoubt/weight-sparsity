@@ -85,7 +85,7 @@ class Logger:
     """Console + JSONL (+ optional TensorBoard / Weights & Biases) logging.
 
     Metric keys are already namespaced with ``/`` (``train/ce``, ``val/ce``,
-    ``sparsity/...``, ``bottleneck/...``), which is exactly TensorBoard's
+    ``bottleneck/...``), which is exactly TensorBoard's
     grouping convention, so every panel lands in the right section for free.
     Events go to ``<out_dir>/<run_name>/tb``; pointing TensorBoard at
     ``<out_dir>`` therefore overlays every run in one chart, which is how the

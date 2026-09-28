@@ -69,8 +69,9 @@ job. If you only need dev tooling, note the system `python3` often already has
 PYTHONPATH=src:/usr/lib/python3/dist-packages python -m pytest tests/ -q
 ```
 
-Expect **1 failure**: `test_topk.py::test_compiled_model_matches_eager`. It is
-pre-existing, it is not yours, and §11 explains what it means.
+Expect it green. One test is known-flaky
+(`test_interventions.py::test_alignment_summary_math_on_synthetic_rows`) and the
+2-process DDP test is opt-in -- see §11.
 
 ---
 
@@ -339,7 +340,9 @@ mod.gate.register_forward_hook(lambda m, i, o: grab.__setitem__("z", o.detach())
 ```
 
 The decoder is `mod.out_proj.weight` `(d_model, n_features)`, columns are feature
-directions; `mod.output_scale` is a frozen gain when `calibrate_output` was on.
+directions.  (Checkpoints from the removed output-calibration era carry an
+extra `output_scale` buffer; `load_state_dict` on the current code rejects it,
+so read those with a pre-cleanup commit -- see §9d.)
 `scripts/../interpretability/extract_bottleneck_activations.py` is a worked
 example, including how it batches stories and pins target token positions.
 
@@ -355,9 +358,10 @@ hand-written backward. Things that will surprise you:
   a flat line at zero — use a log axis before concluding it is off.
 * `j` is **inert** under `surrogate_mode=hard`: verified bit-identical output and
   gradients for j = 1, 64, 256, 1504. It only changes the diagnostics window.
-* `n_eff` / `boundary_mode` / `one_sided_weight_mode` are **inert** under
-  `lapsum_scheduled` — there the temperature comes from the schedule, and
-  `n_eff_realized` drifting far from the configured `n_eff` is expected.
+* the temperature is one constant (`activation_bottleneck.temperature`) for
+  both the lapsum barrier and the rblapsum kernel, so nothing about the
+  gradient's bandwidth depends on the step. Archived runs' `n_eff` /
+  `boundary_mode` / `one_sided_weight_mode` fields are dropped on load (§9d).
 
 ---
 
@@ -387,9 +391,12 @@ one streamlit viewer over them. `analysis/README.md` is the complete manual; the
   new run appears ~30 s after its file lands -- no restart, no app change.
   Adding a new *kind* of data means a new page: README §7 has the pattern.
   Caveats baked into it deliberately: `j` is forced to 0 for hard-gate runs
-  (inert in training -- §7), and the LapSum barrier band is reconstructed
-  offline because `scheduled_temperature` is a non-persistent buffer absent
-  from checkpoints.
+  (inert in training -- §7), and the boundary band is reconstructed offline
+  from the scores plus the run's constant temperature, since no per-cell
+  boundary is stored. Sidecars cached before the cleanup carry a
+  prescribed-schedule dict instead of the scalar; if that schedule was
+  score-relative the viewer draws no band (`meta_temperature` in
+  `analysis/score_explorer.py`).
 * **`gain/` JSONs are not shown in the app** -- they feed TensorBoard
   (`lens_1/gainsweep_*`, via `--tb-dir`) and ad-hoc comparison scripts.
 * **Drive sync**: the third backup watcher (§5) mirrors `/workspace/analysis`
@@ -414,8 +421,10 @@ one streamlit viewer over them. `analysis/README.md` is the complete manual; the
   `n_layers + 1`.
 * **The bottleneck does not inherit the model's conventions.** It is spliced in
   *after* `_init_weights` runs, so `init_scheme` / `init_std` / `init_gain` never
-  touch it, and `activation_bottleneck.bias` is a separate field that defaults
-  to `True` while `model.bias` defaults to `False`.
+  touch it, and `activation_bottleneck.bias` is a separate field (since the
+  2026-09-28 cleanup it defaults to `False`, matching `model.bias` and the
+  family convention; archived configs carry their own concrete value, and the
+  campaigns from `ca_*` on were already biasless).
 * **`init_mode`** controls the bottleneck's own init. `default` (PyTorch) scales
   the decoder for fan-in `n_features` though TopK delivers only `k` non-zeros;
   measured `std(out)/std(in)` = 0.128 at k=32, N=1536 against 1.006 for
@@ -546,7 +555,7 @@ logits; verified at full 8x768 size across all three bottleneck families
 norm-constrained *optimizer* contributes beyond its initialization. Like
 `decouple` it overrides every other init field and requires
 `pos_encoding="rope"` and `logit_scale="none"`; the two flags are mutually
-exclusive (config error) and `sparsity.enabled` is refused.
+exclusive (config error).
 
 Result, if you need the summary rather than the note
 (`docs/md-init-vs-decoupling.tex`): the initialization carries most of the
@@ -558,7 +567,7 @@ converged quality (MD's residual edge is 0.001–0.041 nats, 0.001–0.025 at
 ### `rblapsum_sf`: the soft-forward variant (added 2026-09-26)
 
 `surrogate_mode: "rblapsum_sf"` shares rblapsum's Top(K+J) pool, rank boundary
-`b = max(b0, s_(K+1))`, temperature and servo, but the forward itself is
+`b = max(b0, s_(K+1))` and temperature, but the forward itself is
 `y_i = z_i * p_i` with `p_i = F((s_i - b)/T)` (Laplace CDF) over the whole
 pool -- features outside the pool output exactly 0.  The backward is the
 gradient of that forward.  Things an agent must know:
@@ -619,13 +628,14 @@ concrete `0.1` in its dumped `config.json`, so it reproduces unchanged — but
 config (and see `B0` in §9b, which is still hard-coded in
 `analysis/kappa_stability.py`).
 
-### Every schedule is defined over `train.max_steps`
+### The lr schedule is defined over `train.max_steps`
 
-Both the learning rate (`optim.lr_at`) and the bottleneck temperature
-(`build_schedule`, whose `anneal_steps` defaults to `max_steps - warmup_steps`)
-are parameterised by `max_steps`, not by wall-clock steps. **So shortening
-`max_steps` to stop a run early does not truncate the schedules -- it compresses
-them**, and the run you get is not the first N steps of the run you wanted.
+The learning rate (`optim.lr_at`) is parameterised by `max_steps`, not by
+wall-clock steps. **So shortening `max_steps` to stop a run early does not
+truncate the schedule -- it compresses it**, and the run you get is not the
+first N steps of the run you wanted. (The bottleneck temperature used to be
+scheduled the same way; since the 2026-09-28 cleanup it is a constant, so
+`max_steps` is the only thing left that a truncation would distort.)
 
 If you need to stop early (a probe run, a quick repro), leave `max_steps` alone
 and stop by other means. `analysis/probe_early_training.py` raises a
@@ -660,24 +670,29 @@ name-based exemptions. So the bottleneck's `in_proj` / `out_proj` are decayed at
 scales escape (13,056 parameters out of 114.5M). Do not assume the bottleneck is
 exempt -- and read any weight-norm growth as happening *against* a 0.1 decay.
 
-### The soft runs' temperature never anneals
+### The old soft runs' temperature never annealed (and what loads today)
 
 `dc_rout_soft_*` set `temperature_schedule="constant"` with
-`temperature_start=1.0`, so `Schedule.__call__` returns `start` and **ignores
-`temperature_end`** entirely. The configs also carry `temperature_end=0.02`,
-which reads like an intent to anneal 1.0 -> 0.02; it never happens.
-`temperature_anneal_steps`, `temperature_power` and `fixed_temperature` are
-inert there too.
+`temperature_start=1.0`, so the schedule returned `start` and **ignored
+`temperature_end=0.02`** entirely -- which reads like an intent to anneal that
+never happened. Their `temperature_scale_mode="relative"` then made the
+effective temperature `t = 1.0 * std(top-(k+j) scores)`: no time dependence and
+no absolute reference, so the surrogate's operating point was pinned to whatever
+the score scale happened to be (`t/scale` is measurably constant across that
+checkpoint ladder). That matters: see `docs/activation-amplification.md`, where
+forcing an absolute scale cuts the activation tail 14.7x.
 
-With `temperature_scale_mode="relative"` the effective temperature is therefore
-`t = 1.0 * std(top-(k+j) scores)` -- no time dependence and no absolute
-reference, so the surrogate's operating point is pinned to whatever the score
-scale happens to be. `t/scale` is measurably constant across the whole
-checkpoint ladder. That matters: see `docs/activation-amplification.md`, where
-forcing `temperature_scale_mode=absolute` cuts the activation tail 14.7x.
+Since the 2026-09-28 cleanup there is one constant
+`activation_bottleneck.temperature` and **no relative scale at all**, so those
+configs no longer load -- `config_from_dict` raises on a relative-scale
+`lapsum_*` mode by design. The `_abs` families (`ca_rout_soft_*_md_abs` and
+everything after) used `constant` + `absolute`, and those migrate cleanly to
+`surrogate_mode="lapsum"` with `temperature = temperature_start`. To rebuild a
+relative-temperature run, check out a commit before the cleanup (see §9d).
 
-The hard runs declare `exponential` 0.5 -> 0.02, which is equally inert -- a hard
-gate never solves a barrier and never reads the temperature at all.
+The hard runs declare `exponential` 0.5 -> 0.02, which was equally inert -- a
+hard gate never solves a barrier and never reads the temperature at all -- and
+migration simply drops those keys.
 
 ---
 
@@ -754,7 +769,8 @@ python analysis/kappa_stability.py ladder \
 Each record carries `Pi`/`Pi_med`, `n_eff`, `sum_kappa`, `in_window_frac`,
 `cap_frac` plus counterfactual ranks (`k32`, `k64`) so one run's geometry can
 be re-read as if it had a different `K`. The same file has `tb` (TensorBoard
-scalar dumps, including the servo tags and a loss-onset detector) and `probe`
+scalar dumps -- including the servo-era tags, which only pre-cleanup runs carry
+(§9d) -- and a loss-onset detector) and `probe`
 (force reconstruction, permutation nulls) subcommands.
 
 **`B0` is hard-coded at the top of that file** (`B0 = 0.1`, the floor every
@@ -841,7 +857,7 @@ What an agent must know:
 - **rank 0 owns everything user-visible**: metrics.jsonl, TB, validation,
   samples, checkpoints, config dump, summary.json.  Other ranks run a null
   logger.  Data streams are rank-offset (`seed + 7919*rank`); gate buffers
-  (usage_ema, servo, diagnostics) evolve per rank by design
+  (usage_ema, diagnostics) evolve per rank by design
   (`broadcast_buffers=False`; initial state synced from rank 0 at wrap).
 - **stops are flag-based, never exceptions**: `train(cfg, should_stop=...)`
   polls the callable once per step and all-reduces the flag so every rank
@@ -882,6 +898,67 @@ What an agent must know:
   tier (metrics/config/summary/markers) and tb_push keep their usual 600 s /
   60 s cadence -- they are kilobytes.
 
+## 9d. The 2026-09-28 cleanup: what is gone, and what archived configs do
+
+The repo was cut down to the functional that is actually used. **Nothing about
+the surviving modes changed numerically** -- that was the requirement, and it
+was verified (below), not assumed.
+
+**Removed**
+
+| removed | note |
+| --- | --- |
+| the whole weight-sparsity subsystem (`wsparse.sparsity`, LTP / CS / TopK weight masks, the `sparsity` config block, `mask_*` optimizer group) | the repo name is now historical |
+| `surrogate_mode` `swap_gibbs`, `jumprelu`, `reinforce_topk` | with their config knobs and tests |
+| the adaptive (`lapsum_adaptive`) and prescribed (`lapsum_scheduled`) temperatures, `temperature_scale_mode` (so no relative temperature), `n_eff`, `effective_count_metric`, `boundary_mode`, `one_sided_weight_mode`, `wsparse/schedules.py` | replaced by one constant `activation_bottleneck.temperature` shared by the lapsum and rblapsum kernels |
+| the rblapsum temperature **servo** (`rblapsum_temperature_mode`, `rblapsum_chi_target`, `rblapsum_servo_*`) | |
+| the reconstruction loss (`reconstruction_coef`, `reconstruction_normalize`) and the output calibration (`calibrate_output`, `calibration_*`) | |
+| `surrogate_grad_scale`, `inactive_grad_scale`, `project_scale_gradient`, `differentiate_temperature` | |
+| `notebooks/*_tinystories.ipynb`, `configs/bottleneck/`, `configs/bn_sched.yaml`, the `ltp_*`/`cs_*`/`topk_*`/`dense`/`smoke` configs, `analysis/diagnose_relative_temperature.py` | all specific to removed functional |
+
+**Kept**: `hard`, `lapsum` (constant T), `rblapsum` with all four
+`rblapsum_boundary_grad_mode`s, `rblapsum_sf` (+ `rblapsum_sf_value_grad`), the
+`rho` permutation ablation, `rblapsum_support_scale`, `rblapsum_boundary_floor`,
+every `selection_mode`, MD / `md_init`, `post_norm`, `init_mode`,
+`tie_encoder_decoder`, DDP, and the whole `analysis/` pipeline.
+
+**Archived `config.json` files still load.** `config_from_dict` migrates:
+
+| archived | result |
+| --- | --- |
+| `sparsity` block with `enabled: false` | dropped (every archived run had it false) |
+| `lapsum_fixed` + `temperature_scale_mode: absolute` | `lapsum`, `temperature = fixed_temperature` |
+| `lapsum_scheduled` + `constant` + `absolute` (the `*_abs` families) | `lapsum`, `temperature = temperature_start` |
+| `rblapsum_temperature` | `temperature` |
+| `n_eff`, the `temperature_*` schedule fields, the servo fields, `reconstruction_*`, `calibrate_output`, the swap/jumprelu/reinforce knobs, … | dropped |
+| `sparsity.enabled: true`; `lapsum_adaptive`; `lapsum_scheduled` that is non-constant **or relative**; `lapsum_fixed` relative; `swap_gibbs` / `jumprelu` / `reinforce_topk`; a servo temperature mode; non-zero `reconstruction_coef`; `calibrate_output` | **raises**, naming the removal |
+
+So `ca_*` / `ko_*` / `sf_*` / `rho_*` configs reload and rerun as they were;
+the older relative-temperature `dc_rout_soft_*` family does not, and rebuilding
+one means checking out a pre-cleanup commit (`dec11cf^`).
+
+**How it was verified.** `tools/repro_check.py` runs a small but real training
+(tiny transformer + MD + bottleneck on TinyStories, fp32, deterministic
+kernels, 60 steps) and digests everything that defines the computation: every
+per-step CE as a hex double, every validation CE, probe logits at step 0 and at
+the end, every named parameter's hash, and the MD optimizer state. It is
+schema-adaptive, so the same script runs on both code versions:
+
+```bash
+# on the old commit
+python tools/repro_check.py --mode rbk --out /workspace/ref_rbk.json
+# on the cleaned commit
+python tools/repro_check.py --mode rbk --out /workspace/new_rbk.json
+python tools/repro_check.py --compare /workspace/ref_rbk.json /workspace/new_rbk.json
+```
+
+Result on the oslo box for all three required modes (`hard`, `lapsum` at
+constant T, `rbk` = rblapsum `through_rank_kappa`): **IDENTICAL (9 fields)**.
+Run it again -- against the previous commit -- before landing anything that
+could move numerics in a surviving mode.
+
+---
+
 ## 10. Operational habits that were learned the hard way
 
 * **Run anything long in `tmux` on the server.** Backgrounded commands driven
@@ -917,50 +994,38 @@ What an agent must know:
 
 ---
 
-## 11. The one test that always fails
+## 11. The test suite
 
-Every fresh run of the suite ends with
-
-```
-FAILED tests/test_topk.py::test_compiled_model_matches_eager - assert False
-1 failed, 433 passed
+```bash
+cd /workspace/weight-sparsity && /venv/main/bin/python -m pytest tests/ -q
+WSPARSE_DDP_TEST=1 /venv/main/bin/python -m pytest tests/test_train_ddp.py -q
 ```
 
-**You did not break it.** It reproduces on a pristine `git clone` of the repo at
-`c04a171` with nothing modified, on `torch 2.11.0+cu128`. Do not go looking for
-your own change; do not "fix" it by loosening the tolerance.
+Everything is synthetic -- no downloads, no GPU required (the suite runs on
+CPU in a couple of minutes). A green run on a box is the check to do before
+launching a campaign on it, and after any `git pull`.
 
-**But it is not a rounding artifact, so do not dismiss it either.** The test
-compares an eager backward against a `torch.compile`d one. Measured on this box:
+Two things to know:
 
-| | loss | `weight.grad` norm | `s.grad` norm |
-| --- | --- | --- | --- |
-| eager | 1.7309851646 | 1.1e-02 .. 2.1e-02 | ~5.3e-05 |
-| compiled | 1.7309851646 | **0.0** | **0.0** |
+* **`tests/test_train_ddp.py::test_two_process_gloo_ddp` is skipped unless
+  `WSPARSE_DDP_TEST=1`.** It spawns `torchrun --nproc_per_node 2`, which is slow
+  and noisy inside an agent session, so it is opt-in. It runs on CPU/gloo, on
+  purpose: that is the configuration where a bug in the rank plumbing shows up
+  without needing two free GPUs. (It used to fail on a single-GPU box, because
+  `train()` promoted an explicit `device: cpu` to `cuda:local_rank` whenever
+  CUDA was visible; the backend and per-rank device now follow the *configured*
+  device.)
+* **`tests/test_interventions.py::test_alignment_summary_math_on_synthetic_rows`
+  is the one flaky test** -- it asserts on a synthetic alignment statistic that
+  is sensitive to tie-breaking. Deselect it (`--deselect`) rather than chasing
+  it, and report it as known-flaky.
 
-The forward is fine — the losses agree to every printed digit, and the selected
-support is bit-identical (1229 of 4096 weights in each layer). The *backward*
-produces **exactly zero** gradient for every sparsity-wrapped parameter. So
-under `torch.compile` the weight-sparsity layers would train nothing at all,
-silently. The assertion is doing its job; the tolerance is not the problem.
-
-The likely cause is the very thing the test's docstring describes:
-`supports()` is `torch.compiler.disable`d so that the version-counter cache does
-not force a recompile every optimizer step. On torch 2.11 that graph break
-appears to leave the hand-written backward disconnected from the autograd graph
-rather than merely un-fused.
-
-**Why it is nonetheless safe to carry on:**
-
-* `train.compile` defaults to `False` (`config.py`), and **every run in this
-  project so far was trained with `compile=False`** — checked across
-  `dc_rout_soft_k32_{j32,j64,j128}`, `dc_rout_hard_k32_selcorr` and
-  `res_hard_selcorr_k64`. No existing result is affected.
-* The activation-bottleneck runs have `sparsity.enabled = False` anyway, so the
-  wrapped layers this test exercises are not even installed in them.
-
-**What this does mean:** do not set `train.compile=true` while
-`sparsity.enabled=true` on this torch version. If you ever want compile, verify
-first that `layer.weight.grad` is non-zero after one step — the failure mode is
-silent, and a run would simply not learn its masks while still reporting a
-falling loss.
+The always-failing `tests/test_topk.py::test_compiled_model_matches_eager` that
+earlier versions of this guide warned about is **gone**: it tested the removed
+weight-sparsity layers under `torch.compile`. Its lesson survives, though, and
+still applies to the bottleneck gate: `train.compile` stays `False` in this
+project, every result to date was trained that way, and a graph break around a
+hand-written backward can silently zero the gradient rather than merely
+un-fusing it. If you ever want compile, verify after one step that the
+parameters you care about have non-zero `.grad` -- the failure mode is silent,
+and the loss curve keeps falling.

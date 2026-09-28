@@ -40,7 +40,8 @@ gate ranks on, captured as a forward **pre**-hook on `mod.gate` — its first
 positional argument is the ranking signal in *every* `selection_mode`, so the
 hook is placement- and mode-agnostic. Writes
 `<run>.npy` `(ckpt, bottleneck, sequence, position, n_features)` float32 plus a
-`<run>.json` of steps, labels, k, j, token ids and the temperature schedule.
+`<run>.json` of steps, labels, k, j, token ids and the gate configuration
+(including the constant kernel temperature).
 
 One fixed batch (`deterministic_offset`) is reused for every checkpoint and
 every run, so a difference between two cells is a difference in the model and
@@ -79,11 +80,10 @@ result:
   11.0943), so the perturbation is below the training loop's own
   nondeterminism. It is **not** bit-identical — TF32 and non-deterministic
   backward kernels mean no two runs are.
-* **The schedules must not be rescaled.** `lr_at` decays cosine over
-  `train.max_steps` and the temperature anneals over `max_steps - warmup`, so
-  lowering `max_steps` to stop early would compress the whole decay into the
-  probed window and reproduce nothing. `max_steps` is left alone and the run
-  stops by raising `StopProbing` from the hook.
+* **The lr schedule must not be rescaled.** `lr_at` decays cosine over
+  `train.max_steps`, so lowering `max_steps` to stop early would compress the
+  whole decay into the probed window and reproduce nothing. `max_steps` is left
+  alone and the run stops by raising `StopProbing` from the hook.
 
 It also runs in `train()` mode on purpose: `surrogate_active()` is False in eval
 and under `no_grad`, so a probe in eval mode would measure the *hard* mask's
@@ -163,13 +163,15 @@ ssh -p <port> root@<host> -L 8501:localhost:8501
 `j`, but it is inert (bit-identical for j = 1..1504), so those ranks get exactly
 zero gradient like `rest` and painting them as a live band would be wrong.
 
-The LapSum barrier `b` and the `b ± t` window are reconstructed offline, because
-the gate's `scheduled_temperature` buffer is `persistent=False` and so is absent
-from checkpoints: `t = schedule(step) * std(top-(k+j) scores)` for
-`scale_mode="relative"`, then `b` solves `sum F((r-b)/t) = k` — budget `k`, not
-`k+j` — via the project's own `lapsum_barrier_sorted`. Validated against the
-values training logged: 0.7% on `b` and 2.2% on `t` for `..._j64`, with the
-budget identity holding to 1e-5.
+The boundary and its `± T` window are reconstructed offline from the scores,
+since no per-cell boundary is stored: `T` is the run's constant
+`activation_bottleneck.temperature`, and `b` either solves
+`sum F((r-b)/T) = k` — budget `k`, not `k+j` — via the project's own
+`lapsum_barrier_sorted` (lapsum), or is the hard rank `max(b0, s_(K+1))`
+(the rblapsum modes). Validated against the values training logged: 0.7% on `b`
+and 2.2% on `t` for `..._j64`, with the budget identity holding to 1e-5.
+Datasets cached before the 2026-09-28 cleanup whose temperature was scheduled
+or score-relative have no single `T`, so the viewer draws no band for them.
 
 ## 7. Adding a new run, or a new page
 
@@ -264,7 +266,7 @@ supervisorctl reread && supervisorctl update      # serves on 127.0.0.1:8501
 ```
 
 The viewer depends on nothing else: no corpus, no checkpoints, no GPU -- token
-strings, steps, k/j and the temperature-schedule config all travel inside the
+strings, steps, k/j and the gate config all travel inside the
 datasets' meta JSONs, and the barrier reconstruction only needs the repo's own
 `wsparse` on CPU. Restart the backup watcher on the new box afterwards so new
 results keep flowing to the same prefix (`rclone copy` never deletes remotely,

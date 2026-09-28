@@ -1,6 +1,6 @@
 """Print a parameter breakdown for a config (no data or GPU needed).
 
-    python scripts/model_summary.py --config configs/ltp_150m.yaml
+    python scripts/model_summary.py --config configs/bn_hard.yaml
 """
 
 from __future__ import annotations
@@ -28,7 +28,9 @@ def main() -> None:
 
     total = model.num_parameters()
     non_emb = model.num_parameters(non_embedding=True)
-    emb = model.tok_emb.weight.numel() + model.pos_emb.weight.numel()
+    emb = model.tok_emb.weight.numel()
+    if model.pos_emb is not None:
+        emb += model.pos_emb.weight.numel()
 
     print(f"config            : {args.config}")
     print(f"layers/d_model    : {cfg.model.n_layers} / {cfg.model.d_model} "
@@ -37,29 +39,6 @@ def main() -> None:
     print(f"total parameters  : {total:,} ({human(total)})")
     print(f"  embeddings      : {emb:,} ({human(emb)})")
     print(f"  transformer     : {non_emb:,} ({human(non_emb)})")
-    if controller.enabled:
-        maskable = controller.total_maskable
-        print(f"maskable weights  : {maskable:,} ({human(maskable)}) "
-              f"= {maskable / total:.1%} of all parameters, "
-              f"{maskable / non_emb:.1%} of the transformer")
-        extra = sum(p.numel() for p in controller.mask_parameters())
-        print(f"sparsity params   : {extra:,} ({cfg.sparsity.method}; "
-              f"training-time only, not part of the model)")
-        if cfg.sparsity.method == "topk":
-            kept = sum(layer.topk_numel for _, layer in controller.layers)
-            explore = sum(layer.explore_numel for _, layer in controller.layers)
-            print(f"topk budget       : {kept:,} of {maskable:,} maskable "
-                  f"({kept / maskable:.1%}); model would be {total - maskable + kept:,} params")
-            print(f"exploring         : {explore:,} extra positions get gradients "
-                  f"({explore / maskable:.1%} of maskable, 0 forward cost)")
-        if cfg.sparsity.target_density is not None:
-            kept = sum(
-                controller.target_density[n] * layer.mask_numel for n, layer in controller.layers
-            )
-            print(f"target kept       : {kept:,.0f} of {maskable:,} maskable "
-                  f"({kept / maskable:.1%}); model would be {total - maskable + kept:,.0f} params")
-    else:
-        print("sparsity          : disabled")
 
     if bottleneck.enabled:
         cb = cfg.activation_bottleneck
@@ -71,7 +50,7 @@ def main() -> None:
         print(f"  active / layer  : K={cb.k} of N={cb.n_features} "
               f"({cb.k / cb.n_features:.1%} of features, {cb.k / cfg.model.d_model:.2f}x d_model)")
         print(f"  gradient pool   : K+J={cb.k + cb.j} "
-              f"({(cb.k + cb.j) / cb.n_features:.1%}), n_eff={cb.n_eff:g}, "
+              f"({(cb.k + cb.j) / cb.n_features:.1%}), T={cb.temperature:g}, "
               f"surrogate={cb.surrogate_mode}")
     else:
         print("bottleneck        : disabled")

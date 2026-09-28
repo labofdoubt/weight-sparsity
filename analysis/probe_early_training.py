@@ -34,9 +34,8 @@ result:
   restores the RNG state, and restores every buffer the gate mutates while
   measuring (the usage EMA and the diagnostics dicts), so training proceeds
   exactly as it would have.
-* **The schedules must not be rescaled.**  ``lr_at`` decays cosine over
-  ``train.max_steps`` and the bottleneck temperature anneals over
-  ``max_steps - warmup``, so lowering ``max_steps`` to stop early would compress
+* **The lr schedule must not be rescaled.**  ``lr_at`` decays cosine over
+  ``train.max_steps``, so lowering ``max_steps`` to stop early would compress
   the whole decay into the probed window and reproduce nothing.  ``max_steps``
   is therefore left at the original value and the run is stopped by raising
   :class:`StopProbing` from the hook.
@@ -139,7 +138,6 @@ class Probe:
             snaps.append((
                 g.usage_ema.clone(), g.usage_steps.clone(),
                 dict(g._forward_diag), dict(g._usage_diag), dict(g._grad_sink),
-                mod._reconstruction,
             ))
         was_training = model.training
 
@@ -208,7 +206,6 @@ class Probe:
             g.usage_ema.copy_(s[0])
             g.usage_steps.copy_(s[1])
             g._forward_diag, g._usage_diag, g._grad_sink = s[2], s[3], s[4]
-            mod._reconstruction = s[5]
         model.train(was_training)
         torch.set_rng_state(rng_cpu)
         if rng_cuda is not None:
@@ -339,19 +336,14 @@ def main() -> None:
         extra=dict(
             source_run=original, source_config=args.config,
             selection_mode=bn.selection_mode, placement=bn.placement,
-            surrogate_mode=bn.surrogate_mode, swap_lambda=bn.swap_lambda,
+            surrogate_mode=bn.surrogate_mode,
             rblapsum_boundary_floor=bn.rblapsum_boundary_floor,
-            rblapsum_temperature=bn.rblapsum_temperature,
             rblapsum_boundary_grad_mode=bn.rblapsum_boundary_grad_mode,
             n_layers=int(cfg.model.n_layers),
             seed=int(cfg.train.seed), max_steps=int(cfg.train.max_steps),
-            temperature=dict(
-                scale_mode=bn.temperature_scale_mode, schedule=bn.temperature_schedule,
-                start=bn.temperature_start, end=bn.temperature_end,
-                warmup_steps=bn.temperature_warmup_steps,
-                anneal_steps=bn.temperature_anneal_steps, power=bn.temperature_power,
-                fixed=bn.fixed_temperature, max_steps=int(cfg.train.max_steps),
-            ),
+            # the one constant shared by the lapsum and rblapsum kernels; the
+            # viewer reads it back through its own const_temperature().
+            temperature=float(bn.temperature),
             torch_version=torch.__version__,
             command=" ".join(sys.argv),
             overrides=list(args.overrides),

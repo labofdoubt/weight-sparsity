@@ -1,37 +1,34 @@
 # weight-sparsity
 
-Training small language models (up to ~150M parameters) on
-[TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories), with
-handles for three families of **differentiable weight sparsity**:
+Training small language models on
+[TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories) and
+[FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu), with
+a **sparse activation bottleneck** and differentiable surrogate gradients for
+the hard TopK selection it makes:
 
-| method | mask | learnable | paper |
-| --- | --- | --- | --- |
-| `ltp` | `m = σ(β · (w² − τ))` | one scalar threshold `τ` per layer | [Learned Threshold Pruning](https://arxiv.org/abs/2003.00075) (Azarian et al.) |
-| `cs` | `m = σ(β · s)` | a free gate `s` per weight element | [Winning the Lottery with Continuous Sparsification](https://arxiv.org/abs/1912.04427) (Savarese et al.) |
-| `topk` | `m = 1[(i,j) ∈ TopK(s)] · σ(β · s)` | a score `s` per weight element | — ([below](#topk--soft-gate)) |
+```
+x ──▶ W_in ──▶ TopK / AbsTopK  (exactly K of N) ──▶ W_out ──▶ …
+```
 
-The forward pass is always `v = w ⊙ m`, and `β` (the *inverse* temperature) is
-raised during training by a schedule so the sigmoid anneals towards a step
-function. For `ltp`/`cs` the smooth L0 of a layer is `Σ σ(β·z)` and the density
-is whatever the penalties drive it to; `topk` instead fixes the forward density
-at `k` per group and gives the backward pass a **wider support** than the
-forward one.
+`W_in` and `W_out` are ordinary dense `nn.Linear` layers trained by the model's
+ordinary objective: no reconstruction loss, no weight mask, no pruning. What is
+sparse is the **code** between them, and the research question is what gradient
+to give a selection that the forward pass makes discontinuously.
 
-A separate experiment family, **activation sparsity**, lives alongside these:
-`activation_bottleneck` inserts a hard TopK/AbsTopK bottleneck in front of
-selected MLPs with a LapSum Top-(K+J) surrogate gradient — see
-[Activation bottleneck](#activation-bottleneck). Its projections are dense and
-the two families are mutually exclusive.
+| `surrogate_mode` | forward | backward |
+| --- | --- | --- |
+| `hard` | exact hard TopK | hard mask only; the `J` extra candidates get nothing |
+| `lapsum` | exact hard TopK | LapSum Top-(K+J) VJP at constant `T`, budget barrier `Σpᵢ = K` |
+| `rblapsum` | exact hard TopK | local kernel at the **hard rank boundary** `b = max(b₀, s_(K+1))` |
+| `rblapsum_sf` | `yᵢ = zᵢ·pᵢ` ("soft forward") | the gradient of that forward |
 
-Three deviations from the papers, all deliberate:
-
-* LTP's per-layer temperature `T_l = T₀·σ²(|w|)` (eq. 15) is **not** used —
-  `β` comes purely from the schedule, identically for all three methods.
-* Alongside the plain L0 penalty there is an optional **target-density**
-  objective that steers each layer towards a prescribed density instead of
-  just pushing L0 down.
-* `topk` defines its backward pass by hand rather than differentiating the
-  forward one, so that inactive candidate weights can still learn.
+The repo name is historical. The weight-sparsity subsystem (LTP, Continuous
+Sparsification, TopK weight masks) was **removed on 2026-09-28**, along with the
+adaptive/scheduled temperature machinery, the reinforce/jumprelu/swap-Gibbs
+surrogates, the reconstruction loss and the output calibration. Archived
+`config.json` files still load: `wsparse.config` migrates the keys it can (see
+[Loading archived runs](#loading-archived-runs)) and raises a clear error on the
+ones whose behaviour no longer exists.
 
 ## Install
 
@@ -45,55 +42,53 @@ pip install -e .[data]          # torch, numpy, pyyaml, datasets, transformers, 
 
 ```bash
 # 1. download + tokenize TinyStories into data/tinystories/{train,val}.bin
-python -m wsparse.data --config configs/dense.yaml
+python -m wsparse.data --config configs/bn_dense.yaml
 
-# 2. train
-python -m wsparse.train --config configs/dense.yaml        # dense baseline
-python -m wsparse.train --config configs/ltp.yaml          # LTP, L0 penalty
-python -m wsparse.train --config configs/cs.yaml           # Continuous Sparsification
-python -m wsparse.train --config configs/topk.yaml         # TopK + soft gate, 10% density
-python -m wsparse.train --config configs/topk_soft_l0.yaml # ... plus the soft-L0 penalty
-python -m wsparse.train --config configs/ltp_target.yaml   # LTP, 10% target density
-python -m wsparse.train --config configs/ltp_150m.yaml     # ~152M parameters
-
-# activation sparsity (a separate experiment family)
-python -m wsparse.train --config configs/bn_dense.yaml     # 81.7M dense baseline
-python -m wsparse.train --config configs/bn_hard.yaml      # + hard TopK bottleneck
-python -m wsparse.train --config configs/bn_lapsum.yaml    # + LapSum surrogate gradient
+# 2. train one of the three matched setups
+python -m wsparse.train --config configs/bn_dense.yaml    # no bottleneck
+python -m wsparse.train --config configs/bn_hard.yaml     # + hard TopK bottleneck
+python -m wsparse.train --config configs/bn_lapsum.yaml   # + LapSum surrogate gradient
 
 # 3. inspect / sample
-python scripts/model_summary.py --config configs/ltp_150m.yaml
-python scripts/generate.py --ckpt runs/ltp_small/latest.pt --hard
+python scripts/model_summary.py --config configs/bn_hard.yaml
+python scripts/generate.py --ckpt runs/bn_hard/latest.pt
 ```
 
 Any field can be overridden from the command line:
 
 ```bash
-python -m wsparse.train --config configs/ltp.yaml \
+python -m wsparse.train --config configs/bn_lapsum.yaml \
     --model.n_layers=16 --train.lr=3e-4 \
-    --sparsity.beta_schedule=cosine --sparsity.beta_end=1e5 \
-    --sparsity.target_density=0.05 --sparsity.target_density_coef=1.0
+    --activation_bottleneck.surrogate_mode=rblapsum \
+    --activation_bottleneck.k=32 --activation_bottleneck.j=480 \
+    --activation_bottleneck.temperature=2.0
 ```
 
 Configs compose through a `_base_` key (see `configs/*.yaml`); fragments live in
-`configs/model`, `configs/train` and `configs/sparsity`.
+`configs/model`, `configs/train` and `configs/mdinit`.
+
+Multi-GPU runs go through `torchrun`; `scripts/train_ddp.sh` wraps it (one
+guarded process per GPU), and
+`configs/fineweb_rbk_500m.yaml` is the 8-GPU FineWeb-Edu configuration
+(see [Multi-GPU](#multi-gpu-ddp)).
 
 ## What gets printed during training
 
+`configs/bn_lapsum.yaml` with `--activation_bottleneck.surrogate_mode=rblapsum`:
+
 ```
-step    200/20000 | loss 3.9214 | ce 3.8714 | ppl   48.02 | lr 6.00e-04 | beta 1.58e+03 \
- | dens_soft 0.8123 | dens_hard 0.7904 | trans 0.0421 | threshold_mean 3.1e-05 \
+[train] device=cuda:0 dtype=torch.bfloat16 params=101.3M (non-emb 68.8M) batch=64x512 tok per rank (micro 16 x accum 4)
+[train] param groups: 2
+[train] activation bottleneck: 10 layers (all) residual_out N=1536 K=32 J=480 (abs_topk, rblapsum) density=0.021 params=19.7M
+step    200/20000 | loss 3.9214 | ce 3.9214 | ppl   50.47 | lr 6.00e-04 | L0 32.0 | cap 0.98 \
  | gnorm 0.51 | 41.2K tok/s | 124 ms/step
-step    500 | val ce 3.7410 | val ppl 42.15 | hard ce 3.7502 | hard ppl 42.54 | density 0.7801
+step    500 | val ce 3.7410 | val ppl 42.15
 ```
 
-`topk` adds the mean gate over the selected weights and the TopK churn:
-
-```
-[train] topk: k=1024 j=1024 per group (groups=tensor), forward density 0.2500, w grad on topk+j
-step      8/20000 | ... | beta 7.66 | dens_soft 0.2274 | dens_hard 0.2426 | trans 0.5176 \
- | gate 0.909 | turn 0.0032 | gnorm 0.50 | ...
-```
+The bottleneck fields depend on the mode: `t` and `dK` (`|Σp − K|`) for the
+barrier modes, `L0` (the realized hard support size) and `cap` (how often the
+rank cap rather than the floor `b₀` sets the boundary) for the rblapsum modes,
+`gap` (`r_K − r_{K+1}`) for the hard baseline, which solves nothing.
 
 Everything is also written to `runs/<run_name>/metrics.jsonl`, to TensorBoard
 under `runs/<run_name>/tb` (`train.tensorboard`, on by default), and to Weights
@@ -113,26 +108,26 @@ seeded on `train.seed + step` — without that, sampling would draw from the
 global RNG, whose state depends on everything the run consumed beforehand, so
 samples would not be comparable across runs once any dropout is enabled.
 
-
 | metric | meaning |
 | --- | --- |
-| `train/ce`, `train/loss` | cross-entropy, and CE + sparsity penalties |
-| `sparsity/beta` | current inverse temperature |
-| `sparsity/density_soft` | `Σ m / N` — density from the smooth L0 |
-| `sparsity/density_hard` | `Σ 1[z > 0] / N` — density after hard pruning |
-| `sparsity/transition_frac` | fraction of weights with `|β·z| < 4`, i.e. still inside the sigmoid's transition band. When this hits 0 the mask has frozen and `τ`/`s` stop learning (the stall LTP §3.2 warns about). For `topk` it is measured over the Top-(k+j) support, since nothing else gets a gradient anyway |
-| `sparsity/threshold_mean` / `s_mean` | mean `τ` (LTP) or mean `s` (CS) |
-| `sparsity/density_topk` | `topk` only: `\|A\|/N`, the hard FLOP budget. `density_soft` can only sit below it |
-| `sparsity/gate_mean_topk` / `gate_mean_explore` | `topk` only: mean gate `σ(β·s)` over the selected weights, and over the `j` candidates |
-| `sparsity/turnover` | `topk` only: fraction of TopK that changed at the last re-selection. **If this is 0 from early on, `j` is buying you nothing** — the exploratory candidates never overtake an incumbent |
-| `sparsity/l0_penalty`, `sparsity/target_penalty`, `sparsity/soft_l0_penalty` | the sparsity loss terms |
-| `sparsity/mask_grad_norm` | gradient norm of `τ`/`s`, clipped separately from the weights (`∂L/∂τ` sums over a whole layer, so a shared global clip would squash the weight gradients) |
-| `val/ce`, `val_hard/ce` | validation loss with soft masks and with binary masks |
-| `layer_*` | per-layer hard density, logged at every validation |
-
-The soft/hard gap is the thing to watch: it is what tells you whether the
-annealing has gone far enough for the pruned network to be the network you
-actually trained.
+| `train/ce`, `train/loss` | cross-entropy (identical: there is no auxiliary loss term) |
+| `train/lr`, `train/grad_norm` | learning rate, pre-clip gradient norm |
+| `perf/tokens_per_s`, `perf/ms_per_step`, `perf/tokens_seen` | throughput; `tokens_per_s` is global across ranks |
+| `val/ce`, `val/ppl` | validation loss, at `hard_inference` (so comparable across modes) |
+| `val_soft/ce` | `rblapsum_sf` only: the same batches through the soft forward |
+| `val_final/ce` | the larger end-of-run evaluation (`train.final_val_batches`) |
+| `bottleneck/density`, `candidate_density` | `K/N` and `(K+J)/N` |
+| `bottleneck/temperature` | the constant `T` (flat by construction; logged so a run's own record carries it) |
+| `bottleneck/barrier`, `barrier_gap`, `frac_above_barrier` | `b`, `r_{K+1} − b`, and how often the barrier sits below `r_{K+1}` |
+| `bottleneck/budget_residual`, `barrier_failures` | `\|Σp − K\|`, and how often it exceeds the achievable-precision floor |
+| `bottleneck/score_gap`, `score_span` | `r_K − r_{K+1}` and `r_K − r_{K+J}` |
+| `bottleneck/active_count`, `active_count_max` | rblapsum: the realized hard support size (`≤ K`) |
+| `bottleneck/rb_boundary`, `rb_b_rank`, `rb_cap_active_frac` | rblapsum: the boundary, its rank, and how often the rank cap wins over `b₀` |
+| `bottleneck/rb_soft_mass` | `rblapsum_sf` only: `Σᵢ pᵢ`, the forward's soft L0 |
+| `bottleneck/rb_support_grad_norm`, `rb_common_mode`, `rb_kick_win`, `rb_boundary_grad_ratio` | rblapsum: size and structure of the support gradient `g_s` |
+| `bottleneck/grad_active`, `grad_inactive`, `grad_rank_bin0..7` | surrogate gradient magnitude on the active `K`, the exploratory `J`, and by candidate rank |
+| `bottleneck/feature_dead_frac`, `feature_usage_entropy`, `feature_usage_max` | **feature collapse — see [Diagnostics](#diagnostics)** |
+| `bottleneck_<key>/<layer>` | the same keys per layer, for the TensorBoard panels |
 
 ## Configuration
 
@@ -143,10 +138,13 @@ actually trained.
 | `n_layers`, `d_model`, `n_heads` | 12 / 768 / 12 | |
 | `mlp_ratio` | 4.0 | `d_mlp = round(mlp_ratio · d_model)`, rounded up to a multiple of 8 |
 | `mlp_activation` | `gelu` | `gelu`, `relu`, `silu`, `swiglu` |
-| `max_seq_len` | 512 | learnable positional embedding table size |
+| `max_seq_len` | 512 | learnable positional embedding table size (`pos_encoding: learned`) |
+| `pos_encoding` | `learned` | `learned` or `rope` (`rope_theta`), in which case there is no position table |
 | `bias` | `false` | no biases anywhere by default |
 | `norm_eps` | 1e-6 | RMSNorm (pre-norm blocks, plus a final norm) |
 | `tie_embeddings` | `true` | shares `lm_head` with the token embedding |
+| `decouple`, `decouple_gains` | `false`, `row_col` | magnitude-direction decoupling, below |
+| `md_init` | `false` | MD's initialization without its optimizer (the ablation) |
 | `init_scheme` | `fixed_std` | `fixed_std`: `w ~ N(0, init_std²)`; `fan_in`: `w ~ N(0, init_gain²/fan_in)` |
 | `init_std`, `init_gain` | 0.02, 1.0 | weight standard deviation / fan-in gain |
 | `init_std_embedding`, `init_std_pos` | `null` | embedding stds; default to `1/√2` each, so `tok_emb + pos_emb` has unit variance per element at init. `init_std_pos` falls back to `init_std_embedding` when that is set. Never affected by `init_scheme` |
@@ -155,9 +153,9 @@ actually trained.
 | `logit_scale` | `auto` | `auto`: divide the logits by `unemb_std · √d_model`, normalizing them to ~unit std. A no-op at the untied default (already 1); it matters for a tied head, whose `1/√2` std would otherwise put init logits at std ≈ 20. `none`: no rescaling |
 | `dropout`, `attn_dropout` | 0.0 | |
 
-Sizes: `configs/model/{tiny,small,medium,large}.yaml` →
-3M / 25M / 85M / 113M non-embedding parameters (16M / 51M / 124M / **152M**
-total with the 50257-token GPT-Neo vocabulary).
+Sizes: `configs/model/{tiny,small,mid80,medium,large}.yaml` →
+3.1M / 25.2M / 49.2M / 85.0M / 113.3M non-embedding parameters (16.1M / 51.2M /
+81.7M / 123.9M / 152.3M with the 50257-token GPT-Neo vocabulary, tied).
 
 ### `data`
 
@@ -167,194 +165,74 @@ instead trains a small byte-level BPE on TinyStories itself
 (`bpe_vocab_size`, default 8192), which shrinks the embedding matrix a lot and
 puts more of the parameter budget into the transformer body.
 
+`scripts/prepare_fineweb.py` writes the same `{train,val}.bin` + `meta.json`
+layout from FineWeb-Edu `sample-10BT`, holding out a document-aligned 50M-token
+validation split (9.90B train / 50.0M val tokens at `gpt_neo`).
+
 ### `train`
 
 `optimizer` (AdamW), `lr`, `betas`, `eps`, `weight_decay`, `grad_clip`,
 `lr_schedule` (`cosine`/`linear`/`constant`), `warmup_steps`, `min_lr_ratio`,
-`batch_size` (sequences per optimizer step), `micro_batch_size` (gradient
-accumulation = `batch_size / micro_batch_size`), `max_steps`,
-`log_every_steps`, `validate_every_steps`, `val_batches`,
+`batch_size` (sequences per optimizer step, **per rank**), `micro_batch_size`
+(gradient accumulation = `batch_size / micro_batch_size`), `max_steps`,
+`log_every_steps`, `validate_every_steps`, `val_batches`, `final_val_batches`,
 `checkpoint_every_steps`, `keep_last_checkpoints`, `sample_every_steps`,
-`seed`, `device`, `dtype`, `compile`, `out_dir`, `run_name`, `resume`,
-`wandb_project`.
+`sample_prompt`, `sample_tokens`, `sample_count`, `seed`, `device`, `dtype`,
+`compile`, `out_dir`, `run_name`, `resume`, `tensorboard`, `wandb_project`,
+`wandb_entity`.
 
-Weight decay is applied only to ≥2D weights; RMSNorm gains, biases and all
-sparsity parameters are excluded.
+Weight decay is applied only to ≥2D weights; RMSNorm gains and biases are
+excluded. Under `model.decouple` the optimizer is the decoupled one instead and
+`train.weight_decay` is ignored (the banner says so).
 
-### `sparsity`
+`train.compile` stays `false`: the gate's custom autograd functions graph-break,
+and the compiled path has never been validated against eager for them.
 
-| field | notes |
-| --- | --- |
-| `enabled` | master switch |
-| `method` | `ltp`, `cs` or `topk` |
-| `targets` | `[mlp]` by default; `[mlp, attn]` also masks `qkv` and the attention output projection |
-| `beta_schedule` | `constant`, `linear`, `exponential`, `cosine`, `polynomial` |
-| `beta_start`, `beta_end` | endpoints of the anneal |
-| `beta_warmup_steps` | hold `β` at `beta_start` for this many steps (train dense first) |
-| `beta_anneal_steps` | `null` → anneal over everything left after the warmup |
-| `beta_power` | exponent for `polynomial` |
-| `inverse_temperature` | alias for `β`: on its own it pins a **constant** `β(t) = β₀`; combined with a schedule it sets `beta_start` |
-| `inverse_temperature_schedule` | alias that selects `beta_schedule`, i.e. `β(t)` from `inverse_temperature` up to `beta_end` |
-| `mask_lr` | learning rate for `τ` (LTP) / `s` (CS, TopK); their own AdamW group, no weight decay, no LR schedule |
-| `mask_lr_mult` | instead pin that lr to `mask_lr_mult · train.lr`, in which case it *does* follow the LR schedule |
-| `mask_grad_clip` | clip norm for the sparsity parameters (`null` reuses `train.grad_clip`); they are always clipped separately from the weights |
-| `threshold_init` | LTP: initial `τ` |
-| `s_init` | CS: initial gate value — the paper's main sparsity knob (−0.3 … 0.3). TopK: the scale of the score init |
-| `s_init_mode` | TopK: `magnitude` (default in the shipped config), `constant`, `uniform`, `normal` |
-| `grad_through_mask` | LTP only. `false` (paper eq. 14) makes `∂v/∂w = m`, i.e. the sigmoid is treated as constant w.r.t. `w`, while `τ` keeps its full gradient; `true` backpropagates through `w²` as well |
-| `k`, `j` | TopK: active weights per group, and extra exploratory positions per group. A fraction (`< 1`) of the group, or an absolute count (`≥ 1`) |
-| `topk_groups`, `topk_block_size` | TopK: `tensor` (one global TopK), `row` (one per output row) or `block` (one per run of `topk_block_size` weights, i.e. `k`:`block_size` structured sparsity) |
-| `w_grad_support` | TopK: `topk_j` gives `w` gradients on the whole Top-(k+j) support, `topk` restricts them to TopK (`s` always explores) |
-| `topk_track_turnover` | TopK: log how much of TopK changes per step; costs one extra bool tensor per masked layer |
-| `soft_l0_enabled`, `soft_l0_lambda_topk`, `soft_l0_lambda_explore` | TopK: soft-L0 penalty over the Top-(k+j) support, below |
-| `l0_coef`, `l0_normalize` | smooth-L0 penalty `l0_coef · Σ_l L0_l`, divided by the total maskable count when normalized (so `l0_coef` is O(1) instead of O(1e-8)) |
-| `target_density`, `target_density_coef`, `target_density_overrides` | target-density objective, below. Rejected for `topk`, whose density is `k` by construction |
-| `eval_hard_mask` | also run validation with binary masks |
-
-#### The two sparsity objectives
-
-```
-loss = CE
-     + l0_coef            · Σ_l L0_l                       (/ N if l0_normalize)
-     + target_density_coef · mean_l (L0_l / D_l − 1)²
-```
-
-`D_l = target_density_l · numel_l`, so you specify a **dense fraction in
-(0, 1]** and the actual weight count is derived from the architecture.
-`target_density` sets it for every masked layer; `target_density_overrides`
-overrides it per layer using `fnmatch` patterns against the module name
-(later patterns win):
+### `activation_bottleneck`
 
 ```yaml
-sparsity:
-  target_density: 0.1
-  target_density_coef: 1.0
-  target_density_overrides:
-    "blocks.0.mlp.*": 0.4      # keep the first block denser
-    "*.mlp.fc2": 0.15
+activation_bottleneck:
+  enabled: true
+  layers: all              # all | even | odd | first:n | last:n | [0, 2, 4]
+  placement: residual_out  # pre_mlp | residual | residual_out | post_attn | post_mlp
+  n_features: 1536         # N
+  k: 32                    # K, active in the forward pass
+  j: 480                   # J, extra candidates that only receive gradient
+  selection_mode: abs_topk # topk | abs_topk | gated_topk
+  surrogate_mode: rblapsum # hard | lapsum | rblapsum | rblapsum_sf
+  temperature: 1.0         # the one kernel/barrier bandwidth, in score units
+  # --- rblapsum family ---
+  rblapsum_boundary_grad_mode: null   # null -> detach (rblapsum) / through_rank_kappa (sf)
+  rblapsum_boundary_floor: null       # b0; null -> 0.0, no floor
+  rblapsum_support_scale: 1.0         # scales only the support-exchange term g_s
+  rblapsum_rho_random_perm_prob_grad: 0.0   # signal-permutation ablation
+  rblapsum_sf_value_grad: pool        # pool | support
+  # --- shape and init ---
+  post_norm: false         # an RMSNorm on each bottleneck's own output
+  init_mode: default       # default | sqrt_k | sqrt_k_selection_corrected | unit_norm_dictionary
+  tie_encoder_decoder: false
+  bias: false              # biasless projections (the family convention)
+  # --- numerics ---
+  barrier_solver_tol: 1.0e-6
+  solver_dtype: float32
+  log_diagnostics: true
+  hard_inference: true     # skip the soft-mask machinery outside training
 ```
 
-Both coefficients can be non-zero; setting one to 0 turns that term off.
-
-#### TopK + soft gate
-
-`method: topk` keeps a score `s` per weight alongside `w` and gates it with
-`p = σ(β·s)`. Two index sets are derived from `s` alone (equivalently from `p`,
-the sigmoid being monotone):
-
-```
-A = TopK_k(s)        the forward support,  |A| = k per group
-B = Top_(k+j)(s)     the backward support, A ⊆ B
-```
-
-The forward pass keeps only `A`, attenuated by the gate — everything else is
-*exactly* zero, so `k` is a hard FLOP budget rather than something a penalty
-has to negotiate:
-
-```
-w̃ = M_A ⊙ w ⊙ σ(β·s)
-```
-
-The backward pass is then **defined**, not derived — hard TopK is never
-differentiated through. With `G = ∂L/∂w̃` (nonzero even where `w̃ = 0`, since it
-is the gradient w.r.t. the effective weight and not the layer output):
-
-```
-∂L/∂w = M_B ⊙ p ⊙ G
-∂L/∂s = M_B ⊙ [G ⊙ w + Λ] ⊙ β·p·(1−p)
-```
-
-So the `j` positions in `B \ A` cost nothing in the forward pass but still
-accumulate gradients for **both** `w` and `s`, and can climb into TopK on a
-later step. Positions outside `B` get exactly zero. This is one forward and one
-backward pass per step — the widened support is what the custom
-`torch.autograd.Function` in `sparsity/topk.py` buys, and `sparsity/turnover`
-in the logs is how you check the exploration is actually doing something.
-
-`train.compile: true` is fine here: the selection itself is hidden from Dynamo
-(otherwise its cache key — the version counter of `s` — would force a recompile
-on every optimizer step), while the matmuls around it still compile, and the
-compiled gradients match eager exactly.
-
-`Λ` is the optional soft-L0 penalty, computed over `B` only and never over the
-dense tensor:
-
-```
-L_sparse = λ_K · Σ_{(i,j) ∈ A} p_ij  +  λ_J · Σ_{(i,j) ∈ B\A} p_ij
-```
-
-It does not change the fact that the forward pass uses exactly `k` positions;
-what it buys is *soft* sparsity **inside** the TopK support, since a selected
-gate can be driven towards 0 while still occupying a slot in the budget. Watch
-`density_soft` fall below `density_topk` for that. Unlike `l0_coef` these
-lambdas are **not** normalized — they are per-weight coefficients, so they live
-on the `l0_coef / maskable_count` scale (`~1e-7`, not `~0.05`).
-
-```yaml
-sparsity:
-  method: topk
-  k: 0.1                    # 10% of every masked tensor is active
-  j: 0.05                   # another 5% explores
-  topk_groups: block        # with topk_block_size: 4 and k: 2 -> 2:4 sparsity
-  inverse_temperature: 4.0
-  inverse_temperature_schedule: exponential
-  beta_end: 200.0
-  soft_l0_enabled: true
-  soft_l0_lambda_topk: 1.0e-7
-```
-
-`s_init_mode: magnitude` (the shipped default) initializes `s` from `|w|`,
-scaled so that its per-group standard deviation is about `s_init` and centred
-on the selection boundary: the initial TopK is then the top-`k` weights by
-magnitude, and `s > 0` holds on exactly that set, so TopK, the hard mask and
-the soft gate all agree at step 0. `constant` leaves the selection to index
-order and is only useful for tests.
-
-#### Choosing `β`
-
-`β` multiplies `z`, and the scale of `z` differs enormously between the two
-methods — the defaults reflect that, and it is the one thing to re-tune if you
-change the initialization:
-
-* **LTP**: `z = w² − τ`. With `init_std = 0.02` a typical `w²` is ~4e-4, so `β`
-  has to exceed ~2.5e3 before the mask stops being ~0.5 everywhere. Default:
-  exponential `1e4 → 1e6`, which starts the model essentially dense
-  (`σ(1e4·4e-4) ≈ 0.98`) and sparsifies as `τ` rises and the sigmoid sharpens.
-  `τ` lives on that same ~1e-4 scale, and AdamW moves a parameter by roughly
-  `lr` per step regardless of gradient size, hence the tiny default
-  `mask_lr = 1e-6`.
-* **CS**: `z = s`, order 0.05–1. Default: exponential `1 → 200` and
-  `mask_lr = 1e-3`, as in the paper.
-* **TopK**: `z = s` as for CS, but `s` is initialized with a per-group standard
-  deviation of `s_init`. Default: `inverse_temperature: 4` annealed to 200,
-  which starts with the gates spread across most of (0, 1). Note the trap in
-  `∂L/∂s ∝ β·σ(β·s)·(1−σ(β·s))`: raising `β` sharpens the gate towards
-  `1[s > 0]`, but it also concentrates that factor into an ever-narrower spike
-  around `s = 0`, so past `β ≈ 1e3` the scores of the *already-decided* weights
-  stop moving and TopK freezes. `inverse_temperature` on its own pins `β`
-  constant, which is the clean way to take the schedule out of the picture
-  while you tune `k` and `j`.
-
-If `sparsity/transition_frac` collapses to 0 early, `β` is rising too fast (or
-`mask_lr` is too small to keep up) and the mask will freeze before it has
-sorted the weights. For `topk`, `sparsity/turnover` going to 0 says the same
-thing about the selection.
+Static validation covers the obviously impossible: `1 ≤ K < N`, `K+J ≤ N`, and
+`J ≥ 1` for every mode that has a surrogate (`hard` accepts `J = 0`, and
+ignores `J` beyond the diagnostics, which is why the archived hard runs carry a
+nominal `j`).
 
 ## Activation bottleneck
 
-`activation_bottleneck` is an **activation**-sparsity experiment, unrelated to
-the weight sparsity above. It inserts a dense-in / sparse-gate / dense-out
-bottleneck on the tensor that feeds each selected MLP:
-
-```
-x_mlp ──▶ W_in ──▶ TopK / AbsTopK  (exactly K of N) ──▶ W_out ──▶ MLP
-```
-
-In `Block.forward` that is `self.norm2(x)` — the pre-RMSNorm MLP input, **not**
-the residual stream, which stays dense. `W_in` and `W_out` are ordinary dense
-`nn.Linear` layers trained by the model's ordinary objective: no reconstruction
-loss, no weight mask, no pruning. Enabling `sparsity` and
-`activation_bottleneck` together is a config error, not a silent combination.
+`placement` decides what the bottleneck sits on. `pre_mlp` bottlenecks
+`self.norm2(x)`, the pre-RMSNorm MLP input, so the residual stream itself stays
+dense and the skip routes around the bottleneck. `post_attn` / `post_mlp`
+constrain what a branch may *contribute* instead of what it may read.
+`residual` / `residual_out` replace the stream itself at the head or the tail of
+the block, so nothing routes around them — which is the regime where the
+depth-compounding effects in `docs/` show up.
 
 ### Forward: exact hard TopK
 
@@ -365,7 +243,7 @@ With ranking score `r = a` (`topk`) or `r = |a|` (`abs_topk`):
 ```
 
 Selection is by magnitude in `abs_topk`, but the **signed** activation is
-forwarded — never `|a_i|`.
+forwarded — never `|a_i|`. There is no ReLU before the TopK.
 
 `selection_mode: gated_topk` splits the two jobs the single projection
 otherwise does, with independent branches:
@@ -380,32 +258,33 @@ nonlinearity is applied to `v`, so values stay signed. The gradients then
 separate exactly: `∂L/∂v = m ⊙ g` (only selected features get value updates,
 the exact hard-mask gradient) while `∂L/∂s` is the constrained LapSum VJP on
 `uᵢ = gᵢvᵢ`, so an inactive feature can still learn to raise its score and enter
-the support. That falls out of the same `m_hard + λ(p − stopgrad(p))` mask
+the support. That falls out of the same `m_hard + (p − stopgrad(p))` mask
 applied to a *separate* value tensor, so it reuses the existing VJP rather than
-re-deriving the Jacobian. Costs one extra `d_model × n_features` projection per
-layer (39.4M vs 26.2M at `d_model=640, N=2048`). The forward pass is exactly `K`-sparse no matter what
-`J`, `n_eff`, the metric or the boundary mode are set to; the LapSum
-probabilities below are never used numerically in the forward pass. There is no
-ReLU before the TopK.
+re-deriving the Jacobian. It costs one extra `d_model × n_features` projection
+per layer.
+
+Except under `rblapsum_sf`, the forward pass is exactly `K`-sparse no matter
+what `J` or the temperature are set to; the soft probabilities below are never
+used numerically in the forward pass.
 
 ### Backward: LapSum over Top-(K+J)
 
 One `torch.topk(K+J, sorted=True)` per call produces the sorted candidate pool
-that the hard mask, the temperature solve, the barrier solve, the probabilities,
-the backward and the diagnostics all share. Its first `K` entries are the active
-set `A`; the remaining `J` are inactive candidates. Everything outside
-Top-(K+J) receives exactly zero gradient from this module.
+that the hard mask, the barrier solve, the probabilities, the backward and the
+diagnostics all share. Its first `K` entries are the active set `A`; the
+remaining `J` are inactive candidates. Everything outside Top-(K+J) receives
+exactly zero gradient from this module.
 
 Over that pool, with the Laplace CDF `F(z) = ½eᶻ` for `z ≤ 0` and `1 − ½e⁻ᶻ`
-otherwise, the soft mask is `p_i = F((r_i − b)/t)` with the barrier `b` fixed by
+otherwise, the soft mask is `pᵢ = F((rᵢ − b)/T)` with the barrier `b` fixed by
 `Σᵢ pᵢ = K`. The mask handed to the layer is
 
 ```
-m = m_hard + λ · (p − stopgrad(p))
+m = m_hard + (p − stopgrad(p))
 ```
 
-so `m == m_hard` numerically while `∂m/∂r == λ·∂p/∂r`. Writing `κᵢ = φᵢ/t`,
-`uᵢ = gᵢaᵢ` and `q^budget = κ/Σκ`, the exact fixed-`t` VJP is
+so `m == m_hard` numerically while `∂m/∂r == ∂p/∂r`. Writing `κᵢ = φᵢ/T`,
+`uᵢ = gᵢaᵢ` and `q^budget = κ/Σκ`, the exact fixed-`T` VJP is
 
 ```
 ∂L_mask/∂rᵢ = κᵢ · (uᵢ − ⟨q^budget, u⟩)
@@ -419,141 +298,34 @@ against finite differences **with the barrier re-solved at each perturbation**,
 which is what makes the correction observable; the hard TopK discontinuity is
 never finite-differenced.
 
-### Temperature is an adaptive bandwidth
+### The temperature is a constant, detached bandwidth
 
-`t` is not a fixed number and not a learned parameter. Score scales drift across
-tokens, layers and training, so each row solves for the `t` whose
-boundary-exchange weights have a target effective size `n_eff`:
+`T` is `activation_bottleneck.temperature`: one positive number, in raw score
+units, shared by the `lapsum` and `rblapsum` kernels. It is not learned, not
+scheduled, not score-relative and not solved for.
 
-| metric | `N_eff` | behaviour |
-| --- | --- | --- |
-| `ess` | `1 / Σqᵢ²` | ignores a long tail of small weights |
-| `entropy` | `exp(−Σqᵢ log qᵢ)` | credits the tail; needs a colder `t` for the same target |
+> The temperature is a **detached bandwidth**. The backward is the exact
+> surrogate VJP conditional on that fixed bandwidth.
 
-(`entropy`, not "cross-entropy" — there is no second distribution here.)
+Nothing differentiates through a solver, and the only score dependence carried
+into the backward is the boundary's: `b = b(r; T)` via `Σpᵢ = K` for `lapsum`
+(the `⟨q^budget, u⟩` term), or the rank boundary's own derivative for
+`rblapsum` (`rblapsum_boundary_grad_mode`, below).
 
-Which weights get calibrated is set by two knobs:
-
-| `boundary_mode` | `one_sided_weight_mode` | calibration weights `q` | decouples? |
-| --- | --- | --- | --- |
-| `outside_only` | `score_softmax` | `softmax(rᵢ/t)`, inactive only | **yes** |
-| `outside_only` | `true_gradient` | `κᵢ/Σ_{j>K}κⱼ`, inactive only | no |
-| `both_sides` | *(not consulted)* | `κᵢ/Σⱼκⱼ`, all `M` | no |
-
-`score_softmax` is the cheap **approximation**. Because that `q` never mentions
-the barrier, the temperature and barrier solves decouple completely: a scalar
-root-find over `J` scores, then one closed-form `b`. No barrier solve inside the
-temperature loop. It asks *how many inactive features effectively compete to
-enter TopK*, defined from inactive score geometry.
-
-It is only *equal* to the normalized LapSum gradient weights when every outside
-candidate lies below the barrier, i.e. `r_{K+1} < b`. At finite temperature the
-budget-preserving barrier can move above `r_{K+1}`, and then the two differ. The
-`true_gradient` and `both_sides` modes calibrate on the actual `κ` instead;
-since `κ` depends on `b`, they solve `(b, τ)` jointly by a batched damped Newton
-with a 2×2 Jacobian per row, initialized from the cheap `score_softmax` `t₀` and
-its closed-form `b₀`. The two exact modes share one solver and differ only in
-which indices enter the effective-count equation — a `calibration` slice.
-
-There is no `score_softmax` variant of `both_sides`: the cancellation that
-motivates it is a one-sided construction.
-
-**Does the approximation matter?** It is measured every step rather than
-assumed. On Gaussian activations with `K=64, J=192`:
-
-| target `n_eff` | `(r_{K+1}−b)/t` | rows with `r_{K+1} > b` | `N_score` | `N_true` | gap |
-| --- | --- | --- | --- | --- | --- |
-| 2 | −1.51 | 16% | 2.000 | 2.076 | +0.076 |
-| 4 | −0.39 | 22% | 4.000 | 4.160 | +0.160 |
-| 16 | −0.17 | 18% | 16.000 | 16.128 | +0.128 |
-| 64 | −0.27 | 0% | 64.000 | 64.000 | −0.000 |
-| 160 | −0.47 | 0% | 160.000 | 160.000 | +0.000 |
-
-So the shortcut is *exact* at large `n_eff` — a warm `t` lifts the barrier clear
-of the whole pool — and mildly off (1–4% of the realized count, on a minority of
-rows) at small `n_eff`. `frac_above_barrier`, `barrier_gap` and `n_eff_gap` are
-logged so this can be checked per run rather than assumed.
-
-All modes solve in `τ = log t`, which guarantees `t > 0` and makes the
-multiplicative temperature updates numerically convenient. Scale equivariance
-does **not** come from the log: it comes from the calibration equations
-depending only on score *differences* divided by `t`, together with
-scale-equivariant initialization and bracketing (both are built from the
-candidate span, never from an absolute temperature). The consequence is tested:
-`r → cr` gives `t → ct` and `b → cb` with `p`, the normalized calibration
-weights and the realized `N_eff` unchanged.
-
-**`K`, `J` and `n_eff` are three independent knobs.** `K` is how many features
-are active, `K+J` how many are eligible for gradient, `n_eff` how concentrated
-the gradient is *within* that pool. `K = 0.1N, K+J = 0.5N, n_eff = 0.05N` is a
-perfectly ordinary configuration. `J` is not `n_eff`.
-
-### Prescribing the temperature instead of solving for it
-
-`surrogate_mode` picks how `t` is obtained:
-
-| mode | `t` | cost |
-| --- | --- | --- |
-| `lapsum_adaptive` | solved each step so `N_eff` hits its target | one root-find |
-| `lapsum_scheduled` | `temperature_schedule` from `_start` to `_end` | no solve |
-| `lapsum_fixed` | constant `fixed_temperature`, absolute | no solve |
-| `hard` | — no surrogate at all | — |
-
-The scheduled mode reuses the same interpolators as the weight-sparsity `beta`
-anneal (`constant`, `linear`, `exponential`, `cosine`, `polynomial`, with
-`temperature_warmup_steps` / `temperature_anneal_steps` / `temperature_power`),
-now shared in `wsparse/schedules.py`. `exponential` is geometric, i.e. linear in
-`log t`, which is the natural interpolation for a temperature. The usual
-direction is *falling* — a broad boundary gradient early, a sharp one late,
-the mirror image of raising `beta` — but nothing assumes `end < start`.
-
-**`temperature_scale_mode` is the knob that matters here.** `t` lives in raw
-score units, and the activation scale drifts across layers and over training, so
-an absolute temperature quietly means something different at every point.
-`relative` (the default) multiplies the schedule by the per-row standard
-deviation of the Top-(K+J) scores, which makes the configured number exactly the
-`bottleneck/temperature_rel` that gets logged. Rescaling the activations by 100×
-with everything else held fixed:
-
-| `temperature_scale_mode` | `N_eff` at 0.1× | at 1× | at 10× |
-| --- | --- | --- | --- |
-| `absolute` | 189.2 | 72.8 | 5.9 |
-| `relative` | 31.1 | 30.6 | 30.8 |
-| *(`lapsum_adaptive`, for reference)* | 16.00 | 16.00 | 16.00 |
-
-So `absolute` is only sensible when you already know the score scale and intend
-to pin it; `relative` is the scheduled analogue of the adaptive mode, and the
-adaptive mode is the version that holds `N_eff` exactly rather than
-approximately. `configs/bn_sched.yaml` and
-`configs/bottleneck/baseline_scheduled_temperature.yaml` are the ablations.
-
-### The temperature is a detached bandwidth
-
-> The adaptive temperature is a **detached per-token bandwidth**. The backward is
-> the exact LapSum VJP conditional on that fixed bandwidth; it is *not* the
-> derivative of the full `t(r)` solver.
-
-Concretely: inspect the scores, choose `t`, detach it, then use the exact LapSum
-gradient at that fixed `t`. Nothing differentiates through a Newton or bisection
-iteration, and the `N_eff` calibration equation contributes no gradient at all —
-including in the joint `true_gradient` and `both_sides` solvers, where `b` and
-`t` come out of the same solve but only `b`'s dependence on the scores is
-carried into the backward. That dependence, `b = b(r; t)` via `Σpᵢ = K`, is
-exactly what the `⟨q^budget, u⟩` term encodes.
-
-This is a deliberate experimental choice, not an approximation forced by the
-implementation. `differentiate_temperature: true` is rejected rather than
-silently ignored; an implicit gradient through `t(r)` would be a separate mode
-with its own tests.
+This unification replaced three earlier mechanisms — an `n_eff`-calibrated
+adaptive temperature, a prescribed schedule, and a score-relative scale mode —
+all removed on 2026-09-28. `docs/relative-temperature-divergence.md` records
+why the relative mode was abandoned; the constant-`T` runs it was compared
+against are the ones the current code reproduces bit for bit.
 
 ### The closed-form barrier
 
-`Σᵢ F((rᵢ−b)/t) = K` is solved in closed form, not by iteration. On the interval
-`r_j ≥ b ≥ r_{j+1}` the budget is `j − ½e^{b/t}A_j + ½e^{−b/t}B_j`, so with
-`y = e^{b/t}`:
+`Σᵢ F((rᵢ−b)/T) = K` is solved in closed form, not by iteration. On the interval
+`r_j ≥ b ≥ r_{j+1}` the budget is `j − ½e^{b/T}A_j + ½e^{−b/T}B_j`, so with
+`y = e^{b/T}`:
 
 ```
-A_j y² + 2(K−j) y − B_j = 0,     A_j = Σ_{i≤j} e^{−rᵢ/t},  B_j = Σ_{i>j} e^{rᵢ/t}
+A_j y² + 2(K−j) y − B_j = 0,     A_j = Σ_{i≤j} e^{−rᵢ/T},  B_j = Σ_{i>j} e^{rᵢ/T}
 ```
 
 Because the candidates are already sorted, one `logcumsumexp` prefix scan and one
@@ -577,247 +349,258 @@ Two numerical details that are load-bearing, both found by stress testing:
   it a single score sitting 10⁸ temperatures away leaves `log A` with no
   significant digits at all (`1e8 − 1e8` in float32) — that produced a budget
   residual of **93** against `K = 32` before it was fixed. Anchoring at `r_K`
-  rather than `r_max` is what makes the clamp safe: whenever the span/`t` ratio
+  rather than `r_max` is what makes the clamp safe: whenever the span/`T` ratio
   is large enough for it to bite, `Σp = K` forces `b` into the `r_K`/`r_{K+1}`
   gap.
 * The `barrier_failures` diagnostic compares against an achievable-precision
   floor, not a flat tolerance. Scores arrive already rounded, so `(rᵢ − b)`
-  carries `~eps·|r|` of error that `1/t` amplifies; a flat `1e-6·K` threshold
+  carries `~eps·|r|` of error that `1/T` amplifies; a flat `1e-6·K` threshold
   reports a failure on every batch of offset activations while the solver is in
   fact exact.
 
-### Config
+### RBLapSum: the boundary is the hard rank
 
-```yaml
-activation_bottleneck:
-  enabled: true
-  layers: all              # all | even | odd | first:n | last:n | [0, 2, 4]
-  placement: pre_mlp
-  n_features: 2048         # N
-  k: 256                   # K, active in the forward pass
-  j: 768                   # J, extra candidates that only receive gradient
-  n_eff: 32.0              # target effective boundary participants
-  selection_mode: abs_topk         # topk | abs_topk | gated_topk
-  effective_count_metric: ess      # ess | entropy
-  boundary_mode: outside_only      # outside_only | both_sides
-  one_sided_weight_mode: score_softmax  # score_softmax | true_gradient
-  surrogate_mode: lapsum_adaptive  # lapsum_adaptive | lapsum_scheduled | lapsum_fixed | hard
-  surrogate_grad_scale: 1.0
-  fixed_temperature: 1.0           # surrogate_mode: lapsum_fixed only, absolute
-  # surrogate_mode: lapsum_scheduled
-  temperature_schedule: exponential  # constant | linear | exponential | cosine | polynomial
-  temperature_start: 0.5
-  temperature_end: 0.02
-  temperature_warmup_steps: 0
-  temperature_anneal_steps: null   # null -> anneal over the rest of training
-  temperature_power: 2.0
-  temperature_scale_mode: relative # relative (x per-row score std) | absolute
-  temperature_solver_tol: 1.0e-5
-  temperature_solver_max_iters: 12
-  barrier_solver_tol: 1.0e-6
-  solver_dtype: float32
-  log_diagnostics: true
-  hard_inference: true             # skip the LapSum machinery outside training
-```
-
-Static validation covers the obviously impossible: `1 ≤ K < N`, `J ≥ 1`,
-`K+J ≤ N`, and `1 < n_eff < J` (one-sided) or `1 < n_eff < K+J` (two-sided).
-
-Those bounds are necessary, not sufficient, and **feasibility is decided
-numerically per row**. Two-sided calibration cannot go as low as `N_eff = 1`:
-as `t → 0` the two neurons straddling the boundary acquire equal density, so it
-bottoms out near 2 (measured: `1.9 < N_eff` at `t/span = 2.5e-3`, against 1 for
-one-sided, which drops the `r_K` side). Ties move the floor again. So the
-reference solver evaluates `N_eff` at both ends of a scale-relative `log t`
-range and reports a per-row status — `target_below_attainable_range`,
-`target_above_attainable_range`, `degenerate_scores` — which surfaces as
-`bottleneck/status_*`. An infeasible target is never silently returned as a
-converged solve: Newton reports failure, the reference runs, and the status is
-logged.
-
-(The low end of that scan stops at `span·e⁻⁹` deliberately. Further down the
-surrogate is numerically dead — every `|z|` leaves float range, the budget
-equation is flat so `b` is only defined up to its plateau, and the weight
-softmax collapses onto whichever candidate rounding favours. That reads as
-`N_eff → 1` and would make an unreachable target look reachable at a temperature
-that transmits no gradient at all.)
-`differentiate_temperature` exists but rejects `true` — the solved temperature
-is a detached bandwidth choice, and nothing differentiates through a Newton or
-bisection iteration. An implicit gradient through `t(r)` would be a separate,
-separately-tested mode.
-
-### Experiment matrix
-
-Three matched configs drive the headline comparison, and are what the notebooks
-use. They share a model (10 layers, `d_model=640`, **81.7M** parameters dense),
-a seed and every training hyper-parameter:
-
-| config | params | forward | backward |
-| --- | --- | --- | --- |
-| `bn_dense.yaml` | 81.7M | ordinary transformer | ordinary |
-| `bn_hard.yaml` | 107.9M | `W_in` → TopK(256 of 2048) → `W_out` | hard mask only |
-| `bn_lapsum.yaml` | 107.9M | **identical to `bn_hard`** | LapSum Top-(K+J) surrogate, adaptive `t` |
-| `bn_sched.yaml` | 107.9M | **identical to `bn_hard`** | same surrogate, scheduled `t` |
-
-`dense` vs `hard` isolates the cost of the bottleneck; `hard` vs `lapsum`
-isolates the surrogate; `sched` vs `lapsum` isolates the adaptive calibration
-from simply annealing `t`. All four share an architecture, a parameter count and
-a bit-identical forward pass (bar `dense`). The 26.2M gap is the `2·d_model·N` projection
-pair on each of the 10 layers, which is why `hard` rather than `dense` is the
-control for the gradient question.
-
-`configs/bottleneck/` then covers the full calibration grid plus baselines:
+`surrogate_mode: rblapsum` keeps LapSum's hard forward, its Top-(K+J) pool and
+its Laplace kernel, but replaces the soft-mass constraint with the **hard rank**
+boundary
 
 ```
-{topk,abs_topk}_one_score_{ess,entropy}.yaml   one-sided, cheap score-softmax weights
-{topk,abs_topk}_one_true_{ess,entropy}.yaml    one-sided, exact gradient weights
-{topk,abs_topk}_two_true_{ess,entropy}.yaml    two-sided, exact gradient weights
-baseline_hard_topk.yaml                        hard TopK, ordinary hard-mask backward
-baseline_hard_abs_topk.yaml                    hard AbsTopK, ordinary hard-mask backward
-baseline_scheduled_temperature.yaml            LapSum, t annealed on a schedule
-baseline_fixed_temperature.yaml                LapSum at a fixed absolute t
+b = max(b₀, s_(K+1)),        κᵢ = e^{−|sᵢ − b|/T} / (2T)
 ```
 
-Pairing `one_score` against `one_true` at the same metric and target isolates
-exactly what the cheap approximation costs.
+so `K` becomes an upper cap on the active count rather than an exact budget
+(`b₀ = rblapsum_boundary_floor` is a fixed activation floor; where it binds,
+fewer than `K` features are active and `rb_cap_active_frac` falls below 1).
+There is no target-count penalty and no budget solve.
 
-Sweep the four scale knobs independently, e.g.
+`rblapsum_boundary_grad_mode` decides what the boundary's own derivative
+contributes:
 
-```bash
-python -m wsparse.train --config configs/bottleneck.yaml \
-    --activation_bottleneck.n_features=4096 --activation_bottleneck.k=256 \
-    --activation_bottleneck.j=1792 --activation_bottleneck.n_eff=64 \
-    --activation_bottleneck.layers=last:6
-```
+| mode | boundary term |
+| --- | --- |
+| `detach` (default) | none — independent local gradients per candidate |
+| `project` | `detach`, minus the common-mode score direction (cap-active rows only) |
+| `through_rank` | differentiate through `s_(K+1)`, which *is* the boundary |
+| `through_rank_kappa` | the same zero-sum correction, distributed `κ`-weighted |
+
+`through_rank` at a sharp `T` concentrates the compensation on the boundary
+feature alone and the boundary score can run away (measured: `j=32, T=1`
+diverged around 1.6k steps on both seeds). `through_rank_kappa` spreads it in
+LapSum's rank-one Jacobian form and removes the runaway —
+`docs/rblapsum-stabilization.tex`, and `docs/rblapsum-kappa-ablation.tex` for
+the ablation. `rblapsum_support_scale` multiplies that support-exchange term
+`g_s` after the mode correction, so `0.0` is exactly the hard-TopK backward and
+`1.0` the unmodified surrogate.
+
+`rblapsum_rho_random_perm_prob_grad` is the signal-permutation ablation: a `ρ`
+fraction of each row's `dL/dpᵢ` values is shuffled *before* the kernel
+weighting, which preserves the surrogate's scale profile, locality and zero-sum
+structure while destroying the assignment of signal to neuron.
+`ρ = 0` is bitwise the unmodified backward (`docs/rblapsum-signal-permutation.tex`).
+
+### RBLapSum soft forward
+
+`surrogate_mode: rblapsum_sf` puts the probabilities **in** the forward:
+`yᵢ = zᵢ·pᵢ` over the Top-(K+J) pool, exactly `0` outside it, and the backward is
+the gradient of that forward — no train-time forward/backward discrepancy. At
+`through_rank` with `rblapsum_support_scale = 1.0` it is plain autograd.
+
+Evaluation still runs the hard Top-K forward while `hard_inference` is set, so
+`val/ce` stays comparable across modes; the soft forward's own loss is logged
+separately as `val_soft/ce`. `rblapsum_sf_value_grad: support` masks the value
+path to the hard support, so the `J` inactive candidates train their ranking but
+not their content (`docs/rblapsum-soft-forward.tex`,
+`docs/rblapsum-sf-support-values.tex`).
+
+### Magnitude-direction decoupling
+
+`model.decouple` trains every matrix as a direction on a fixed-norm sphere plus
+an explicit gain (`decouple_gains: row_col` gives each row and column its own),
+with `md_init_` re-initializing the matrices onto their spheres first.
+`model.md_init: true` applies that initialization alone, with the ordinary
+AdamW, which is the ablation that separates the initialization from the
+optimizer (`docs/md-init-vs-decoupling.tex`). `train.weight_decay` does not
+apply under `decouple`.
 
 ### Diagnostics
 
-Per bottleneck layer, averaged across layers in the logs: `temperature`,
-`temperature_rel` (`t`/std of the candidate scores), `barrier`,
-`n_eff_realized`, `n_eff_error`, `barrier_gap` (`r_{K+1} − b`),
-`barrier_gap_rel`, `frac_above_barrier`, `n_eff_score`, `n_eff_true_gradient`,
-`n_eff_gap`, `status_*`, `budget_residual` (`|Σp − K|`), `score_gap`
-(`r_K − r_{K+1}`), `score_span` (`r_K − r_{K+J}`), `feature_dead_frac`,
-`feature_usage_entropy`, `feature_usage_max`, `grad_active`,
-`grad_inactive`, `grad_rank_bin0..7` (surrogate gradient magnitude by candidate
-rank), `temp_iters`, `temp_degenerate`, `temp_unbracketed`, `barrier_failures`,
-`newton_iters`, `newton_failed`. The console line carries `t`, `t/std`, `neff`
-and `dK`.
-
-The point of the experiment is the gradient-flow behaviour and its failure
-modes, so the failure counters are first-class: a row Newton cannot solve falls
-back to the slow reference root search and is *counted*, never silently
-returned as an invalid temperature.
+Per bottleneck layer, averaged across layers in the logs — see the metric table
+above for the full list. The failure counters are first-class: `barrier_failures`
+counts rows whose budget residual exceeds what the solver dtype can achieve,
+rather than a flat tolerance.
 
 **`feature_dead_frac` and `feature_usage_entropy` deserve particular attention.**
 The characteristic failure of a TopK activation bottleneck is collapse: a subset
 of the `N` features wins every token, the rest are never selected, and their
 `W_in`/`W_out` columns stop receiving gradient entirely — so the effective width
-is far below `N`. The loss, the budget residual and `N_eff` all look perfectly
-healthy while that happens, so nothing else logged here would reveal it. Usage
-is tracked as a bias-corrected EMA (a uniform-seeded one would take ~460 steps
-to decay past the dead threshold, reporting 0% dead throughout the early phase
-when collapse is most likely). `feature_usage_entropy` is `exp(H)/N`: 1.0 is
-even usage, and it falls to the surviving fraction — on a synthetic collapse
-where 64 of 256 features take every slot, it reads 0.250 and `feature_dead_frac`
-reads 0.750, both from step 10.
+is far below `N`. The loss and the budget residual both look perfectly healthy
+while that happens, so nothing else logged here would reveal it. Usage is
+tracked as a bias-corrected EMA (a uniform-seeded one would take ~460 steps to
+decay past the dead threshold, reporting 0% dead throughout the early phase when
+collapse is most likely). `feature_usage_entropy` is `exp(H)/N`: 1.0 is even
+usage, and it falls to the surviving fraction — on a synthetic collapse where 64
+of 256 features take every slot, it reads 0.250 and `feature_dead_frac` reads
+0.750, both from step 10.
+
+`scripts/dead_feature_watchdog.py` watches that live, and `analysis/` holds the
+offline probes (score ladders, gradient probes, the streamlit score explorer).
 
 ### Cost
 
-Measured on CPU, gate only, 4096 rows at `N=2048, K=256, J=768, n_eff=32`,
-forward + backward, relative to a hard-TopK backward:
+Gate only — no projections, no model — 4096 rows at `N=2048, K=256, J=768,
+T=1.0`, float32 CPU, forward + backward:
 
 | variant | ms | vs hard TopK |
 | --- | --- | --- |
-| hard TopK backward | 82 | 1.00× |
-| fixed-temperature LapSum | 245 | 2.99× |
-| one-sided ESS | 287 | 3.51× |
-| one-sided entropy | 301 | 3.68× |
-| two-sided ESS | 473 | 5.79× |
-| two-sided entropy | 525 | 6.41× |
+| hard TopK backward | 46 | 1.00× |
+| LapSum (budget barrier) | 245 | 5.29× |
+| RBLapSum, `detach` | 121 | 2.62× |
+| RBLapSum, `through_rank_kappa` | 126 | 2.72× |
+| RBLapSum soft forward | 137 | 2.97× |
 
-End-to-end on a 6-layer `d=384` model with all six layers bottlenecked, the
-one-sided path costs about 1.8× a hard-TopK bottleneck and the two-sided about
-2.5×; against a dense-MLP-input baseline the whole bottleneck (hard TopK
-included) is about 2.1×, since it adds two `d_model × N` projections per layer.
-GPU ratios will differ — the solvers are many small reductions — and none of
-this is paid at inference, where `hard_inference` skips the machinery entirely.
+The absolute numbers are machine-specific (these are one laptop's CPU); the
+ratios are the point. RBLapSum is the cheaper surrogate because it needs no
+barrier solve — its boundary is an index into the sorted pool. End-to-end the
+bottleneck itself dominates: it adds two `d_model × N` projections per
+bottlenecked layer, and none of the surrogate cost is paid at inference, where
+`hard_inference` skips the machinery entirely.
+
+## Multi-GPU (DDP)
+
+```bash
+NGPU=8 bash scripts/train_ddp.sh --config configs/fineweb_rbk_500m.yaml \
+    --train.run_name=my_run
+# = torchrun --standalone --nproc_per_node 8 scripts/train_guard.py --config ...
+```
+
+`train()` detects `torchrun`'s environment and wraps the model in `DDP`; a
+single-process launch sees `world == 1` and takes none of those branches.
+What is per-rank is deliberate:
+
+* `train.batch_size` is **per rank**, so the global batch is
+  `world × batch_size` sequences and the throughput metrics report global
+  tokens.
+* The training stream's seed is offset by rank (`seed + 7919·rank`), so each
+  rank draws different batches. Model init uses the same seed on every rank.
+* `broadcast_buffers=False`: the gates' usage EMAs are diagnostics, and
+  synchronizing them every step would cost a collective for nothing.
+* Logging, validation, sampling, checkpointing and the dumped config are rank 0
+  only.
+* Stopping is coordinated by an all-reduced flag (`scripts/train_stop.py` /
+  `train_guard.py --stop-step`), not by an exception — an exception on one rank
+  would hang the others in their next collective.
+
+The configured device decides the backend: `cuda` → NCCL with `cuda:local_rank`
+per rank, `cpu` → gloo (which is what the 2-process test in
+`tests/test_train_ddp.py` uses, under `WSPARSE_DDP_TEST=1`).
+
+## Loading archived runs
+
+`config_from_dict` / `load_config` migrate configs written before the cleanup:
+
+* a `sparsity` block is dropped when disabled, and **raises** when
+  `sparsity.enabled` was true;
+* `lapsum_fixed` (absolute) → `lapsum` with `temperature = fixed_temperature`;
+* a constant-schedule `lapsum_scheduled` → `lapsum` with
+  `temperature = temperature_start`;
+* `rblapsum_temperature` → `temperature`;
+* every removed knob (`n_eff`, `effective_count_metric`, `boundary_mode`,
+  `one_sided_weight_mode`, the `temperature_*` schedule fields,
+  `surrogate_grad_scale`, `inactive_grad_scale`, `project_scale_gradient`, the
+  servo fields, `reconstruction_*`, `calibrate_output`, …) is dropped;
+* the modes whose behaviour is gone — `lapsum_adaptive`, a non-constant or
+  score-relative `lapsum_scheduled`, `swap_gibbs`, `jumprelu`,
+  `reinforce_topk`, a temperature servo, a non-zero `reconstruction_coef`,
+  `calibrate_output` — raise with a message naming the removal.
+
+`tools/repro_check.py` is what proved the surviving modes unchanged: it runs a
+tiny real training job under deterministic kernels and digests per-step losses,
+validation CEs, probe logits, every parameter hash and the optimizer state. Run
+against the pre-cleanup code (old schema) and the cleaned code (new schema), it
+reports **IDENTICAL** for `hard`, `lapsum` at constant `T`, and `rblapsum` with
+`through_rank_kappa`.
 
 ## Notebooks
 
-Weight sparsity:
+Three matched runs (`SETUP = 'dense' | 'hard' | 'lapsum'`), with a parameter
+table, shared hyper-parameters and seed, loss / surrogate-gradient / feature-usage
+curves and a comparison table:
 
-* `notebooks/colab_tinystories.ipynb` — Google Colab; clones the repo, stores
-  data/checkpoints under `/content/drive/MyDrive/weight-sparsity/`.
-* `notebooks/vastai_tinystories.ipynb` — vast.ai; paths under `/workspace/`
-  with an optional persistent-volume location.
+* `notebooks/colab_bottleneck.ipynb` — Google Colab; clones the repo, stores
+  data and checkpoints under `/content/drive/MyDrive/weight-sparsity/`.
+* `notebooks/vastai_bottleneck.ipynb` — vast.ai; paths under `/workspace/`, and
+  it queues the runs back-to-back detached.
 
-Activation bottleneck — four matched runs (`SETUP = 'dense' | 'hard' |
-'lapsum' | 'sched'`), with a parameter table, shared hyper-parameters and seed, curves for
-the adaptive bandwidth and the calibration, and a comparison table:
-
-* `notebooks/colab_bottleneck.ipynb` — Google Colab.
-* `notebooks/vastai_bottleneck.ipynb` — vast.ai; also queues all three runs
-  back-to-back detached.
+`docs/vastai-agent-guide.md` is the operational guide for the rented-box
+workflow (queues, TensorBoard mirrors, Drive backups, checkpoint policy).
 
 ## Layout
 
 ```
 src/wsparse/
-  config.py              dataclass configs, YAML (_base_) composition, CLI overrides
-  model.py               RMSNorm transformer, learnable pos-emb, no biases
+  config.py              dataclass configs, YAML (_base_) composition, CLI overrides, legacy migration
+  model.py               RMSNorm transformer, learned or rotary positions, no biases
   tokenizer.py           GPT-Neo tokenizer, or a small BPE trained on TinyStories
   data.py                dataset preparation + uint16 memmap batching
-  optim.py               AdamW param groups (decay / nodecay / mask) + LR schedule
-  train.py               training loop, evaluation, checkpointing
-  utils.py               device/dtype, seeding, JSONL + wandb logging
-  bottleneck/            activation sparsity (independent of sparsity/)
+  optim.py               AdamW param groups (decay / nodecay) + LR schedule
+  decouple.py            magnitude-direction decoupling: md_init_, decoupled optimizer
+  train.py               training loop, DDP, evaluation, checkpointing
+  interventions.py       counterfactual gradient captures on a loaded checkpoint
+  utils.py               device/dtype, seeding, JSONL + TensorBoard + wandb logging
+  bottleneck/
     lapsum.py            Laplace CDF, closed-form + reference barrier, exact VJP
-    temperature.py       one-sided and two-sided adaptive-temperature solvers
-    gate.py              hard TopK forward / LapSum Top(K+J) backward
-    module.py            SparseTopKBottleneck (dense in_proj / gate / out_proj)
-    controller.py        layer selection, diagnostics aggregation
-  schedules.py           constant/linear/exponential/cosine/polynomial anneals
-  sparsity/
-    masks.py             LTPLinear, CSLinear, hard-mask evaluation
-    topk.py              TopKSoftGateLinear + its custom autograd Function
-    controller.py        layer selection, β broadcast, penalties, statistics
+    rblapsum.py          rank-boundary kernel, the four boundary-gradient modes, soft forward
+    gate.py              hard TopK forward / surrogate backward
+    module.py            SparseTopKBottleneck (dense in_proj / gate / out_proj [/ post-norm])
+    controller.py        layer selection, placement, diagnostics aggregation
 configs/                 composable YAML configs
-scripts/                 model_summary.py, generate.py
-tests/                   pytest suite (masks, gradients, penalties, training)
+scripts/                 training queues, TensorBoard mirrors, Drive backups, figure scripts
+analysis/                offline probes + the streamlit score explorer
+tools/repro_check.py     bit-exactness oracle across code versions
+docs/                    the research notes (.tex / .md) behind each result
+tests/                   pytest suite
 ```
 
 ## Tests
 
 ```bash
 pip install pytest && pytest -q
+WSPARSE_DDP_TEST=1 pytest -q tests/test_train_ddp.py   # spawns torchrun; run on a box
 ```
 
-The suite covers the mask formulas, both LTP gradient paths (analytically,
-against hand-derived gradients), the β schedules, the penalty terms and
-per-layer density targets, optimizer grouping, and short end-to-end training
-runs including checkpoint round-trips — all on synthetic data, no downloads.
+All on synthetic data, no downloads.
 
-`tests/test_bottleneck.py` covers the activation bottleneck: exact-K forward
-(counted from the mask, since a selected activation can itself be zero), TopK vs
-AbsTopK selection and sign preservation, the Top-(K+J) gradient support, the
-closed-form barrier against bisection across temperatures/scales/translations/ties,
-both temperature solvers against their references, scale and translation
-invariance, the VJP against barrier-re-solved finite differences, and a sweep of
-adversarial score geometries (heavy tails, 10⁶ scale, offsets, tied scores,
-bimodal clusters, one 10⁷ spike) for NaNs and budget drift.
-
-`tests/test_topk.py` does the same for TopK + soft gate: the forward support,
-both gradient formulas and the penalty gradient are checked against the boxed
-expressions by hand rather than against autograd — which is the point, since
-autograd through the hard TopK would give the *narrow* backward support and
-here it must be the wide one.
+* `tests/test_bottleneck.py` — exact-`K` forward (counted from the mask, since a
+  selected activation can itself be zero), TopK vs AbsTopK selection and sign
+  preservation, the Top-(K+J) gradient support, the closed-form barrier against
+  bisection across temperatures/scales/translations/ties, scale and translation
+  invariance, the VJP against barrier-re-solved finite differences, placement
+  and post-norm wiring, and a sweep of adversarial score geometries (heavy
+  tails, 10⁶ scale, offsets, tied scores, bimodal clusters, one 10⁷ spike) for
+  NaNs and budget drift.
+* `tests/test_rblapsum.py`, `test_rblapsum_sf.py`, `test_rblapsum_perm.py` — the
+  rank boundary and floor, the four boundary-gradient modes (including
+  `through_rank` against autograd and the zero-sum property of
+  `through_rank_kappa`), the soft forward and its value-gradient modes, and the
+  permutation ablation's invariants (`ρ=0` bitwise identity, matched marginals).
+* `tests/test_model.py`, `test_config.py` — architecture, init and logit scaling;
+  config composition, CLI overrides, the shipped configs and the legacy migration.
+* `tests/test_decouple.py`, `test_md_init.py` — the decoupled optimizer's
+  invariants (directions stay on their spheres) and the init-only ablation.
+* `tests/test_train.py`, `test_train_ddp.py`, `test_interventions.py` — short
+  end-to-end runs, checkpoint round-trips, the data stream, the stop hook, the
+  2-process gloo run, and the intervention captures.
 
 ## Extending
 
-Attention sparsity is already implemented — `sparsity.targets: [mlp, attn]`.
-Adding a fourth masking method means subclassing `SparseLinear` with a
-`logits()` and `mask_parameters()`, then registering it in
-`make_sparse_linear(linear, cfg)`. Override `effective_weight()` (as `topk.py`
-does) if the layer needs a backward pass that is not the derivative of its
-forward pass, and `extra_penalty()` if it carries its own loss term.
+A new surrogate is a new `surrogate_mode`: add the backward as an
+`autograd.Function` next to `lapsum.py` / `rblapsum.py`, dispatch to it in
+`AdaptiveLapSumTopKGate.forward`, and add the mode to
+`ActivationBottleneckConfig.surrogate_mode`'s validation. The forward stays hard
+TopK unless the mode deliberately changes it (`rblapsum_sf` is the one that
+does), and the gate's contract is what makes the comparison meaningful: two
+modes at the same `(K, J, N, seed)` have a bit-identical forward pass, so any
+difference in the curves is a difference in the gradient.
+
+Anything that changes numerics for an existing mode should be checked with
+`tools/repro_check.py` against the previous commit before it lands.
