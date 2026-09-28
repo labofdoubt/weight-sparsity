@@ -741,8 +741,14 @@ def load_config(path: Optional[str] = None, overrides: Sequence[str] = ()) -> Co
 
 
 def config_from_dict(tree: Dict[str, Any]) -> Config:
+    """A Config from a *saved payload* (``config.json`` / a checkpoint).
+
+    Same migrations as ``load_config``, plus the pins that only make sense for
+    something that was already trained -- see ``_pin_legacy_logit_scale``.
+    """
     tree = copy.deepcopy(tree)
     _migrate_legacy(tree)
+    _pin_legacy_logit_scale(tree)
     return _from_dict(Config, tree)
 
 
@@ -819,12 +825,19 @@ def _migrate_legacy(tree: Dict[str, Any]) -> None:
                   "reconstruction_normalize", "calibrate_output",
                   "calibration_batches", "calibration_iters"):
             ab.pop(k, None)
+
+
+def _pin_legacy_logit_scale(tree: Dict[str, Any]) -> None:
     """Pin pre-``logit_scale`` checkpoints to the behaviour they were trained with.
 
     A checkpoint saved before ``logit_scale`` existed was trained with a tied head
     whose logits were *not* rescaled, so letting it pick up the "auto" default
     would shrink its logits by ``init_std / init_std_embedding`` (~35x) and turn
     sampled generations to noise.  Absence of the key dates the payload.
+
+    Saved payloads only (``config_from_dict``): a hand-written YAML that simply
+    does not mention the field must get the dataclass default instead, or every
+    shipped config silently trains an unscaled tied head.
     """
     model = tree.get("model")
     if isinstance(model, dict) and "logit_scale" not in model:

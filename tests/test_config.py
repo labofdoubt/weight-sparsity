@@ -29,6 +29,25 @@ def test_shipped_configs_load(name):
     assert cfg.model.max_seq_len >= cfg.data.seq_len
 
 
+def test_legacy_logit_scale_pin_is_payload_only():
+    """A YAML that omits `logit_scale` must get the dataclass default.
+
+    Saved payloads from before the field existed are pinned to "none" (they
+    were trained with an unscaled tied head).  That pin briefly leaked into
+    `load_config`, which silently gave every shipped config an unscaled tied
+    head -- init logits at std ~18 and a cross-entropy of ~310.
+    """
+    from wsparse.config import config_from_dict
+
+    assert load_config(os.path.join(CONFIG_DIR, "bn_dense.yaml")).model.logit_scale == "auto"
+    assert load_config(None).model.logit_scale == "auto"
+
+    body = {"n_layers": 2, "d_model": 32, "n_heads": 2}
+    assert config_from_dict({"model": dict(body)}).model.logit_scale == "none"
+    assert config_from_dict(
+        {"model": dict(body, logit_scale="auto")}).model.logit_scale == "auto"
+
+
 def test_type_coercion():
     cfg = load_config(None, ["train.compile=true", "train.betas=(0.9, 0.99)", "model.mlp_ratio=8"])
     assert cfg.train.compile is True

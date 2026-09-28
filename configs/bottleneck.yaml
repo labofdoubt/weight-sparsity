@@ -15,3 +15,5 @@ activation_bottleneck:
   selection_mode: abs_topk
   surrogate_mode: lapsum
   temperature: 1.0
+  # stream placement: see the note in bn_lapsum.yaml
+  init_mode: sqrt_k_selection_corrected

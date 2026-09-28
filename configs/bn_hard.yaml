@@ -17,3 +17,8 @@ activation_bottleneck:
   j: 480
   selection_mode: abs_topk
   surrogate_mode: hard
+  # Under a stream placement the PyTorch-default init scales the decoder for
+  # fan-in n_features though TopK delivers only k non-zeros: std(out)/std(in)
+  # measures 0.128 at k=32, N=1536, and that attenuation compounds through
+  # depth until the run collapses (docs/vastai-agent-guide.md section 9).
+  init_mode: sqrt_k_selection_corrected
