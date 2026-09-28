@@ -49,6 +49,8 @@ def main() -> None:
 
     alphas = {round(d.get("md_alpha", 1.0), 6) for d in runs}
     scaled = alphas != {1.0}
+    gammas = {str(d.get("pnorm_gamma", "1.0")) for d in runs}
+    regamma = gammas != {"1.0"}
 
     fig, axes = plt.subplots(2, 2, figsize=(12.2, 8.4))
     for ax, (field, name, ylab, color, ref) in zip(axes.ravel(), PANELS):
@@ -76,9 +78,14 @@ def main() -> None:
         ax.legend(fontsize=8.5, loc="best")
 
     d0 = runs[0]
-    tail = ("\n" + r"with $\alpha=\sqrt{d_{model}/K}$ on each bottleneck's output, "
-            r"spread equally over the 4 MD gain vectors of its two projections"
-            if scaled else "")
+    tail = ""
+    if scaled:
+        tail += ("\n" + r"with $\alpha=\sqrt{d_{model}/K}$ on each bottleneck's "
+                 r"output, spread equally over the 4 MD gain vectors of its two "
+                 r"projections")
+    if regamma:
+        tail += (", and the post-norm's $\gamma$ at "
+                 r"$1/\sqrt{G_{bwd}}$ per layer")
     fig.suptitle(
         f"layer-averaged amplification vs K -- {d0['n_layers']}L d{d0['d_model']}, "
         f"N={N}, {d0['placement']}, post-norm, at init" + tail,
