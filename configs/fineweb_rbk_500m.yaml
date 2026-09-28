@@ -53,6 +53,8 @@ data:
 
 activation_bottleneck:
   enabled: true
+  bias: false          # family convention (every 114M campaign); the dataclass
+                       # default is true and slipped into the first 500M runs
   n_features: 4096     # 4x expansion; 2 x d x N x L = 201.3M params
   k: 128               # set per cell at launch
   j: 128               # set per cell at launch
