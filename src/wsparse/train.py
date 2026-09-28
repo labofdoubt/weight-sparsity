@@ -23,7 +23,6 @@ from .data import build_streams, load_meta
 from .model import build_model
 from .optim import build_optimizer, count_parameter_groups, lr_at, set_lr
 from .bottleneck import ActivationBottleneckController, apply_activation_bottleneck
-from .sparsity import SparsityController, apply_sparsity
 from .utils import Logger, autocast_context, human, resolve_device, resolve_dtype, set_seed
 
 
@@ -111,19 +110,23 @@ def prune_old_checkpoints(run_dir: str, keep: int) -> None:
         os.remove(old)
 
 
-def load_for_inference(path: str, device: str = "cpu") -> Tuple[torch.nn.Module, Config, SparsityController]:
-    """Rebuild a model (+ sparsity wrappers) from a checkpoint."""
+def load_for_inference(path: str, device: str = "cpu"):
+    """Rebuild a model (+ bottleneck) from a checkpoint.
+
+    Returns ``(model, cfg, bottleneck_controller)`` -- the third element was
+    the weight-sparsity controller before the 2026-09-28 cleanup; analysis
+    callers that unpacked and ignored it are unaffected, and the probe tooling
+    gets the bottleneck controller it actually wants.
+    """
     payload = torch.load(path, map_location=device, weights_only=False)
     cfg = config_from_dict(payload["config"])
     model = build_model(cfg.model)
-    controller = apply_sparsity(model, cfg.sparsity, max_steps=cfg.train.max_steps)
-    apply_activation_bottleneck(
+    bottleneck = apply_activation_bottleneck(
         model, cfg.activation_bottleneck, max_steps=cfg.train.max_steps
     )
     model.load_state_dict(payload["model"])
     model.to(device)
-    controller.set_step(payload.get("step", cfg.train.max_steps))
-    return model, cfg, controller
+    return model, cfg, bottleneck
 
 
 # --------------------------------------------------------------------------- #
@@ -182,11 +185,10 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         cfg.data, seed=cfg.train.seed + 7919 * rank)
 
     model = build_model(cfg.model).to(device)
-    controller = apply_sparsity(model, cfg.sparsity, max_steps=cfg.train.max_steps)
     bottleneck = apply_activation_bottleneck(
         model, cfg.activation_bottleneck, max_steps=cfg.train.max_steps
     )
-    model.to(device)  # sparsity / bottleneck parameters created on cpu -> move again
+    model.to(device)  # bottleneck parameters created on cpu -> move again
 
     if cfg.model.decouple:
         # Magnitude-direction decoupling (arXiv:2606.25971): re-initialize the
@@ -195,8 +197,6 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         # init field, and no norm-constrained parameter gets weight decay.
         from .decouple import build_decoupled_optimizer, md_init_
 
-        if cfg.sparsity.enabled:
-            raise ValueError("decouple=True is not supported with sparsity.enabled")
         if dtype is torch.float16:
             raise ValueError(
                 "decouple=True with float16 GradScaler is untested; use bfloat16")
@@ -215,7 +215,6 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                   f"decay (the norm constraint is the regularizer)")
         optimizer = build_decoupled_optimizer(
             model, cfg.train, gain_mode=cfg.model.decouple_gains,
-            mask_param_ids=controller.mask_parameter_ids() or None,
         )
     else:
         if cfg.model.md_init:
@@ -226,28 +225,14 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             # train.weight_decay applies as configured.
             from .decouple import md_init_
 
-            if cfg.sparsity.enabled:
-                raise ValueError(
-                    "md_init=True is not supported with sparsity.enabled: "
-                    "md_init_ would re-initialize 2-D mask parameters")
             counts = md_init_(model, cfg.model.decouple_gains)
             print(f"[train] md_init: re-initialized {counts['matrix']} matrices "
                   f"to their c_F norms and {counts['embed']} embedding tables to "
                   f"unit rows; training with plain AdamW "
                   f"(weight_decay={cfg.train.weight_decay})")
-        optimizer = build_optimizer(
-            model, cfg.train, cfg.sparsity, mask_param_ids=controller.mask_parameter_ids()
-        )
-    # Sparsity parameters are clipped separately: dL/dtau sums over every weight
-    # in the layer, so a shared global norm would let it squash the weight
-    # gradients (LTP section 4.1 makes the same point about its magnitude).
-    # sparsity.mask_grad_clip gives them their own threshold, which matters at
-    # large beta -- dL/ds carries a factor beta*p*(1-p).
-    mask_params = controller.mask_parameters()
-    mask_ids = controller.mask_parameter_ids()
-    weight_params = [p for p in model.parameters() if id(p) not in mask_ids]
-    mask_clip = cfg.sparsity.mask_grad_clip
-    mask_clip = cfg.train.grad_clip if mask_clip is None else float(mask_clip)
+        optimizer = build_optimizer(model, cfg.train)
+
+    weight_params = [p for p in model.parameters()]
 
     run_dir = os.path.join(cfg.train.out_dir, cfg.train.run_name)
     if is_main:
@@ -311,22 +296,6 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         + (f" x world {world} = {human(tokens_per_step)} tok/step" if world > 1 else ")")
     )
     print(f"[train] param groups: {count_parameter_groups(optimizer)}")
-    if controller.enabled:
-        print(
-            f"[train] sparsity: method={cfg.sparsity.method} targets={cfg.sparsity.targets} "
-            f"layers={len(controller.layers)} maskable={human(controller.total_maskable)} "
-            f"beta {cfg.sparsity.beta_start:g} -> {cfg.sparsity.beta_end:g} "
-            f"({cfg.sparsity.beta_schedule})"
-        )
-        if cfg.sparsity.method == "topk":
-            first = controller.layers[0][1]
-            print(
-                f"[train] topk: k={first.k} j={first.j} per group "
-                f"(groups={cfg.sparsity.topk_groups}), forward density "
-                f"{controller.stats()['sparsity/density_topk']:.4f}, "
-                f"w grad on {'topk+j' if first.w_grad_explore else 'topk'}"
-            )
-
     if bottleneck.enabled and cfg.activation_bottleneck.calibrate_output and start_step == 0:
         # Before the first step only: on resume the fitted scale comes back with
         # the checkpoint, and re-fitting it against a trained model would be a
@@ -370,7 +339,6 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
     for step in range(start_step, cfg.train.max_steps):
         lr = lr_at(step, cfg.train)
         set_lr(optimizer, lr)
-        controller.set_step(step)
         bottleneck.set_step(step)
 
         if on_step is not None:
@@ -459,20 +427,10 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                     micro = micro + count_coef * count_term
             scaler.scale(micro / accum).backward()
 
-        # sparsity penalty: added once per optimizer step (it does not depend on
-        # the batch), so its gradient is not divided by the accumulation count.
-        penalty, penalty_logs = controller.penalty()
-        if penalty.requires_grad:
-            scaler.scale(penalty).backward()
-
-        mask_grad_norm = 0.0
         grad_norm = torch.tensor(0.0)
-        if cfg.train.grad_clip > 0 or (mask_params and mask_clip > 0):
+        if cfg.train.grad_clip > 0:
             scaler.unscale_(optimizer)
-            if cfg.train.grad_clip > 0:
-                grad_norm = torch.nn.utils.clip_grad_norm_(weight_params, cfg.train.grad_clip)
-            if mask_params and mask_clip > 0:
-                mask_grad_norm = float(torch.nn.utils.clip_grad_norm_(mask_params, mask_clip))
+            grad_norm = torch.nn.utils.clip_grad_norm_(weight_params, cfg.train.grad_clip)
         scaler.step(optimizer)
         scaler.update()
 
@@ -496,40 +454,18 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 "perf/ms_per_step": 1000 * dt / running_n,
                 "perf/tokens_seen": step1 * tokens_per_step,
             }
-            metrics.update(penalty_logs)
             metrics.update(recon_logs)
             metrics.update(count_logs)
             metrics.update(rf_logs)
-            sp = controller.stats()
-            metrics.update(sp)
             bn = bottleneck.stats()
             metrics.update(bn)
-            if mask_params:
-                metrics["sparsity/mask_grad_norm"] = mask_grad_norm
-            metrics["train/loss"] = metrics["train/ce"] + sum(
-                v for k, v in penalty_logs.items() if k.endswith("penalty")
-            )
+            metrics["train/loss"] = metrics["train/ce"]
 
             line = (
                 f"step {step1:>6}/{cfg.train.max_steps} | loss {metrics['train/loss']:.4f} "
                 f"| ce {metrics['train/ce']:.4f} | ppl {metrics['train/ppl']:7.2f} "
                 f"| lr {lr:.2e}"
             )
-            if controller.enabled:
-                line += (
-                    f" | beta {sp['sparsity/beta']:.3g}"
-                    f" | dens_soft {sp['sparsity/density_soft']:.4f}"
-                    f" | dens_hard {sp['sparsity/density_hard']:.4f}"
-                    f" | trans {sp['sparsity/transition_frac']:.4f}"
-                )
-                key = "sparsity/threshold_mean" if cfg.sparsity.method == "ltp" else "sparsity/s_mean"
-                if key in sp:
-                    line += f" | {key.split('/')[1]} {sp[key]:.3g}"
-                if "sparsity/gate_mean_topk" in sp:
-                    line += (
-                        f" | gate {sp['sparsity/gate_mean_topk']:.3f}"
-                        f" | turn {sp['sparsity/turnover']:.4f}"
-                    )
             if "bottleneck/temperature" in bn:
                 line += (
                     f" | t {bn['bottleneck/temperature']:.3g}"
@@ -591,19 +527,6 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 metrics["val_soft/ce"] = soft["ce"]
                 metrics["val_soft/ppl"] = soft["ppl"]
                 line += f" | soft ce {soft['ce']:.4f}"
-            if controller.enabled and cfg.sparsity.eval_hard_mask:
-                with controller.hard_mask():
-                    hard = evaluate(
-                        model, val_stream, micro_bs, cfg.train.val_batches, device, dtype
-                    )
-                metrics["val_hard/ce"] = hard["ce"]
-                metrics["val_hard/ppl"] = hard["ppl"]
-                metrics["val_hard/density"] = controller.stats()["sparsity/density_hard"]
-                line += (
-                    f" | hard ce {hard['ce']:.4f} | hard ppl {hard['ppl']:.2f}"
-                    f" | density {metrics['val_hard/density']:.4f}"
-                )
-            metrics.update({f"layer_{k}": v for k, v in controller.layer_densities().items()})
             if bottleneck.enabled and cfg.activation_bottleneck.log_diagnostics:
                 metrics.update(log_feature_usage(logger, bottleneck, step1))
             logger.log(step1, metrics, console=line)

@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import torch
 
-from wsparse.config import Config, ModelConfig, SparsityConfig
+from wsparse.config import Config, ModelConfig
 from wsparse.data import TokenStream, load_meta
 from wsparse.optim import lr_at
 from wsparse.train import evaluate, load_for_inference, train
@@ -32,7 +32,7 @@ def make_fake_dataset(tmp_path, n_train=60_000, n_val=8_000):
     return str(d)
 
 
-def smoke_config(data_dir, out_dir, **sparsity_kw):
+def smoke_config(data_dir, out_dir):
     cfg = Config()
     cfg.data.data_dir = data_dir
     cfg.data.seq_len = 32
@@ -49,8 +49,6 @@ def smoke_config(data_dir, out_dir, **sparsity_kw):
     cfg.train.device = "cpu"
     cfg.train.out_dir = out_dir
     cfg.train.run_name = "test"
-    if sparsity_kw:
-        cfg.sparsity = SparsityConfig(**sparsity_kw)
     return cfg
 
 
@@ -106,122 +104,6 @@ def test_dense_training_runs_and_checkpoints(tmp_path):
     lines = [json.loads(l) for l in open(run_dir / "metrics.jsonl")]
     assert any("train/ce" in r for r in lines)
     assert any("val/ce" in r for r in lines)
-
-
-@pytest.mark.parametrize("method", ["ltp", "cs"])
-def test_sparse_training_logs_beta_and_density(tmp_path, method):
-    data_dir = make_fake_dataset(tmp_path)
-    cfg = smoke_config(
-        data_dir,
-        str(tmp_path / f"runs_{method}"),
-        enabled=True,
-        method=method,
-        beta_start=1.0 if method == "cs" else 1e3,
-        beta_end=50.0 if method == "cs" else 1e5,
-        l0_coef=0.1,
-        mask_lr=1e-3,
-    )
-    cfg.train.run_name = f"test_{method}"
-    train(cfg)
-    run_dir = tmp_path / f"runs_{method}" / f"test_{method}"
-    records = [json.loads(l) for l in open(run_dir / "metrics.jsonl")]
-    train_records = [r for r in records if "sparsity/beta" in r]
-    assert train_records, "no sparsity metrics were logged"
-    last = train_records[-1]
-    assert last["sparsity/beta"] > train_records[0]["sparsity/beta"]
-    assert 0.0 <= last["sparsity/density_soft"] <= 1.0
-    assert 0.0 <= last["sparsity/density_hard"] <= 1.0
-    assert "sparsity/l0_penalty" in last
-    val_records = [r for r in records if "val_hard/ce" in r]
-    assert val_records and np.isfinite(val_records[-1]["val_hard/ce"])
-
-
-def topk_smoke_config(tmp_path, data_dir, out_dir, **extra):
-    kw = dict(
-        enabled=True,
-        method="topk",
-        k=0.25,
-        j=0.25,
-        s_init=1.0,
-        s_init_mode="magnitude",
-        inverse_temperature=2.0,
-        inverse_temperature_schedule="exponential",
-        beta_end=20.0,
-        mask_lr=1e-2,
-        mask_grad_clip=0.5,
-    )
-    kw.update(extra)
-    return smoke_config(data_dir, out_dir, **kw)
-
-
-def test_topk_training_logs_the_budget_and_the_soft_l0_penalty(tmp_path):
-    data_dir = make_fake_dataset(tmp_path)
-    cfg = topk_smoke_config(
-        tmp_path,
-        data_dir,
-        str(tmp_path / "runs_topk"),
-        soft_l0_enabled=True,
-        soft_l0_lambda_topk=1e-5,
-        soft_l0_lambda_explore=1e-6,
-    )
-    cfg.train.run_name = "test_topk"
-    train(cfg)
-
-    records = [json.loads(l) for l in open(tmp_path / "runs_topk" / "test_topk" / "metrics.jsonl")]
-    train_records = [r for r in records if "sparsity/beta" in r]
-    assert train_records
-    last = train_records[-1]
-    assert last["sparsity/beta"] > train_records[0]["sparsity/beta"]
-    # the TopK budget is hard; soft gating can only undershoot it
-    assert last["sparsity/density_topk"] == pytest.approx(0.25, abs=1e-3)
-    assert last["sparsity/density_soft"] <= last["sparsity/density_topk"] + 1e-6
-    assert last["sparsity/density_hard"] <= last["sparsity/density_topk"] + 1e-6
-    assert last["sparsity/soft_l0_penalty"] > 0
-    assert 0.0 <= last["sparsity/gate_mean_topk"] <= 1.0
-    assert 0.0 <= last["sparsity/turnover"] <= 1.0
-    assert np.isfinite(last["sparsity/mask_grad_norm"])
-    val_records = [r for r in records if "val_hard/ce" in r]
-    assert val_records and np.isfinite(val_records[-1]["val_hard/ce"])
-
-
-def test_topk_checkpoint_round_trip(tmp_path):
-    data_dir = make_fake_dataset(tmp_path)
-    cfg = topk_smoke_config(tmp_path, data_dir, str(tmp_path / "runs_topk_ckpt"))
-    cfg.train.run_name = "topk_ckpt"
-    train(cfg)
-
-    path = tmp_path / "runs_topk_ckpt" / "topk_ckpt" / "latest.pt"
-    model, loaded_cfg, ctrl = load_for_inference(str(path))
-    assert loaded_cfg.sparsity.method == "topk"
-    assert ctrl.enabled and len(ctrl.layers) == 4
-    assert ctrl.beta == pytest.approx(20.0)
-    layer = ctrl.layers[0][1]
-    assert int((layer.effective_weight() != 0).sum()) == layer.topk_numel
-    logits, _ = model(torch.randint(0, VOCAB, (1, 8)))
-    assert logits.shape == (1, 8, VOCAB)
-
-
-def test_checkpoint_round_trip_preserves_masks(tmp_path):
-    data_dir = make_fake_dataset(tmp_path)
-    cfg = smoke_config(
-        data_dir,
-        str(tmp_path / "runs_ckpt"),
-        enabled=True,
-        method="cs",
-        beta_start=1.0,
-        beta_end=20.0,
-        l0_coef=0.1,
-    )
-    cfg.train.run_name = "ckpt"
-    train(cfg)
-    path = tmp_path / "runs_ckpt" / "ckpt" / "latest.pt"
-    model, loaded_cfg, ctrl = load_for_inference(str(path))
-    assert loaded_cfg.sparsity.method == "cs"
-    assert ctrl.enabled and len(ctrl.layers) == 4
-    assert ctrl.beta == pytest.approx(20.0)
-    logits, _ = model(torch.randint(0, VOCAB, (1, 8)))
-    assert logits.shape == (1, 8, VOCAB)
-    assert 0.0 <= ctrl.stats()["sparsity/density_hard"] <= 1.0
 
 
 def test_resume_continues_from_saved_step(tmp_path):

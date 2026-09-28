@@ -39,7 +39,6 @@ def main() -> None:
     if controller.enabled:
         stats = controller.stats()
         print(
-            f"[gen] {cfg.sparsity.method} sparsity: beta={stats['sparsity/beta']:.3g} "
             f"density_hard={stats['sparsity/density_hard']:.4f} "
             f"density_soft={stats['sparsity/density_soft']:.4f}"
         )

@@ -49,5 +49,3 @@ train:
   seed: 1337
   dtype: bfloat16
 
-sparsity:
-  enabled: false

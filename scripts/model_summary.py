@@ -14,7 +14,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from wsparse.config import load_config  # noqa: E402
 from wsparse.model import build_model  # noqa: E402
 from wsparse.bottleneck import apply_activation_bottleneck  # noqa: E402
-from wsparse.sparsity import apply_sparsity  # noqa: E402
 from wsparse.utils import human  # noqa: E402
 
 
@@ -25,7 +24,6 @@ def main() -> None:
     cfg = load_config(args.config, overrides)
 
     model = build_model(cfg.model)
-    controller = apply_sparsity(model, cfg.sparsity, max_steps=cfg.train.max_steps)
     bottleneck = apply_activation_bottleneck(model, cfg.activation_bottleneck)
 
     total = model.num_parameters()

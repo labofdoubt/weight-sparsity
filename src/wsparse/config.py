@@ -1,11 +1,11 @@
-"""Configuration objects for model / data / training / sparsity.
+"""Configuration objects for model / data / training / bottleneck.
 
 Configs are plain dataclasses.  They can be built from YAML files (with an
 optional ``_base_`` key for composition) and overridden from the command line
 with dotted ``--section.field=value`` flags, e.g.::
 
     python -m wsparse.train --config configs/ltp_base.yaml \
-        --train.lr=6e-4 --sparsity.beta_end=1e6
+        --train.lr=6e-4 --activation_bottleneck.k=32
 """
 
 from __future__ import annotations
@@ -288,190 +288,6 @@ class TrainConfig:
     def grad_accum_steps(self) -> int:
         return self.batch_size // int(self.micro_batch_size)
 
-
-# --------------------------------------------------------------------------- #
-# sparsity
-# --------------------------------------------------------------------------- #
-
-
-@dataclass
-class SparsityConfig:
-    """Differentiable weight sparsity.
-
-    Three methods, all of which multiply a weight ``w`` by a mask built from a
-    sigmoid with inverse temperature ``beta``:
-
-    ``method="ltp"`` (Learned Threshold Pruning, arXiv:2003.00075)
-        ``m = sigmoid(beta * (w**2 - tau))`` with one *learnable scalar
-        threshold* ``tau`` per masked layer.  Unlike the paper we do **not**
-        redefine the temperature from the weight variance -- ``beta`` comes
-        purely from the schedule below.
-
-    ``method="cs"`` (Continuous Sparsification, arXiv:1912.04427)
-        ``m = sigmoid(beta * s)`` with a *free auxiliary parameter* ``s`` per
-        weight element.
-
-    ``method="topk"`` (TopK + soft gate)
-        ``m = 1[(i,j) in TopK_k(s)] * sigmoid(beta * s)``: a *hard* TopK over
-        the learnable scores ``s`` decides the forward support, and the
-        surviving weights are additionally attenuated by the soft gate.  The
-        backward pass is defined by hand over the wider ``Top_{k+j}(s)``
-        support, so ``j`` inactive candidates per group keep receiving
-        gradients for both ``w`` and ``s`` and can enter TopK later.
-
-    For ltp/cs the smooth L0 of a layer is ``sum(m)`` over the whole tensor;
-    for topk it is ``sum(m)`` over the TopK support (everything else is exactly
-    zero in the forward pass, by construction).
-    """
-
-    enabled: bool = False
-    method: str = "ltp"  # ltp | cs | topk
-    targets: List[str] = field(default_factory=lambda: ["mlp"])  # subset of {mlp, attn}
-
-    # ---- inverse-temperature schedule ------------------------------------ #
-    # beta is held at beta_start for beta_warmup_steps, then annealed to
-    # beta_end over beta_anneal_steps (default: the rest of training), then
-    # held at beta_end.
-    beta_schedule: str = "exponential"  # constant | linear | exponential | cosine | polynomial
-    beta_start: float = 1.0e3
-    beta_end: float = 1.0e6
-    beta_warmup_steps: int = 0
-    beta_anneal_steps: Optional[int] = None
-    beta_power: float = 2.0  # only used by beta_schedule == "polynomial"
-
-    # Aliases onto that same machinery, spelled out for methods where beta is a
-    # first-class hyper-parameter rather than a schedule endpoint:
-    #   inverse_temperature=b                     -> constant beta = b
-    #   inverse_temperature=b + a *_schedule kind -> beta anneals b -> beta_end
-    # Setting only inverse_temperature_schedule just selects beta_schedule.
-    inverse_temperature: Optional[float] = None
-    inverse_temperature_schedule: Optional[str] = None
-
-    # ---- sparsity parameters --------------------------------------------- #
-    mask_lr: float = 1.0e-2  # separate lr for tau (ltp) / s (cs, topk)
-    # if set, the mask lr becomes mask_lr_mult * train.lr and then *follows the
-    # lr schedule*, instead of being the fixed, unscheduled mask_lr.
-    mask_lr_mult: Optional[float] = None
-    # mask parameters are always clipped separately from the weights; None
-    # reuses train.grad_clip.  Worth setting when beta is large, since
-    # beta*p*(1-p) makes dL/ds spike for scores near 0.
-    mask_grad_clip: Optional[float] = None
-    threshold_init: float = 0.0  # ltp: initial tau
-    s_init: float = 0.05  # cs: value of every s element; topk: init scale
-    # topk only: how s is initialized.  "magnitude" (the default) puts the
-    # initial TopK on the top-k weights by |w| and centres s on the selection
-    # boundary, so s > 0 holds on exactly the TopK support at step 0.
-    s_init_mode: str = "constant"  # constant | uniform | normal | magnitude
-    # ltp only: if False, weights receive no gradient through the mask
-    # (eq. 14 of the LTP paper -- the sigmoid is treated as a constant w.r.t. w
-    # in the backward pass, while tau still gets its full gradient).
-    grad_through_mask: bool = True
-
-    # ---- topk + soft gate --------------------------------------------------- #
-    # k: active weights per TopK group (forward support).
-    # j: extra exploratory positions per group that get gradients but do not
-    #    take part in the forward pass.
-    # Both accept an absolute count (>= 1) or a fraction of the group (< 1).
-    k: Optional[float] = None
-    j: float = 0.0
-    # tensor -> one TopK over the whole weight; row -> one per output row;
-    # block -> one per contiguous run of topk_block_size weights, i.e.
-    # (k):(block_size) structured sparsity.
-    topk_groups: str = "tensor"  # tensor | row | block
-    topk_block_size: int = 4
-    # does w get gradients on the whole Top-(k+j) support, or only on TopK?
-    w_grad_support: str = "topk_j"  # topk_j | topk
-    # fraction of TopK that changed at the last re-selection (cheap, but it
-    # keeps one extra bool tensor per masked layer alive)
-    topk_track_turnover: bool = True
-
-    # soft L0 over the Top-(k+j) support only:
-    #   lambda_topk * sum_{A} p  +  lambda_explore * sum_{B\A} p
-    # Unlike l0_coef below this is *not* normalized -- the lambdas are
-    # per-weight coefficients, so they live on the l0_coef / total_maskable
-    # scale.  It creates soft sparsity *within* the TopK budget: a selected
-    # gate can go to ~0 while still costing a TopK slot.
-    soft_l0_enabled: bool = False
-    soft_l0_lambda_topk: float = 0.0
-    soft_l0_lambda_explore: float = 0.0
-
-    # ---- objective terms -------------------------------------------------- #
-    # (a) smooth-L0 penalty:  l0_coef * sum_l L0_l
-    l0_coef: float = 0.0
-    # divide the penalty by the total number of maskable weights so that
-    # l0_coef is O(1)-interpretable instead of O(1e-8)
-    l0_normalize: bool = True
-
-    # (b) target-density penalty: target_density_coef * mean_l (L0_l / D_l - 1)**2
-    # with D_l = target_density_l * numel_l.  target_density is a *dense
-    # fraction* in (0, 1]; per-layer overrides are matched against the module
-    # name with fnmatch patterns (later patterns win).
-    target_density: Optional[float] = None
-    target_density_coef: float = 0.0
-    target_density_overrides: Dict[str, float] = field(default_factory=dict)
-
-    # ---- evaluation ------------------------------------------------------- #
-    # also evaluate with the hard mask (m > 0.5, i.e. w**2 > tau / s > 0)
-    eval_hard_mask: bool = True
-
-    def __post_init__(self) -> None:
-        if self.method not in ("ltp", "cs", "topk"):
-            raise ValueError(f"unknown sparsity method: {self.method}")
-        self._resolve_inverse_temperature()
-        if self.beta_schedule not in ("constant", "linear", "exponential", "cosine", "polynomial"):
-            raise ValueError(f"unknown beta_schedule: {self.beta_schedule}")
-        bad = set(self.targets) - {"mlp", "attn"}
-        if bad:
-            raise ValueError(f"unknown sparsity targets: {sorted(bad)}")
-        if self.beta_schedule == "exponential" and (self.beta_start <= 0 or self.beta_end <= 0):
-            raise ValueError("exponential beta schedule requires beta_start, beta_end > 0")
-        if self.target_density_coef != 0.0 and self.target_density is None:
-            raise ValueError("target_density_coef != 0 requires target_density to be set")
-        if self.target_density is not None and not 0.0 < self.target_density <= 1.0:
-            raise ValueError("target_density must be a dense fraction in (0, 1]")
-        if self.method != "ltp" and not self.grad_through_mask:
-            # Only LTP's mask depends on w, so the flag is a no-op elsewhere.
-            self.grad_through_mask = True
-        if self.s_init_mode not in ("constant", "uniform", "normal", "magnitude"):
-            raise ValueError(f"unknown s_init_mode: {self.s_init_mode}")
-        if self.method != "topk" and self.s_init_mode != "constant":
-            raise ValueError(f"s_init_mode={self.s_init_mode!r} is only used by method=topk")
-        if self.mask_lr_mult is not None and self.mask_lr_mult < 0:
-            raise ValueError("mask_lr_mult must be non-negative")
-        if self.method == "topk":
-            self._check_topk()
-
-    def _resolve_inverse_temperature(self) -> None:
-        """Map the ``inverse_temperature*`` aliases onto the beta schedule."""
-        if self.inverse_temperature_schedule is not None:
-            self.beta_schedule = self.inverse_temperature_schedule
-        if self.inverse_temperature is not None:
-            if self.inverse_temperature <= 0:
-                raise ValueError("inverse_temperature must be positive")
-            self.beta_start = float(self.inverse_temperature)
-            if self.inverse_temperature_schedule is None:
-                # a constant inverse temperature beta(t) = beta_0
-                self.beta_schedule = "constant"
-                self.beta_end = float(self.inverse_temperature)
-
-    def _check_topk(self) -> None:
-        if self.k is None or self.k <= 0:
-            raise ValueError("method=topk requires k > 0 (a count >= 1, or a fraction in (0, 1))")
-        if self.j < 0:
-            raise ValueError("j must be >= 0")
-        if self.topk_groups not in ("tensor", "row", "block"):
-            raise ValueError(f"unknown topk_groups: {self.topk_groups} (tensor | row | block)")
-        if self.topk_groups == "block" and self.topk_block_size <= 0:
-            raise ValueError("topk_block_size must be positive")
-        if self.w_grad_support not in ("topk_j", "topk"):
-            raise ValueError(f"unknown w_grad_support: {self.w_grad_support} (topk_j | topk)")
-        if (self.k < 1 and self.j >= 1) or (self.k >= 1 and 0 < self.j < 1):
-            raise ValueError("k and j must both be counts (>= 1) or both be fractions (< 1)")
-        if self.target_density_coef != 0.0:
-            raise ValueError(
-                "method=topk fixes the forward density at k per group; use k "
-                "instead of the target_density objective"
-            )
 
 
 # --------------------------------------------------------------------------- #
@@ -1088,7 +904,6 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     data: DataConfig = field(default_factory=DataConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
-    sparsity: SparsityConfig = field(default_factory=SparsityConfig)
     activation_bottleneck: ActivationBottleneckConfig = field(
         default_factory=ActivationBottleneckConfig
     )
@@ -1096,12 +911,6 @@ class Config:
     def __post_init__(self) -> None:
         # a single source of truth for the context length
         self.model.max_seq_len = max(self.model.max_seq_len, self.data.seq_len)
-        if self.sparsity.enabled and self.activation_bottleneck.enabled:
-            raise ValueError(
-                "sparsity (weight sparsity) and activation_bottleneck (activation "
-                "sparsity) are separate experiments with no defined combined "
-                "semantics -- enable exactly one"
-            )
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
@@ -1166,7 +975,7 @@ def _coerce(value: Any, target_type: Any) -> Any:
     if origin in (list, List):
         item_t = args[0] if args else Any
         if isinstance(value, str):
-            # a bare scalar is a one-element list ("--sparsity.targets=mlp")
+            # a bare scalar is a one-element list
             return [_coerce(value, item_t)]
         return [_coerce(v, item_t) for v in value]
     if origin in (tuple, Tuple):
@@ -1220,7 +1029,7 @@ def _parse_cli_value(text: str) -> Any:
         return ast.literal_eval(text)
     except (ValueError, SyntaxError):
         pass
-    # Shells eat quotes, so `--sparsity.targets=["mlp","attn"]` arrives as
+    # Shells eat quotes, so `--activation_bottleneck.layers=[0,1]` arrives as
     # `[mlp,attn]`.  Accept that, and bare `mlp,attn`, as a list of scalars.
     stripped = text.strip()
     inner = stripped[1:-1] if stripped.startswith("[") and stripped.endswith("]") else None
@@ -1252,6 +1061,7 @@ def apply_overrides(tree: Dict[str, Any], overrides: Sequence[str]) -> Dict[str,
 def load_config(path: Optional[str] = None, overrides: Sequence[str] = ()) -> Config:
     tree: Dict[str, Any] = _read_yaml(path) if path else {}
     tree = apply_overrides(tree, overrides)
+    _migrate_legacy(tree)
     return _from_dict(Config, tree)
 
 
@@ -1262,6 +1072,15 @@ def config_from_dict(tree: Dict[str, Any]) -> Config:
 
 
 def _migrate_legacy(tree: Dict[str, Any]) -> None:
+    # the weight-sparsity subsystem was removed 2026-09-28 (cleanup); archived
+    # configs carry a full "sparsity" block -- every archived run had
+    # enabled=false, so dropping it reproduces the run exactly
+    if isinstance(tree.get("sparsity"), dict):
+        if tree["sparsity"].get("enabled"):
+            raise ValueError(
+                "this config enables the removed weight-sparsity subsystem; "
+                "check out a commit before the 2026-09-28 cleanup to use it")
+        del tree["sparsity"]
     """Pin pre-``logit_scale`` checkpoints to the behaviour they were trained with.
 
     A checkpoint saved before ``logit_scale`` existed was trained with a tied head

@@ -255,8 +255,7 @@ class DecoupledAdamW(torch.optim.Optimizer):
         return loss
 
 
-def build_decoupled_optimizer(model, train_cfg, gain_mode: str = "row_col",
-                              mask_param_ids: Optional[Iterable[int]] = None):
+def build_decoupled_optimizer(model, train_cfg, gain_mode: str = "row_col"):
     """Group the model's parameters for :class:`DecoupledAdamW`.
 
     Embeddings (and the untied head) are the unit-row kind; every other dim>=2
@@ -264,12 +263,6 @@ def build_decoupled_optimizer(model, train_cfg, gain_mode: str = "row_col",
     Adam.  Weight decay is deliberately absent everywhere -- see the module
     docstring.
     """
-    if mask_param_ids:
-        raise ValueError(
-            "decouple=True with sparsity mask parameters is not supported: the "
-            "masked weights' gradients are not the fused-matrix gradients "
-            "Algorithm 2 expects"
-        )
     embed_ids = {id(model.tok_emb.weight), id(model.lm_head.weight)}
     md, embed, plain, seen = [], [], [], set()
     for p in model.parameters():

@@ -7,8 +7,5 @@ _base_:
 train:
   run_name: bn_dense
 
-sparsity:
-  enabled: false
-
 activation_bottleneck:
   enabled: false
