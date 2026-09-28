@@ -47,6 +47,9 @@ def main() -> None:
     assert len(d_models) == 1, f"mixed d_model: {d_models}"
     d_model = d_models.pop()
 
+    alphas = {round(d.get("md_alpha", 1.0), 6) for d in runs}
+    scaled = alphas != {1.0}
+
     fig, axes = plt.subplots(2, 2, figsize=(12.2, 8.4))
     for ax, (field, name, ylab, color, ref) in zip(axes.ravel(), PANELS):
         mean = [d["summary"][field]["geometric_mean"] for d in runs]
@@ -56,8 +59,11 @@ def main() -> None:
                         label="per-layer min-max")
         ax.plot(ks, mean, "-o", ms=5, color=color, label="geometric mean over layers")
         if ref:
+            lab = f"$K/d_{{model}}$  ($d={d_model}$)"
+            if scaled:
+                lab += ", before the gain spread"
             ax.plot(ks, [k / d_model for k in ks], ":", color=REF, lw=1.4,
-                    label=f"$K/d_{{model}}$  ($d={d_model}$)")
+                    label=lab)
         ax.axhline(1.0, color="k", ls=":", lw=0.9)
         ax.set_xscale("log", base=2)
         ax.set_yscale("log")
@@ -70,9 +76,12 @@ def main() -> None:
         ax.legend(fontsize=8.5, loc="best")
 
     d0 = runs[0]
+    tail = ("\n" + r"with $lpha=\sqrt{d_{model}/K}$ on each bottleneck's output, "
+            r"spread equally over the 4 MD gain vectors of its two projections"
+            if scaled else "")
     fig.suptitle(
         f"layer-averaged amplification vs K -- {d0['n_layers']}L d{d0['d_model']}, "
-        f"N={N}, {d0['placement']}, post-norm, at init",
+        f"N={N}, {d0['placement']}, post-norm, at init" + tail,
         fontsize=13)
     fig.tight_layout()
     fig.savefig(out_path, dpi=160, bbox_inches="tight")
