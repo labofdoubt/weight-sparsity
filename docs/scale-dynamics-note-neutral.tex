@@ -244,7 +244,7 @@ is typically accurate within a factor of about two in mid-depth blocks of health
 The approximation can also overestimate the gain by orders of magnitude when several ranks become nearly tied. In that case \(\delta\to0\) even though the exact kernel geometry and exact \(\Pisurr\) remain finite. This is an important limitation of any quantity based directly on a single local-spacing estimate.
 
 \begin{figure}[h]\centering
-\includegraphics[width=.9\textwidth]{figures/sdn\_Pi.png}
+\includegraphics[width=.9\textwidth]{figures/scale-dynamics/sdn\_Pi.png}
 \caption{Left: exact surrogate gain \(\Pisurr\) versus the realized gradient gain \(\|g_s\|^2/\|u\|^2\). Right: exact \(\Pisurr\) versus \(b^2/(4T\delta)\). Each point is one checkpoint/block pair. The checkpoint classes describe eventual run fate; only the post-collapse points are measured after collapse. No averaging over blocks is performed.}
 \end{figure}
 
@@ -264,7 +264,7 @@ The data support \(\Pisurr\) as the appropriate measure of instantaneous support
 % ============================================================
 
 \begin{figure}[h]\centering
-\includegraphics[width=\textwidth]{figures/sdn\_decomposition.png}
+\includegraphics[width=\textwidth]{figures/scale-dynamics/sdn\_decomposition.png}
 \caption{One-step change in \(\log R_{\mathrm{all}}\), decomposed into signed task drift, signed support-surrogate drift, and even heating, pooled over blocks at thirteen checkpoint states.}
 \end{figure}
 
@@ -283,14 +283,14 @@ per step pooled over blocks and approximately \(-0.10\) at the most extreme bloc
 \end{enumerate}
 
 \begin{figure}[h]\centering
-\includegraphics[width=\textwidth]{figures/sdn\_lr\_scaling.png}
+\includegraphics[width=\textwidth]{figures/scale-dynamics/sdn\_lr\_scaling.png}
 \caption{\label{fig:lr}Signed drift and heating versus learning-rate multiplier at three states, with linear and quadratic reference scalings.}
 \end{figure}
 
 The scale-response experiment isolates the signed support contribution. At the calm \(K=64,T=2\) state, the support drift crosses zero near \(\alpha\approx1.4\): it increases scale below that point and becomes restoring above it. At the stable \(K=32,T=1\) state, the signed surrogate contribution remains positive over the measured range but decreases in magnitude with increasing \(\alpha\). The task drift is \(\alpha\)-independent by construction and is measured to be so.
 
 \begin{figure}[h]\centering
-\includegraphics[width=\textwidth]{figures/sdn\_Falpha.png}
+\includegraphics[width=\textwidth]{figures/scale-dynamics/sdn\_Falpha.png}
 \caption{\label{fig:falpha}Signed surrogate and task drift under a function-preserving scale intervention \(z\to\alpha z\).}
 \end{figure}
 
@@ -310,7 +310,7 @@ opposed by signed task and support restoration. Local instability occurs when he
 % ============================================================
 
 \begin{figure}[h]\centering
-\includegraphics[width=\textwidth]{figures/sdn\_interventions.png}
+\includegraphics[width=\textwidth]{figures/scale-dynamics/sdn\_interventions.png}
 \caption{Left: continuations from the marginal \(K=96,T=1\) state. Middle: continuations from the collapsed \(T=0.1\) state. Right: one-step drift/heating decomposition along a densely sampled \(K=96,T=0.75\) collapse trajectory.}
 \end{figure}
 
@@ -433,12 +433,12 @@ there for a rate estimate.
 The dataset includes eighteen fixed-\(T\) campaign runs with checkpointed score ladders for \(K=32,64\) (20k-step horizon), the sixteen-configuration boundary-bracketing campaign over \(K=32\)--128 (10k-step horizon, shown as open circles), and a densely sampled \(K=96,T=0.75\) collapse trajectory; 35 runs in total. Among the new configurations, one (\(K=48,T=0.75\)) collapsed terminally, and two (\(K=32\), \(T=0.60\) and \(0.65\)) underwent large excursions that later recovered; the latter appear as high-burst-rate survivors between the calm survivors and the collapses in the dose--response panel.
 
 \begin{figure}[h]\centering
-\includegraphics[width=.94\textwidth]{figures/sdn\_pi\_fate\_map.png}
+\includegraphics[width=.94\textwidth]{figures/scale-dynamics/sdn\_pi\_fate\_map.png}
 \caption{Exact surrogate gain \(\Pisurr\) versus run fate, block, and training step. The worst-block gain rises toward collapse in failing runs and generally decreases in surviving runs. The surviving rise-and-return trajectory corresponds to the recoverable \(T=0.5\) burst.}
 \end{figure}
 
 \begin{figure}[h]\centering
-\includegraphics[width=.94\textwidth]{figures/sdn\_piapprox\_fate\_map.png}
+\includegraphics[width=.94\textwidth]{figures/scale-dynamics/sdn\_piapprox\_fate\_map.png}
 \caption{The same analysis using \(b^2/(4T\delta)\). The broad ordering remains, but within-block separation is weaker and near-zero \(\delta\) produces extreme outliers. The exact \(\Pisurr\) is preferable when the kernel tensors are available.}
 \end{figure}
 
