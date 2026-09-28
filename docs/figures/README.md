@@ -3,7 +3,9 @@
 One subfolder per campaign/note; every new figure goes into a
 subfolder (create one for a new campaign), never into this root.
 
-- `diag500m/` — 500M-scale diagnostics (layer activation/gradient probes)
+- `diag500m/` — 500M-scale diagnostics: layer activation/gradient probes
+  (`diag_*`), and per-module forward/backward gain of the bottleneck and its
+  post-norm (`gain_*`, from `analysis/module_gain.py`)
 - `init-pi/` — init-Pi heatmap grids (init-pi-grid*.pdf)
 - `kappa-ablation/` — kappa ablation: mass, gradient, encoder-row measurements (rblapsum-kappa-ablation.tex)
 - `kj/` — Top-(K+J) vs hard Top-K' (kj-vs-hard-topk.tex)
