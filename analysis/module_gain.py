@@ -33,6 +33,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import os
@@ -44,7 +45,7 @@ import torch.nn as nn
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from wsparse.bottleneck import apply_activation_bottleneck  # noqa: E402
-from wsparse.config import config_from_dict  # noqa: E402
+from wsparse.config import apply_overrides, config_from_dict  # noqa: E402
 from wsparse.data import build_streams  # noqa: E402
 from wsparse.model import build_model  # noqa: E402
 
@@ -73,6 +74,15 @@ def gain(sq_in: torch.Tensor, sq_out: torch.Tensor, forward: bool) -> dict:
     }
 
 
+def overridden(tree: dict, overrides) -> dict:
+    """The run config with CLI-style overrides applied (never in place)."""
+    if not overrides:
+        return tree
+    tree = copy.deepcopy(tree)
+    apply_overrides(tree, [f"--{o.lstrip('-')}" for o in overrides])
+    return tree
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", default="")
@@ -84,6 +94,10 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--offset", type=int, default=4242)
+    ap.add_argument("--override", action="append", default=[],
+                    help="config override applied to the loaded run config, "
+                         "e.g. --override activation_bottleneck.k=64 "
+                         "(repeatable; same syntax and coercion as the CLI)")
     args = ap.parse_args()
 
     assert bool(args.ckpt) != bool(args.init_config), \
@@ -92,7 +106,7 @@ def main() -> None:
 
     if args.ckpt:
         payload = torch.load(args.ckpt, map_location="cpu", weights_only=False)
-        cfg = config_from_dict(payload["config"])
+        cfg = config_from_dict(overridden(payload["config"], args.override))
         cfg.data.data_dir = args.data_dir
         model = build_model(cfg.model)
         bn = apply_activation_bottleneck(model, cfg.activation_bottleneck,
@@ -101,7 +115,8 @@ def main() -> None:
         step = int(payload["step"])
     else:
         from wsparse.utils import set_seed
-        cfg = config_from_dict(json.load(open(args.init_config)))
+        cfg = config_from_dict(overridden(json.load(open(args.init_config)),
+                                          args.override))
         cfg.data.data_dir = args.data_dir
         set_seed(cfg.train.seed)
         model = build_model(cfg.model)
