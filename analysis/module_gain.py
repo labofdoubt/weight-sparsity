@@ -139,6 +139,7 @@ def main() -> None:
                                          max_steps=cfg.train.max_steps)
         model.load_state_dict(payload["model"])
         step = int(payload["step"])
+        md_stats = {}
     else:
         from wsparse.utils import set_seed
         cfg = config_from_dict(overridden(json.load(open(args.init_config)),
@@ -148,9 +149,10 @@ def main() -> None:
         model = build_model(cfg.model)
         bn = apply_activation_bottleneck(model, cfg.activation_bottleneck,
                                          max_steps=cfg.train.max_steps)
+        md_stats = {}
         if cfg.model.decouple:
             from wsparse.decouple import md_init_
-            md_init_(model, cfg.model.decouple_gains)
+            md_stats = md_init_(model, cfg.model.decouple_gains)
         step = 0
     md_alpha = (math.sqrt(cfg.model.d_model / cb_k(cfg))
                 if str(args.md_alpha) == "auto" else float(args.md_alpha))
@@ -201,6 +203,13 @@ def main() -> None:
     model.to(device).train()
 
     cb = cfg.activation_bottleneck
+    for side in ("encoder", "decoder", "decoder_effective"):
+        st = md_stats.get(side)
+        if st:
+            print(f"[gain] {side:18s} mean |.|^2 {st['mean_sq_norm']:.6f}  "
+                  f"||W||_F {st['frobenius']:.4f}  "
+                  f"sv [{st['sv_min']:.4f}, {st['sv_max']:.4f}]  "
+                  f"gram rel err {st['gram_rel_err']:.3e}")
     print(f"[gain] {'init' if not args.ckpt else os.path.basename(args.ckpt)} "
           f"step={step} L={cfg.model.n_layers} d={cfg.model.d_model} "
           f"N={cb.n_features} K={cb.k} {cb.placement} "
@@ -298,6 +307,10 @@ def main() -> None:
         "bottleneck_decoder_scale": str(
             getattr(cfg.model, "bottleneck_decoder_scale", "none")),
         "g_D": float(getattr(bn.layers[0][1], "decoder_scale", 1.0)),
+        # what md_init_ measured on the weights this run actually used, so the
+        # artifact carries the evidence of its own geometry rather than just
+        # the config that asked for it
+        "md_init_stats": md_stats,
         "pnorm_gamma": str(args.pnorm_gamma),
         "pnorm_gamma_per_layer": {str(k): v for k, v in sorted(gammas.items())},
         "layers": [],
