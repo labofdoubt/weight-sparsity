@@ -98,6 +98,13 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--offset", type=int, default=4242)
+    ap.add_argument("--md-alpha-in", default="split",
+                    choices=["split", "decoder_col", "decoder_row",
+                             "encoder_col", "encoder_row"],
+                    help="where --md-alpha goes: \"split\" spreads it over "
+                         "all four gain vectors of the two projections; the "
+                         "others put the whole factor in one gain vector of "
+                         "one matrix (the fused weights end up identical)")
     ap.add_argument("--pnorm-gamma", default="1.0",
                     help="scale for the post-RMSNorm's gains; \"auto\" runs a "
                          "second pass with gamma = 1/sqrt(that layer's measured "
@@ -152,17 +159,35 @@ def main() -> None:
             raise SystemExit("--md-alpha needs model.decouple=true (the gains "
                              "it spreads into are MD's)")
         from wsparse.decouple import md_spread_gain_
-        per_matrix = math.sqrt(md_alpha)  # two matrices in series
-        gains = []
+        placement = str(args.md_alpha_in)
         for _, mod in bn.layers:
-            gains.append(md_spread_gain_(mod.in_proj.weight, per_matrix,
-                                         cfg.model.decouple_gains))
-            if not getattr(mod, "tied", False):
-                md_spread_gain_(mod.out_proj.weight, per_matrix,
-                                cfg.model.decouple_gains)
-        print(f"[gain] md gain spread: alpha={md_alpha:.4f} on each bottleneck's "
-              f"output = {per_matrix:.4f} per matrix = {gains[0]:.4f} per gain "
-              f"vector ({cfg.model.decouple_gains})")
+            if placement == "split":
+                # two matrices in series, so each takes the square root
+                per = math.sqrt(md_alpha)
+                md_spread_gain_(mod.in_proj.weight, per, cfg.model.decouple_gains)
+                if not getattr(mod, "tied", False):
+                    md_spread_gain_(mod.out_proj.weight, per,
+                                    cfg.model.decouple_gains)
+            else:
+                side, axis = placement.split("_")
+                if side == "encoder":
+                    target = mod.in_proj.weight
+                elif getattr(mod, "tied", False):
+                    raise SystemExit("a tied decoder IS the encoder, so a "
+                                     "decoder-only placement is ill-defined")
+                else:
+                    target = mod.out_proj.weight
+                gains = md_spread_gain_(target, md_alpha,
+                                        cfg.model.decouple_gains, where=axis)
+        if placement == "split":
+            per = math.sqrt(md_alpha)
+            print(f"[gain] md gain: alpha={md_alpha:.4f} on each bottleneck's "
+                  f"output, split = {per:.4f} per matrix = "
+                  f"{per ** 0.5:.4f} per gain vector ({cfg.model.decouple_gains})")
+        else:
+            print(f"[gain] md gain: alpha={md_alpha:.4f} on each bottleneck's "
+                  f"output, all of it in the {placement.replace('_', ' ')} gain "
+                  f"vector -> (g_row, g_col) = {gains}")
     if args.proj_scale != 1.0:
         # A tied decoder IS the encoder transposed, so scaling in_proj already
         # scales both sides; touching out_proj as well would square the factor.
@@ -266,6 +291,7 @@ def main() -> None:
         "batch": int(args.batch), "seq_len": int(cfg.data.seq_len),
         "offset": int(args.offset), "proj_scale": float(args.proj_scale),
         "md_alpha": float(md_alpha),
+        "md_alpha_in": str(args.md_alpha_in),
         "pnorm_gamma": str(args.pnorm_gamma),
         "pnorm_gamma_per_layer": {str(k): v for k, v in sorted(gammas.items())},
         "layers": [],

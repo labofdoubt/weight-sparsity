@@ -51,7 +51,7 @@ the matrix group's LR, and warmup is ``train.warmup_steps=0`` away.
 from __future__ import annotations
 
 import math
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -113,29 +113,51 @@ def md_init_(model, gain_mode: str = "row_col") -> Dict[str, int]:
 
 
 @torch.no_grad()
-def md_spread_gain_(p: torch.Tensor, scale: float, gain_mode: str = "row_col") -> float:
+def md_spread_gain_(p: torch.Tensor, scale: float, gain_mode: str = "row_col",
+                    where: str = "split") -> Tuple[float, float]:
     """Put a scale into a matrix's MD **gains**, not into its sphere radius.
 
-    Multiplies the fused weight by ``scale`` and splits that factor equally
-    across the matrix's gain vectors -- both of them under ``row_col``, the
-    single one under ``up_down`` -- by tagging the parameter with the initial
-    gain the optimizer should start from.  ``DecoupledAdamW`` then sets
-    ``softplus(raw) = scale**(1/n_gains)`` and keeps ``c_F`` at the *direction's*
-    norm, so ``W = diag(g_row) W_hat diag(g_col)`` still holds exactly at step 0.
+    Multiplies the fused weight by ``scale`` and places that factor in the
+    matrix's gain vectors, by tagging the parameter with the initial gains the
+    optimizer should start from.  ``DecoupledAdamW`` then sets
+    ``softplus(raw)`` there and keeps ``c_F`` at the *direction's* norm, so
+    ``W = diag(g_row) W_hat diag(g_col)`` still holds exactly at step 0.
+
+    ``where`` decides the placement:
+
+    ``"split"``  equally across the gain vectors the matrix has (both under
+                 ``row_col``, the single one under ``up_down``)
+    ``"row"``    all of it in ``g_row``   (one scalar per output row)
+    ``"col"``    all of it in ``g_col``   (one scalar per input column)
+
+    The fused weight is identical either way, so nothing about the forward or
+    backward at step 0 depends on the placement; what differs is which
+    parameters carry the factor, and therefore how training can move it.
 
     Scaling the fused weight on its own would put the factor into ``c_F``
-    instead, where the sphere freezes it for the whole run; in the gains it
-    stays learnable, which is the point of asking for it there.
+    instead, where the sphere freezes it for the whole run.
 
-    Returns the per-gain factor.  Call it after ``md_init_``, before the
+    Returns ``(g_row, g_col)``.  Call it after ``md_init_``, before the
     optimizer is built.
     """
     row, col = _wants_gains(p.shape, gain_mode)
-    n_gains = int(row) + int(col)
-    g0 = float(scale) ** (1.0 / n_gains)
-    p.mul_(float(scale))
-    p._md_gain0 = g0  # read once, in DecoupledAdamW._state_for
-    return g0
+    if where not in ("split", "row", "col"):
+        raise ValueError(f"unknown gain placement: {where!r} (split | row | col)")
+    if where == "row" and not row:
+        raise ValueError(f"a {tuple(p.shape)} matrix has no row gain under "
+                         f"decouple_gains={gain_mode!r}")
+    if where == "col" and not col:
+        raise ValueError(f"a {tuple(p.shape)} matrix has no column gain under "
+                         f"decouple_gains={gain_mode!r}")
+    scale = float(scale)
+    if where == "split":
+        g = scale ** (1.0 / (int(row) + int(col)))
+        gains = (g if row else 1.0, g if col else 1.0)
+    else:
+        gains = (scale if where == "row" else 1.0, scale if where == "col" else 1.0)
+    p.mul_(scale)
+    p._md_gain0 = gains  # read once, in DecoupledAdamW._state_for
+    return gains
 
 
 class DecoupledAdamW(torch.optim.Optimizer):
@@ -186,16 +208,16 @@ class DecoupledAdamW(torch.optim.Optimizer):
         state["v"] = torch.zeros_like(p)
         if kind == "md":
             row, col = _wants_gains(p.shape, gain_mode)
-            # 1 unless md_spread_gain_ asked for a different starting gain
-            g0 = float(getattr(p, "_md_gain0", 1.0))
-            raw0 = RAW_GAIN_ONE if g0 == 1.0 else math.log(math.expm1(g0))
+            # (1, 1) unless md_spread_gain_ asked for different starting gains
+            g_row, g_col = getattr(p, "_md_gain0", (1.0, 1.0))
+            raw = (lambda g: RAW_GAIN_ONE if g == 1.0 else math.log(math.expm1(g)))
             if row:
-                state["raw_grow"] = torch.full((p.shape[0],), raw0,
+                state["raw_grow"] = torch.full((p.shape[0],), raw(g_row),
                                                device=p.device, dtype=p.dtype)
                 state["grow_m"] = torch.zeros_like(state["raw_grow"])
                 state["grow_v"] = torch.zeros_like(state["raw_grow"])
             if col:
-                state["raw_gcol"] = torch.full((p.shape[1],), raw0,
+                state["raw_gcol"] = torch.full((p.shape[1],), raw(g_col),
                                                device=p.device, dtype=p.dtype)
                 state["gcol_m"] = torch.zeros_like(state["raw_gcol"])
                 state["gcol_v"] = torch.zeros_like(state["raw_gcol"])
@@ -203,8 +225,8 @@ class DecoupledAdamW(torch.optim.Optimizer):
             # at first sight and kept in the state so resume preserves it.  With
             # gains at 1 that is just ||W||; a spread gain divides back out.
             c_f = p.detach().float().norm()
-            if g0 != 1.0:
-                c_f = c_f / g0 ** (int(row) + int(col))
+            if (g_row, g_col) != (1.0, 1.0):
+                c_f = c_f / ((g_row if row else 1.0) * (g_col if col else 1.0))
             state["c_f"] = c_f.clone()
         return state
 

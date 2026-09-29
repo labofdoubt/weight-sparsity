@@ -168,7 +168,8 @@ def test_spread_gain_lands_in_the_gains_not_the_sphere(gains, per_matrix):
         for proj in (m.in_proj, m.out_proj):
             before[id(proj.weight)] = proj.weight.detach().clone()
             g0 = md_spread_gain_(proj.weight, per_matrix, gains)
-            assert g0 == pytest.approx(per_matrix ** (1.0 / n_gains))
+            want = per_matrix ** (1.0 / n_gains)
+            assert [g for g in g0 if g != 1.0] == pytest.approx([want] * n_gains)
 
     opt = build_decoupled_optimizer(model, _Train(), gain_mode=gains)
     _materialize_state(model, opt)
@@ -200,6 +201,35 @@ def test_spread_gain_lands_in_the_gains_not_the_sphere(gains, per_matrix):
     _, loss = model(x, x)
     loss.backward()
     opt.step()
+    _check_constraints(model, opt)
+
+
+@pytest.mark.parametrize("where,axis", [("col", "raw_gcol"), ("row", "raw_grow")])
+def test_gain_placement_in_one_vector(where, axis):
+    """All of the factor in one gain vector, the other left at 1.
+
+    The fused weight is the same as a split placement, so nothing at step 0
+    depends on this; what changes is which parameters carry the scale.
+    """
+    torch.manual_seed(0)
+    model = _model(bottleneck=True)
+    mods = [m for m in model.modules() if hasattr(m, "in_proj") and hasattr(m, "gate")]
+    scale = 9.0
+    for m in mods:
+        md_spread_gain_(m.out_proj.weight, scale, "row_col", where=where)
+    opt = build_decoupled_optimizer(model, _Train(), gain_mode="row_col")
+    _materialize_state(model, opt)
+    other = "raw_grow" if axis == "raw_gcol" else "raw_gcol"
+    for m in mods:
+        st = opt.state[m.out_proj.weight]
+        g = F.softplus(st[axis])
+        assert torch.allclose(g, torch.full_like(g, scale), atol=1e-4)
+        g_other = F.softplus(st[other])
+        assert torch.allclose(g_other, torch.ones_like(g_other), atol=1e-6)
+        # the encoder was not touched at all
+        st_enc = opt.state[m.in_proj.weight]
+        for k in ("raw_grow", "raw_gcol"):
+            assert torch.all(st_enc[k] == RAW_GAIN_ONE)
     _check_constraints(model, opt)
 
 
