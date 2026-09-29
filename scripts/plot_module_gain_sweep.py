@@ -89,17 +89,20 @@ def main() -> None:
         ax.legend(fontsize=8.5, loc="best")
 
     d0 = runs[0]
+    norms = {bool(d.get("post_norm", True)) for d in runs}
+    assert len(norms) == 1, f"mixed post_norm: {norms}"
+    norm_label = "post-norm" if norms.pop() else "no post-norm"
     tail = ""
     if scaled:
         tail += ("\n" + r"with $\alpha=\sqrt{d_{model}/K}$ on each bottleneck's "
                  r"output, spread equally over the 4 MD gain vectors of its two "
                  r"projections")
     if regamma:
-        tail += (", and the post-norm's $\gamma$ at "
+        tail += (r", and the post-norm's $\gamma$ at "
                  r"$1/\sqrt{G_{bwd}}$ per layer")
     fig.suptitle(
         f"layer-averaged amplification vs K -- {d0['n_layers']}L d{d0['d_model']}, "
-        f"N={N}, {d0['placement']}, post-norm, at init" + tail,
+        f"N={N}, {d0['placement']}, {norm_label}, at init" + tail,
         fontsize=13)
     fig.tight_layout()
     fig.savefig(out_path, dpi=160, bbox_inches="tight")
