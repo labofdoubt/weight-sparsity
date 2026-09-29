@@ -36,6 +36,27 @@ PANELS = [
 ]
 
 
+ALPHA_WHERE = {
+    "split": "spread equally over the 4 MD gain vectors of its two projections",
+    "decoder_col": "all of it in the decoder's per-column MD gains",
+    "decoder_row": "all of it in the decoder's per-row MD gains",
+    "encoder_col": "all of it in the encoder's per-column MD gains",
+    "encoder_row": "all of it in the encoder's per-row MD gains",
+}
+
+
+def alpha_phrase(runs):
+    """The alpha clause for a title, or "" when no run carries one."""
+    alphas = {round(d.get("md_alpha", 1.0), 6) for d in runs}
+    if alphas == {1.0}:
+        return ""
+    wheres = {str(d.get("md_alpha_in", "split")) for d in runs}
+    assert len(wheres) == 1, f"mixed md_alpha_in: {wheres}"
+    where = wheres.pop()
+    return ("\n" + r"with $\alpha=\sqrt{d_{model}/K}$ on each bottleneck's output, "
+            + ALPHA_WHERE.get(where, where))
+
+
 def main() -> None:
     out_path, paths = sys.argv[1], sys.argv[2:]
     runs = sorted((json.load(open(p)) for p in paths), key=lambda d: d["k"])
@@ -47,8 +68,7 @@ def main() -> None:
     assert len(d_models) == 1, f"mixed d_model: {d_models}"
     d_model = d_models.pop()
 
-    alphas = {round(d.get("md_alpha", 1.0), 6) for d in runs}
-    scaled = alphas != {1.0}
+    scaled = alpha_phrase(runs) != ""
     gammas = {str(d.get("pnorm_gamma", "1.0")) for d in runs}
     regamma = gammas != {"1.0"}
 
@@ -92,11 +112,7 @@ def main() -> None:
     norms = {bool(d.get("post_norm", True)) for d in runs}
     assert len(norms) == 1, f"mixed post_norm: {norms}"
     norm_label = "post-norm" if norms.pop() else "no post-norm"
-    tail = ""
-    if scaled:
-        tail += ("\n" + r"with $\alpha=\sqrt{d_{model}/K}$ on each bottleneck's "
-                 r"output, spread equally over the 4 MD gain vectors of its two "
-                 r"projections")
+    tail = alpha_phrase(runs)
     if regamma:
         tail += (r", and the post-norm's $\gamma$ at "
                  r"$1/\sqrt{G_{bwd}}$ per layer")

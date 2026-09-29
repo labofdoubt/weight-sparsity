@@ -37,6 +37,27 @@ NAME = {
 }
 
 
+ALPHA_WHERE = {
+    "split": "spread equally over the 4 MD gain vectors of its two projections",
+    "decoder_col": "all of it in the decoder's per-column MD gains",
+    "decoder_row": "all of it in the decoder's per-row MD gains",
+    "encoder_col": "all of it in the encoder's per-column MD gains",
+    "encoder_row": "all of it in the encoder's per-row MD gains",
+}
+
+
+def alpha_phrase(runs):
+    """The alpha clause for a title, or "" when no run carries one."""
+    alphas = {round(d.get("md_alpha", 1.0), 6) for d in runs}
+    if alphas == {1.0}:
+        return ""
+    wheres = {str(d.get("md_alpha_in", "split")) for d in runs}
+    assert len(wheres) == 1, f"mixed md_alpha_in: {wheres}"
+    where = wheres.pop()
+    return ("\n" + r"with $\alpha=\sqrt{d_{model}/K}$ on each bottleneck's output, "
+            + ALPHA_WHERE.get(where, where))
+
+
 def collect(paths, field):
     """``(ks, {layer: [gain per K]}, fwd_mean_per_K, meta)`` over sorted runs."""
     runs = sorted((json.load(open(p)) for p in paths), key=lambda d: d["k"])
@@ -62,15 +83,11 @@ def collect(paths, field):
 
 
 def title(meta, field):
-    alpha = round(meta.get("md_alpha", 1.0), 6) != 1.0
     head = (f"{NAME[field]} per layer -- {meta['n_layers']}L d{meta['d_model']}, "
             f"N={meta['n_features']}, {meta['placement']}, "
             + ("post-norm" if meta.get("post_norm", True) else "no post-norm")
             + ", at init")
-    if alpha:
-        head += ("\n" + r"with $\alpha=\sqrt{d_{model}/K}$ on each bottleneck's "
-                 r"output, spread over its 4 MD gain vectors")
-    return head
+    return head + alpha_phrase([meta])
 
 
 def style(ax, ks, field, legend=True, small=False):
