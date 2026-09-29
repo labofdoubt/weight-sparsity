@@ -322,6 +322,7 @@ def main() -> None:
     out["summary"] = {f: compounded(f) for f in
                       ("fwd_bottleneck", "fwd_post_norm",
                        "bwd_bottleneck", "bwd_post_norm")}
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w") as f:
         json.dump(out, f, indent=1)
     for f_, s in out["summary"].items():
