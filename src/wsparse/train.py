@@ -12,7 +12,7 @@ import json
 import math
 import os
 import time
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 import torch.distributed as dist
@@ -134,6 +134,33 @@ def load_for_inference(path: str, device: str = "cpu"):
 # --------------------------------------------------------------------------- #
 
 
+def log_bottleneck_geometry(counts: Dict[str, Any], cfg) -> None:
+    """The bottleneck's init geometry, from what ``md_init_`` measured.
+
+    Printed once at initialization.  ``md_init_`` returns the frame statistics
+    for the first bottleneck only -- they are identical by construction across
+    layers, and an SVD per layer is not free at 500M scale -- so that is what
+    this reports.
+    """
+    if "bottleneck_init" not in counts:
+        return  # no bottleneck in this model
+    print(f"[train] bottleneck init: {counts['bottleneck_init']}"
+          f"  d_model={cfg.model.d_model} d_bottleneck={counts['d_bottleneck']}"
+          f"  K={counts['k']} J={counts['j']} K_eff={counts['k_eff']:g}"
+          f"  decoder_scale={counts['decoder_scale_mode']} "
+          f"g_D={counts['g_D']:.6g}")
+    labels = {"encoder": "encoder rows", "decoder": "decoder cols",
+              "decoder_effective": "decoder cols x g_D"}
+    for side, label in labels.items():
+        st = counts.get(side)
+        if st is None:
+            continue
+        print(f"[train]   {label:22s} mean |.|^2 {st['mean_sq_norm']:.6f}"
+              f"  ||W||_F {st['frobenius']:.4f}"
+              f"  sv [{st['sv_min']:.4f}, {st['sv_max']:.4f}]"
+              f"  gram rel err {st['gram_rel_err']:.2e}")
+
+
 def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
           should_stop: Optional[Callable[[], Optional[str]]] = None) -> Dict[str, float]:
     """Train ``cfg``.  ``on_step(step, model, bottleneck, optimizer)``, when given,
@@ -211,6 +238,7 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
               f"{cfg.model.decouple_gains}, re-initialized {counts['matrix']} "
               f"matrices to their c_F spheres and {counts['embed']} embedding "
               f"tables to unit rows")
+        log_bottleneck_geometry(counts, cfg)
         if cfg.train.weight_decay:
             # Not an error: the sphere replaces decay under this method, so a
             # configured value is ignored rather than rejected -- but say so,
@@ -236,6 +264,7 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                   f"to their c_F norms and {counts['embed']} embedding tables to "
                   f"unit rows; training with plain AdamW "
                   f"(weight_decay={cfg.train.weight_decay})")
+            log_bottleneck_geometry(counts, cfg)
         optimizer = build_optimizer(model, cfg.train)
 
     weight_params = [p for p in model.parameters()]

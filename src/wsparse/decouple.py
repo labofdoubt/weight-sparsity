@@ -71,6 +71,69 @@ def _wants_gains(shape: torch.Size, mode: str):
     return (True, False) if d_out >= d_in else (False, True)
 
 
+def _bottleneck_modules(model) -> List:
+    """The model's ``SparseTopKBottleneck`` modules, in registration order.
+
+    Imported lazily: ``bottleneck.module`` imports ``model``, which this module
+    does not, so a top-level import here would only add a cycle risk for no
+    gain.
+    """
+    from .bottleneck.module import SparseTopKBottleneck
+
+    return [m for m in model.modules() if isinstance(m, SparseTopKBottleneck)]
+
+
+@torch.no_grad()
+def tight_frame_(W: torch.Tensor, d_model: int) -> torch.Tensor:
+    """Fill ``W`` with a tight frame over the ``d_model``-sized axis, in place.
+
+    For an encoder ``(d_b, d)`` this gives ``W^T W = (d_b/d) I_d`` (orthonormal
+    columns, scaled); for a decoder ``(d, d_b)`` it gives ``W W^T = (d_b/d)
+    I_d`` (orthonormal rows, scaled).  ``nn.init.orthogonal_`` already picks the
+    right side from the shape -- it orthogonalizes the longer axis -- so the
+    only thing to add is the ``sqrt(d_b/d)`` scale.
+
+    That scale is what keeps the two invariants MD relies on: the Frobenius norm
+    is ``sqrt(tr((d_b/d) I_d)) = sqrt(d_b)``, which is exactly the sphere radius
+    ``c_F = sqrt(d_out d_in / d_model)`` of both bottleneck matrices, and the
+    mean squared norm along the ``d_b``-sized axis is 1, so encoder rows and
+    decoder columns stay unit-norm on average as under the standard init.
+    """
+    d_b = W.shape[0] if W.shape[1] == d_model else W.shape[1]
+    if min(W.shape) != d_model:
+        raise ValueError(
+            f"a tight frame over d_model={d_model} needs one axis of that size, "
+            f"got {tuple(W.shape)}")
+    torch.nn.init.orthogonal_(W)
+    W.mul_(math.sqrt(d_b / d_model))
+    return W
+
+
+@torch.no_grad()
+def _frame_stats(W: torch.Tensor, d_model: int, singular: bool = True) -> Dict:
+    """Tight-frame diagnostics for one bottleneck matrix.
+
+    ``gram_rel_err`` is ``||W^T W - (d_b/d) I||_F / ||(d_b/d) I||_F`` for a tall
+    matrix and the ``W W^T`` version for a wide one -- the Gram that a tight
+    frame makes isotropic.  ``mean_sq_norm`` averages over the ``d_b``-sized
+    axis, so it is the mean squared encoder-row or decoder-column norm.
+    """
+    Wf = W.detach().float()
+    tall = Wf.shape[1] == d_model
+    d_b = Wf.shape[0] if tall else Wf.shape[1]
+    gram = Wf.t() @ Wf if tall else Wf @ Wf.t()
+    target = (d_b / d_model) * torch.eye(d_model, dtype=gram.dtype, device=gram.device)
+    out = {
+        "mean_sq_norm": float((Wf ** 2).sum(dim=1 if tall else 0).mean()),
+        "frobenius": float(Wf.norm()),
+        "gram_rel_err": float((gram - target).norm() / target.norm()),
+    }
+    if singular:
+        sv = torch.linalg.svdvals(Wf)
+        out["sv_min"], out["sv_max"] = float(sv.min()), float(sv.max())
+    return out
+
+
 @torch.no_grad()
 def md_init_(model, gain_mode: str = "row_col") -> Dict[str, int]:
     """Re-initialize ``model`` in place for magnitude-direction training.
@@ -92,6 +155,28 @@ def md_init_(model, gain_mode: str = "row_col") -> Dict[str, int]:
     d_model = int(model.cfg.d_model)
     embed_ids = {id(model.tok_emb.weight), id(model.lm_head.weight)}
     counts = {"embed": 0, "matrix": 0}
+
+    # ---- the bottleneck's own geometry, if it was asked for -------------- #
+    bn_init = str(getattr(model.cfg, "bottleneck_init", "standard"))
+    scale_mode = str(getattr(model.cfg, "bottleneck_decoder_scale", "none"))
+    # Always collected (neither call touches the RNG, so the standard path is
+    # bit-identical) so the returned diagnostics are complete in every mode.
+    frames, mods = {}, _bottleneck_modules(model)
+    if bn_init == "orthogonal":
+        for mod in mods:
+            if getattr(mod, "tied", False):
+                raise ValueError(
+                    "bottleneck_init='orthogonal' draws the encoder and the "
+                    "decoder as INDEPENDENT frames, which a tied decoder cannot "
+                    "be (it is the encoder transposed); set "
+                    "activation_bottleneck.tie_encoder_decoder=false")
+            # in_proj carries the value branch, score_proj the ranking one under
+            # gated_topk -- both map d_model -> n_features, so both are encoders
+            for proj in (mod.in_proj, mod.score_proj):
+                if proj is not None:
+                    frames[id(proj.weight)] = "encoder"
+            frames[id(mod.out_proj.weight)] = "decoder"
+
     seen = set()
     for name, p in model.named_parameters():
         if id(p) in seen:
@@ -101,6 +186,12 @@ def md_init_(model, gain_mode: str = "row_col") -> Dict[str, int]:
             torch.nn.init.normal_(p, mean=0.0, std=1.0)
             p.div_(p.norm(dim=-1, keepdim=True).clamp_min(1e-12))
             counts["embed"] += 1
+        elif id(p) in frames:
+            # Same Frobenius norm as the standard branch below (sqrt(d_b) for
+            # both bottleneck matrices), so the sphere the optimizer captures is
+            # unchanged -- only the direction's spectrum differs.
+            tight_frame_(p, d_model)
+            counts["matrix"] += 1
         elif p.dim() >= 2:
             torch.nn.init.normal_(p, mean=0.0, std=1.0 / math.sqrt(d_model))
             c_f = math.sqrt(p.shape[0] * p.shape[1] / d_model)
@@ -109,7 +200,59 @@ def md_init_(model, gain_mode: str = "row_col") -> Dict[str, int]:
         elif "bias" in name:
             p.zero_()
         # 1-D norm gains keep their own initialization (ones)
+
+    if mods:
+        counts.update(_apply_decoder_scale(mods, d_model, scale_mode, bn_init))
     return counts
+
+
+@torch.no_grad()
+def _apply_decoder_scale(mods: List, d_model: int, scale_mode: str,
+                         bn_init: str) -> Dict:
+    """Set every bottleneck's ``g_D`` and collect the init diagnostics.
+
+    ``g_D = sqrt(d_model / K_eff)`` under ``backward_preserving`` (1 otherwise),
+    which is the scale at which an isotropic gradient crosses the bottleneck
+    with unit energy: the effective decoder then satisfies ``W_D W_D^T =
+    (d_b/K_eff) I`` at init.  It goes nowhere near the row/column gains.
+
+    The expensive statistics (Gram error, singular values) are computed for the
+    FIRST bottleneck only -- they are identical by construction across layers,
+    and a 4096x1024 SVD per layer would cost more than the initialization.
+    """
+    from .bottleneck.module import effective_backward_support
+
+    stats: Dict = {"bottleneck_init": bn_init, "decoder_scale_mode": scale_mode}
+    k_eff = g_d = None
+    for mod in mods:
+        k_eff = effective_backward_support(mod.gate)
+        g_d = 1.0 if scale_mode == "none" else math.sqrt(d_model / k_eff)
+        mod.decoder_scale = g_d
+    stats.update({"k_eff": k_eff, "g_D": g_d, "bottlenecks": len(mods)})
+
+    first = mods[0]
+    stats["d_bottleneck"] = int(first.n_features)
+    stats["k"], stats["j"] = int(first.gate.k), int(first.gate.j)
+    if bn_init == "orthogonal":
+        stats["encoder"] = _frame_stats(first.in_proj.weight, d_model)
+        stats["decoder"] = _frame_stats(first.out_proj.weight, d_model)
+        if g_d != 1.0:
+            eff = _frame_stats(first.out_proj.weight * g_d, d_model)
+            # the effective decoder's Gram targets (d_b/K_eff) I, not (d_b/d) I
+            eff["gram_rel_err"] = _gram_rel_err(
+                first.out_proj.weight * g_d, d_model,
+                stats["d_bottleneck"] / k_eff)
+            stats["decoder_effective"] = eff
+    return stats
+
+
+@torch.no_grad()
+def _gram_rel_err(W: torch.Tensor, d_model: int, diag: float) -> float:
+    """``||W W^T - diag*I||_F / ||diag*I||_F`` for a wide matrix."""
+    Wf = W.detach().float()
+    gram = Wf @ Wf.t()
+    target = diag * torch.eye(d_model, dtype=gram.dtype, device=gram.device)
+    return float((gram - target).norm() / target.norm())
 
 
 @torch.no_grad()

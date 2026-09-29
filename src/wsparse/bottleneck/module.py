@@ -41,6 +41,23 @@ def selection_gain(k: int, n_features: int) -> float:
     return 2.0 * math.exp(-0.5 * t * t) / (math.sqrt(2.0 * math.pi) * p)
 
 
+def effective_backward_support(cfg) -> float:
+    """How many features per token carry gradient out of the gate, ``K_eff``.
+
+    The forward support is always ``K``.  Under a surrogate the ``J`` extra
+    candidates also receive gradient, and this returns the simplest estimate
+    that accounts for them, ``K + J`` -- which assumes their gradients have
+    comparable RMS to the active ones.  That is the approximation to replace
+    when a measured version is wanted (e.g. ``K + sum_j lambda_j^2`` over the
+    kernel weights); every caller goes through this function, so nothing else
+    has to change.
+    """
+    k, j = int(cfg.k), int(cfg.j)
+    if cfg.surrogate_mode == "hard":
+        return float(k)  # j is inert in the backward, diagnostics only
+    return float(k + j)
+
+
 class TiedDecoder(nn.Module):
     """Decoder whose weight *is* the encoder's, transposed.
 
@@ -134,6 +151,13 @@ class SparseTopKBottleneck(nn.Module):
         # and Identity costs nothing when the option is off.
         self.post_norm = (RMSNorm(self.d_model, norm_eps) if post_norm
                           else nn.Identity())
+        # Fixed global decoder scale g_D, part of the parameterization
+        #     W_D = g_D * diag(g_row) W_hat_D diag(g_col).
+        # A plain float (like the model's embed_scale), so state_dicts are
+        # unchanged and a rebuild from the config restores it; md_init_ sets it
+        # from model.bottleneck_decoder_scale.  1.0 is the identity and takes
+        # the untouched forward path below.
+        self.decoder_scale = 1.0
 
     def _init_projections(self, k: int) -> None:
         """Re-initialize the projections; ``default`` leaves PyTorch's alone.
@@ -183,12 +207,29 @@ class SparseTopKBottleneck(nn.Module):
         """Alias: ``in_proj`` is the value branch."""
         return self.in_proj
 
+    def decode(self, code: torch.Tensor) -> torch.Tensor:
+        """``out_proj`` with the fixed global decoder scale folded in.
+
+        ``g_D`` multiplies the decoder *weight*, not its bias, and it has to sit
+        inside the differentiable graph: the MD optimizer reads ``p.grad`` of the
+        fused weight and splits it into direction and gain gradients, so a
+        forward that carries ``g_D`` is what puts the same ``g_D`` factor into
+        all three (see decouple.DecoupledAdamW.step).  Scaling the linear's
+        output rather than a copy of the matrix is the same function and the
+        same gradients, without materializing ``g_D * W``.
+        """
+        if self.decoder_scale == 1.0:
+            return self.out_proj(code)
+        out = F.linear(code, self.out_proj.weight) * self.decoder_scale
+        bias = self.out_proj.bias
+        return out if bias is None else out + bias
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         value = self.in_proj(x)
         if self.gated:
-            y = self.out_proj(self.gate(self.score_proj(x), value))
+            y = self.decode(self.gate(self.score_proj(x), value))
         else:
-            y = self.out_proj(self.gate(value))
+            y = self.decode(self.gate(value))
         # Identity unless post_norm was requested; Identity holds no parameters
         # or buffers, so state_dicts are unchanged when the option is off.
         y = self.post_norm(y)
@@ -200,6 +241,8 @@ class SparseTopKBottleneck(nn.Module):
 
     def extra_repr(self) -> str:
         branches = "score+value" if self.gated else "single"
+        scale = "" if self.decoder_scale == 1.0 else f", g_D={self.decoder_scale:.4g}"
         return (
-            f"d_model={self.d_model}, n_features={self.n_features}, branches={branches}"
+            f"d_model={self.d_model}, n_features={self.n_features}, "
+            f"branches={branches}{scale}"
         )

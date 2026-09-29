@@ -84,6 +84,39 @@ class ModelConfig:
     # their ablation).  "up_down": one-sided -- d_out >= d_in gets the row gain,
     # d_out < d_in the column gain (nGPT-style alternation).
     decouple_gains: str = "row_col"  # row_col | up_down
+    # ---- bottleneck direction geometry (MD path only) --------------------- #
+    # How ``md_init_`` draws the bottleneck's two projections.  Everything else
+    # in the model -- attention, MLP, embeddings, the residual scaling -- is
+    # untouched by this field.
+    #   "standard"    what MD has always done: entrywise N(0, 1/d_model) then
+    #                 projected to the c_F sphere, so the directions are random
+    #                 Gaussian and the singular values spread over a
+    #                 Marchenko-Pastur bulk.
+    #   "orthogonal"  the encoder rows and the decoder columns are drawn as two
+    #                 INDEPENDENT tight frames instead: W_hat_E^T W_hat_E =
+    #                 (d_b/d) I and W_hat_D W_hat_D^T = (d_b/d) I, i.e. every
+    #                 singular value equals sqrt(d_b/d).  Same Frobenius norm
+    #                 (sqrt(d_b)), so the MD sphere radius c_F is unchanged, and
+    #                 the same mean encoder-row / decoder-column norm of 1 --
+    #                 only the *shape* of the spectrum differs.  Requires the MD
+    #                 path (decouple or md_init) and an untied decoder.
+    bottleneck_init: str = "standard"  # standard | orthogonal
+    # A fixed, NON-learnable global scale on the bottleneck decoder, carried as
+    # part of the parameterization
+    #     W_D = g_D * diag(g_row) W_hat_D diag(g_col),
+    # applied inside the forward graph, so autograd puts the same g_D factor
+    # into the gradients of W_hat, g_row and g_col (see SparseTopKBottleneck).
+    #   "none"                 g_D = 1
+    #   "backward_preserving"  g_D = sqrt(d_model / K_eff), the scale at which
+    #                          an isotropic gradient crosses the bottleneck with
+    #                          unit energy; K_eff comes from
+    #                          bottleneck.effective_backward_support (K for the
+    #                          hard forward, K+J when the surrogate also moves
+    #                          the J candidates).
+    # Deliberately kept out of the row/column gains: those stay at 1 so the
+    # semantics stay clean (direction / per-row / per-column / global).
+    bottleneck_decoder_scale: str = "none"  # none | backward_preserving
+
     # The MD *initialization* without the MD *optimizer*: apply exactly the
     # same re-initialization decouple=True applies (md_init_: unit-L2 embedding
     # rows with the fixed sqrt(d_model) forward upscale, every other >=2-D
@@ -163,6 +196,24 @@ class ModelConfig:
             raise ValueError(
                 "md_init=True requires pos_encoding='rope': the MD initialization "
                 "defines no treatment for a learned position table")
+        if self.bottleneck_init not in ("standard", "orthogonal"):
+            raise ValueError(
+                f"unknown bottleneck_init: {self.bottleneck_init!r} "
+                "(standard | orthogonal)")
+        if self.bottleneck_decoder_scale not in ("none", "backward_preserving"):
+            raise ValueError(
+                f"unknown bottleneck_decoder_scale: "
+                f"{self.bottleneck_decoder_scale!r} (none | backward_preserving)")
+        md_path = self.decouple or self.md_init
+        if self.bottleneck_init == "orthogonal" and not md_path:
+            raise ValueError(
+                "bottleneck_init='orthogonal' is implemented on the MD path; "
+                "set model.decouple=true or model.md_init=true (the "
+                "non-decoupled bottleneck keeps activation_bottleneck.init_mode)")
+        if self.bottleneck_decoder_scale != "none" and not md_path:
+            raise ValueError(
+                "bottleneck_decoder_scale is applied by the MD initialization; "
+                "set model.decouple=true or model.md_init=true")
         if self.md_init and self.logit_scale == "auto":
             raise ValueError(
                 "md_init=True needs logit_scale='none': the 'auto' multiplier is "
