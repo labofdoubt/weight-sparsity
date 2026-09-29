@@ -292,6 +292,12 @@ def main() -> None:
         "offset": int(args.offset), "proj_scale": float(args.proj_scale),
         "md_alpha": float(md_alpha),
         "md_alpha_in": str(args.md_alpha_in),
+        # the config-level bottleneck geometry (model.*), distinct from the
+        # --md-alpha knob above: the init's own directions and its fixed g_D
+        "bottleneck_init": str(getattr(cfg.model, "bottleneck_init", "standard")),
+        "bottleneck_decoder_scale": str(
+            getattr(cfg.model, "bottleneck_decoder_scale", "none")),
+        "g_D": float(getattr(bn.layers[0][1], "decoder_scale", 1.0)),
         "pnorm_gamma": str(args.pnorm_gamma),
         "pnorm_gamma_per_layer": {str(k): v for k, v in sorted(gammas.items())},
         "layers": [],

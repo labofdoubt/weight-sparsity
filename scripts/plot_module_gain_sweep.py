@@ -45,6 +45,25 @@ ALPHA_WHERE = {
 }
 
 
+def init_phrase(runs):
+    """The clause naming the config-level bottleneck geometry, or ""."""
+    inits = {str(d.get("bottleneck_init", "standard")) for d in runs}
+    scales = {str(d.get("bottleneck_decoder_scale", "none")) for d in runs}
+    assert len(inits) == 1 and len(scales) == 1, f"mixed geometry: {inits} {scales}"
+    init, scale = inits.pop(), scales.pop()
+    if init == "standard" and scale == "none":
+        return ""
+    bits = []
+    if init == "orthogonal":
+        bits.append("tight-frame encoder and decoder")
+    if scale == "backward_preserving":
+        g_d = {round(d.get("g_D", 1.0), 6) for d in runs}
+        tail = (f" (g_D = {g_d.pop():.4g})" if len(g_d) == 1
+                else r" ($g_D=\sqrt{d_{model}/K_{eff}}$)")
+        bits.append(r"backward-preserving decoder scale" + tail)
+    return "\n" + "with " + ", and ".join(bits)
+
+
 def alpha_phrase(runs):
     """The alpha clause for a title, or "" when no run carries one."""
     alphas = {round(d.get("md_alpha", 1.0), 6) for d in runs}
@@ -68,7 +87,7 @@ def main() -> None:
     assert len(d_models) == 1, f"mixed d_model: {d_models}"
     d_model = d_models.pop()
 
-    scaled = alpha_phrase(runs) != ""
+    scaled = alpha_phrase(runs) != "" or init_phrase(runs) != ""
     gammas = {str(d.get("pnorm_gamma", "1.0")) for d in runs}
     regamma = gammas != {"1.0"}
 
@@ -112,7 +131,7 @@ def main() -> None:
     norms = {bool(d.get("post_norm", True)) for d in runs}
     assert len(norms) == 1, f"mixed post_norm: {norms}"
     norm_label = "post-norm" if norms.pop() else "no post-norm"
-    tail = alpha_phrase(runs)
+    tail = init_phrase(runs) + alpha_phrase(runs)
     if regamma:
         tail += (r", and the post-norm's $\gamma$ at "
                  r"$1/\sqrt{G_{bwd}}$ per layer")
