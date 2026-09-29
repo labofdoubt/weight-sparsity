@@ -113,7 +113,7 @@ def main() -> None:
         if ref:
             lab = f"$K/d_{{model}}$  ($d={d_model}$)"
             if scaled:
-                lab += ", before the gain spread"
+                lab += ", unscaled"
             ax.plot(ks, [k / d_model for k in ks], ":", color=REF, lw=1.4,
                     label=lab)
         ax.axhline(1.0, color="k", ls=":", lw=0.9)
