@@ -204,6 +204,29 @@ def test_backward_preserving_scale(surrogate, k, j):
     assert float(st["c_f"]) == pytest.approx(math.sqrt(N_FEATURES), rel=1e-5)
 
 
+def test_backward_preserving_works_with_the_standard_init():
+    """g_D is independent of bottleneck_init: standard directions get it too.
+
+    The two knobs are orthogonal by design -- one picks the directions, the
+    other the global decoder scale -- so this combination has to apply g_D and
+    leave the directions Gaussian.
+    """
+    model, ctl, stats = build(bottleneck_init="standard",
+                              decoder_scale="backward_preserving", k=8, j=8)
+    want = math.sqrt(D_MODEL / 8)  # hard forward: K_eff = K
+    assert stats["g_D"] == pytest.approx(want)
+    assert "encoder" not in stats  # frame stats belong to the orthogonal mode
+    for _, mod in ctl.layers:
+        assert mod.decoder_scale == pytest.approx(want)
+        W = mod.out_proj.weight.detach()
+        # Gaussian directions, so NOT a tight frame ...
+        assert gram_rel_err(W, D_MODEL, N_FEATURES / D_MODEL) > 0.1
+        # ... but the sphere and the effective scale are exactly as intended
+        assert float(W.norm()) == pytest.approx(math.sqrt(N_FEATURES), rel=1e-5)
+        assert float(((W * mod.decoder_scale) ** 2).sum(dim=0).mean()) == (
+            pytest.approx(D_MODEL / 8, rel=1e-3))
+
+
 def test_decode_scales_the_weight_not_the_bias():
     """g_D multiplies W_D; the decoder bias keeps its own scale."""
     model, ctl, _ = build(decoder_scale="backward_preserving", bias=True)
