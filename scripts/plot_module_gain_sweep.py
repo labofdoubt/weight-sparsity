@@ -54,6 +54,17 @@ def main() -> None:
 
     fig, axes = plt.subplots(2, 2, figsize=(12.2, 8.4))
     for ax, (field, name, ylab, color, ref) in zip(axes.ravel(), PANELS):
+        if any(d["summary"].get(field) is None for d in runs):
+            # the module is absent in this configuration (post_norm: false),
+            # so the panel stays, empty and labelled, to keep the 2x2 layout
+            # comparable with the runs that have it
+            ax.text(0.5, 0.5, "no post-norm\nin this configuration",
+                    ha="center", va="center", fontsize=11, color=REF,
+                    transform=ax.transAxes)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_title(name, fontsize=11.5)
+            continue
         mean = [d["summary"][field]["geometric_mean"] for d in runs]
         lo = [d["summary"][field]["min"] for d in runs]
         hi = [d["summary"][field]["max"] for d in runs]
@@ -97,7 +108,8 @@ def main() -> None:
     print(f"{'K':>6} {'bwd_bn':>9} {'/(K/d)':>7} {'bwd_pn':>9} "
           f"{'fwd_bn':>9} {'fwd_pn':>9} {'fwd net':>8} {'bwd net':>8}")
     for d in runs:
-        g = {f: d["summary"][f]["geometric_mean"] for f, *_ in PANELS}
+        g = {f: (d["summary"][f] or {}).get("geometric_mean", float("nan"))
+             for f, *_ in PANELS}
         print(f"{d['k']:6d} {g['bwd_bottleneck']:9.4f} "
               f"{g['bwd_bottleneck'] / (d['k'] / d_model):7.3f} {g['bwd_post_norm']:9.4f} "
               f"{g['fwd_bottleneck']:9.4f} {g['fwd_post_norm']:9.4f} "
