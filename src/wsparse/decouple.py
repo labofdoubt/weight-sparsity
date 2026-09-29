@@ -117,19 +117,26 @@ def _frame_stats(W: torch.Tensor, d_model: int, singular: bool = True) -> Dict:
     matrix and the ``W W^T`` version for a wide one -- the Gram that a tight
     frame makes isotropic.  ``mean_sq_norm`` averages over the ``d_b``-sized
     axis, so it is the mean squared encoder-row or decoder-column norm.
+
+    Computed in float64 on purpose.  ``md_init_`` runs after ``model.to(device)``
+    and after ``allow_tf32 = True``, so an fp32 Gram of a 1536x768 frame reads
+    2e-4 on CUDA -- a property of TF32's 10-bit mantissa, not of the frame,
+    which is orthonormal to 4e-7.  One float64 matmul per reported matrix (the
+    first bottleneck only) is cheap enough to make the number mean what it says.
     """
-    Wf = W.detach().float()
-    tall = Wf.shape[1] == d_model
-    d_b = Wf.shape[0] if tall else Wf.shape[1]
-    gram = Wf.t() @ Wf if tall else Wf @ Wf.t()
-    target = (d_b / d_model) * torch.eye(d_model, dtype=gram.dtype, device=gram.device)
+    Wd = W.detach().double()
+    tall = Wd.shape[1] == d_model
+    d_b = Wd.shape[0] if tall else Wd.shape[1]
+    gram = Wd.t() @ Wd if tall else Wd @ Wd.t()
+    target = (d_b / d_model) * torch.eye(d_model, dtype=gram.dtype,
+                                         device=gram.device)
     out = {
-        "mean_sq_norm": float((Wf ** 2).sum(dim=1 if tall else 0).mean()),
-        "frobenius": float(Wf.norm()),
+        "mean_sq_norm": float((Wd ** 2).sum(dim=1 if tall else 0).mean()),
+        "frobenius": float(Wd.norm()),
         "gram_rel_err": float((gram - target).norm() / target.norm()),
     }
     if singular:
-        sv = torch.linalg.svdvals(Wf)
+        sv = torch.linalg.svdvals(Wd)
         out["sv_min"], out["sv_max"] = float(sv.min()), float(sv.max())
     return out
 
@@ -248,9 +255,9 @@ def _apply_decoder_scale(mods: List, d_model: int, scale_mode: str,
 
 @torch.no_grad()
 def _gram_rel_err(W: torch.Tensor, d_model: int, diag: float) -> float:
-    """``||W W^T - diag*I||_F / ||diag*I||_F`` for a wide matrix."""
-    Wf = W.detach().float()
-    gram = Wf @ Wf.t()
+    """``||W W^T - diag*I||_F / ||diag*I||_F`` for a wide matrix, in float64."""
+    Wd = W.detach().double()
+    gram = Wd @ Wd.t()
     target = diag * torch.eye(d_model, dtype=gram.dtype, device=gram.device)
     return float((gram - target).norm() / target.norm())
 
