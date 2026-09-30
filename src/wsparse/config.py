@@ -528,6 +528,46 @@ class ActivationBottleneckConfig:
     # tie_encoder_decoder, which then leaves a single matrix for the stack.
     share_projections: bool = False
 
+    # ---- depth: the selection gain of a stream bottleneck ----------------- #
+    # Abs-TopK keeps the K LARGEST of N coefficients, so the kept values are
+    # magnitude-biased: for Gaussian codes their mean square is
+    #     s^2 = E[z^2 | |z| >= t] = 1 + 2 t phi(t) / rho,   rho = K/N,
+    # times that of a typical coefficient (4.02 at K/N = 1/8), while a gradient
+    # direction the selection did not pick sees only the unbiased share.  The
+    # forward gain of a stream bottleneck therefore exceeds its backward gain by
+    # s^2 in energy, a ratio no scalar (g_D, a post-norm, MD gains) can change;
+    # on a stream placement it compounds as s^(2 L).  See
+    # docs/stream-bottleneck-depth.tex.  The two options below remove it.
+    #
+    # value_shift: shrink the kept values toward zero,
+    #     y_i = sign(z_i) * max(|z_i| - delta, 0)    for i in TopK,
+    # so they no longer carry the selection bias.  Hard forward, abs_topk only.
+    #   "none"    y_i = z_i (the plain TopK forward)
+    #   "fixed"   delta = value_shift_lambda * RMS(z), the RMS over all N
+    #             coefficients of the token; None -> lambda*(K/N), the shift at
+    #             which Gaussian codes come out with mean square RMS(z)^2
+    #             (1.044 at K/N = 1/8; bottleneck.module.critical_shift)
+    #   "energy"  delta per token, solved so that mean_TopK y^2 = mean_all z^2:
+    #             the kept values carry exactly the energy of a selection that
+    #             ignored magnitude, whatever the code distribution
+    # Features whose |z_i| falls below delta output 0, so the support is at most
+    # K (at initialization delta ~ 1.04 RMS < t ~ 1.53 RMS and none do).
+    value_shift: str = "none"  # none | fixed | energy
+    value_shift_lambda: Optional[float] = None
+    # code_residual: carry the K-sparse CODE between blocks instead of
+    # re-encoding the decoded stream,
+    #     c_0 = TopK(E x_emb),  x_l = g_D D c_l,
+    #     c_{l+1} = TopK(c_l + code_residual_scale * E Delta_l(x_l)),
+    # where Delta_l is block l's attention + MLP contribution.  TopK is the
+    # Euclidean projection onto K-sparse vectors, so a block that contributes
+    # nothing leaves the code unchanged and the carry's Jacobian is the support
+    # mask: the stack is a residual network in code space, and every stream
+    # between blocks is still exactly a K-sparse code in the one dictionary.
+    # Requires placement=residual_out, layers=all, share_projections=true and
+    # post_norm=false; adds one entry gate (no parameters) for c_0.
+    code_residual: bool = False
+    code_residual_scale: float = 1.0
+
     # LapSum barrier solve: bisection stops at this absolute residual on
     # sum p_i = K, in solver_dtype (float32 keeps the boundary reproducible
     # under bf16 training).
@@ -626,6 +666,45 @@ class ActivationBottleneckConfig:
                 )
         if self.solver_dtype not in ("float32", "float64"):
             raise ValueError(f"unknown solver_dtype: {self.solver_dtype} (float32 | float64)")
+        if self.value_shift not in ("none", "fixed", "energy"):
+            raise ValueError(
+                f"unknown value_shift: {self.value_shift!r} (none | fixed | energy)")
+        if self.value_shift != "none":
+            if self.selection_mode != "abs_topk" or self.surrogate_mode != "hard":
+                raise ValueError(
+                    "value_shift shrinks the kept magnitudes of the hard forward; "
+                    "it needs selection_mode='abs_topk' and surrogate_mode='hard', "
+                    f"got {self.selection_mode!r} / {self.surrogate_mode!r}")
+        if self.value_shift_lambda is not None:
+            if self.value_shift != "fixed":
+                raise ValueError(
+                    "value_shift_lambda is the 'fixed' mode's multiplier; set "
+                    f"value_shift='fixed' (got {self.value_shift!r})")
+            if self.value_shift_lambda < 0:
+                raise ValueError("value_shift_lambda must be >= 0")
+        if self.code_residual:
+            if parse_placements(self.placement) != ["residual_out"]:
+                raise ValueError(
+                    "code_residual carries the code between blocks, so the "
+                    "bottleneck must be the stream itself at every block's tail: "
+                    f"placement='residual_out' only, got {self.placement!r}")
+            if not self.share_projections:
+                raise ValueError(
+                    "code_residual needs one dictionary for the whole stack: set "
+                    "share_projections=true")
+            if self.post_norm:
+                raise ValueError(
+                    "code_residual carries the code values themselves; a post-norm "
+                    "on the decoded stream has no place in it (post_norm=false)")
+            if self.selection_mode == "gated_topk":
+                raise ValueError("code_residual ranks the carried code itself; "
+                                 "gated_topk is not supported")
+            if self.value_shift != "none":
+                raise ValueError(
+                    "value_shift would shrink the carried code at every block; "
+                    "it is not meant to be combined with code_residual")
+            if not self.code_residual_scale > 0:
+                raise ValueError("code_residual_scale must be positive")
         # shape rules live with the gate so the module can be built standalone
         from .bottleneck.gate import validate_gate_shapes
 

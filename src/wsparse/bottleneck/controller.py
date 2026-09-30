@@ -139,6 +139,31 @@ class ActivationBottleneckController:
                 setattr(block, _PLACEMENT_ATTR[name], bottleneck)
                 label = f"blocks.{i}" if len(placements) == 1 else f"blocks.{i}.{name}"
                 self.layers.append((label, bottleneck))
+        if getattr(cfg, "code_residual", False):
+            self._install_code_residual(indices, len(blocks), d_model, norm_eps, source)
+
+    def _install_code_residual(self, indices, n_blocks: int, d_model: int,
+                               norm_eps: float, source) -> None:
+        """The entry gate that makes ``c_0``, and the model-side switch.
+
+        The per-block modules above already hold the one shared dictionary; the
+        code-residual forward (TransformerLM._code_residual_stack) additionally
+        needs a gate for the embedding's code before block 0.  It adopts the
+        same projections, so it adds no parameters -- only its own usage
+        buffers.  Registered on the model (``model.code_entry``), so it is part
+        of the state_dict and of ``model.modules()``, which is how md_init_
+        finds it to set its decoder scale.
+        """
+        cfg = self.cfg
+        if list(indices) != list(range(n_blocks)):
+            raise ValueError(
+                "code_residual carries the code through EVERY block: "
+                f"layers must be 'all', got {cfg.layers!r}")
+        entry = SparseTopKBottleneck(d_model, cfg, bias=cfg.bias, post_norm=False,
+                                     norm_eps=norm_eps, share_from=source)
+        self.model.code_entry = entry
+        self.model.code_residual_scale = float(cfg.code_residual_scale)
+        self.layers.insert(0, ("entry", entry))
 
 
     def parameters(self) -> List[nn.Parameter]:

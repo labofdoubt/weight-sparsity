@@ -163,6 +163,18 @@ class Block(nn.Module):
         x = self.residual_out_bottleneck(x)
         return x
 
+    def branches(self, x: torch.Tensor) -> torch.Tensor:
+        """The block's residual contribution ``Delta`` with no stream bottleneck.
+
+        ``forward`` minus the stream placements: attention then MLP, each added
+        as in ``forward``, returned as the sum of the two contributions rather
+        than as ``x + Delta`` (the code-residual stack encodes ``Delta`` alone).
+        """
+        a = self.post_attn_bottleneck(self.attn(self.norm1(x)))
+        m = self.post_mlp_bottleneck(
+            self.mlp(self.mlp_bottleneck(self.norm2(x + a))))
+        return a + m
+
 
 class TransformerLM(nn.Module):
     def __init__(self, cfg: ModelConfig):
@@ -282,8 +294,14 @@ class TransformerLM(nn.Module):
             pos = torch.arange(T, device=idx.device)
             x = x + self.pos_emb(pos)[None]
         x = self.emb_dropout(x)
-        for block in self.blocks:
-            x = block(x)
+        # installed by the bottleneck controller under code_residual; absent
+        # otherwise, so plain models keep their state_dict and forward
+        entry = getattr(self, "code_entry", None)
+        if entry is None:
+            for block in self.blocks:
+                x = block(x)
+        else:
+            x = self._code_residual_stack(x, entry)
         x = self.norm_f(x)
         logits = self.lm_head(x)
         if self.logit_mult != 1.0:
@@ -294,6 +312,26 @@ class TransformerLM(nn.Module):
                 logits.view(-1, logits.size(-1)).float(), targets.reshape(-1), ignore_index=-100
             )
         return logits, loss
+
+    def _code_residual_stack(self, x: torch.Tensor, entry: nn.Module) -> torch.Tensor:
+        """The block stack with the K-sparse code, not the stream, carried.
+
+            c_0 = TopK(E x),   x_l = g_D D c_l,
+            c_{l+1} = TopK(c_l + alpha * E Delta_l(x_l)),   returns g_D D c_L
+
+        with one shared encoder ``E`` / decoder ``D`` (share_projections) and
+        each block's own gate.  TopK is the Euclidean projection onto K-sparse
+        vectors, so a block with ``Delta = 0`` is the identity on the code and
+        the carry's Jacobian is the support mask -- the residual connection of a
+        pre-norm transformer, moved into code space.
+        """
+        alpha = float(getattr(self, "code_residual_scale", 1.0))
+        code = entry.gate(entry.in_proj(x))
+        for block in self.blocks:
+            bot = block.residual_out_bottleneck
+            delta = block.branches(entry.decode(code))
+            code = bot.gate(code + alpha * bot.in_proj(delta))
+        return entry.decode(code)
 
     @torch.no_grad()
     def generate(

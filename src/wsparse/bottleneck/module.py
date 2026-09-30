@@ -42,6 +42,40 @@ def selection_gain(k: int, n_features: int) -> float:
     return 2.0 * math.exp(-0.5 * t * t) / (math.sqrt(2.0 * math.pi) * p)
 
 
+def selection_energy_gain(k: int, n_features: int) -> float:
+    """``s^2 = E[z^2 | z survives abs-TopK]`` for standard-normal coefficients.
+
+    The ratio of the kept coefficients' mean square to that of a typical one:
+    ``1 + 2 t phi(t) / rho`` with ``P(|Z| > t) = rho = k/n``.  It is the factor
+    by which a stream bottleneck's forward energy gain exceeds its backward one
+    at initialization (4.02 at k/n = 1/8, 8.90 at 1/128), and no rescaling of
+    the bottleneck changes it.
+    """
+    p = min(1.0, max(1e-12, k / max(1, n_features)))
+    if p >= 1.0:
+        return 1.0
+    t = math.sqrt(2.0) * float(
+        torch.erfinv(torch.tensor(1.0 - p, dtype=torch.float64))
+    )
+    phi = math.exp(-0.5 * t * t) / math.sqrt(2.0 * math.pi)
+    return 1.0 + 2.0 * t * phi / p
+
+
+def critical_shift(k: int, n_features: int) -> float:
+    """The ``lambda`` at which shifted abs-TopK carries no selection gain.
+
+    Solves ``E[(|Z| - lambda)^2 | |Z| > t] = 1`` for standard-normal ``Z``:
+    with ``m1 = E[|Z| | kept] = selection_gain(k, n)`` and ``m2 =
+    selection_energy_gain(k, n)`` it is ``m1 - sqrt(m1^2 - m2 + 1)``.  1.044 at
+    k/n = 1/8, 0.400 at 1/2, 2.011 at 1/128; 0 when nothing is dropped.
+    """
+    if k >= n_features:
+        return 0.0
+    m1 = selection_gain(k, n_features)
+    m2 = selection_energy_gain(k, n_features)
+    return m1 - math.sqrt(max(0.0, m1 * m1 - m2 + 1.0))
+
+
 def effective_backward_support(cfg) -> float:
     """How many features per token carry gradient out of the gate, ``K_eff``.
 
@@ -140,6 +174,11 @@ class SparseTopKBottleneck(nn.Module):
             solver_dtype=cfg.solver_dtype,
             log_diagnostics=cfg.log_diagnostics,
             hard_inference=cfg.hard_inference,
+            value_shift=getattr(cfg, "value_shift", "none"),
+            value_shift_lambda=(
+                getattr(cfg, "value_shift_lambda", None)
+                if getattr(cfg, "value_shift_lambda", None) is not None
+                else critical_shift(int(cfg.k), self.n_features)),
         )
         self.init_mode = getattr(cfg, "init_mode", "default")
         if self.init_mode in _RENAMED_INIT_MODES:

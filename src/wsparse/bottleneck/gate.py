@@ -52,9 +52,23 @@ class AdaptiveLapSumTopKGate(nn.Module):
         solver_dtype: str = "float32",
         log_diagnostics: bool = True,
         hard_inference: bool = True,
+        value_shift: str = "none",
+        value_shift_lambda: float = 0.0,
     ):
         super().__init__()
         validate_gate_shapes(n_features, k, j, surrogate_mode)
+        if value_shift not in ("none", "fixed", "energy"):
+            raise ValueError(
+                f"unknown value_shift: {value_shift!r} (none | fixed | energy)")
+        if value_shift != "none" and (selection_mode != "abs_topk"
+                                      or surrogate_mode != "hard"):
+            raise ValueError(
+                "value_shift needs selection_mode='abs_topk' and "
+                f"surrogate_mode='hard', got {selection_mode!r} / {surrogate_mode!r}")
+        # See ActivationBottleneckConfig.value_shift.  Plain attributes: the
+        # shift is a fixed rule, not a parameter, so state_dicts are unchanged.
+        self.value_shift = value_shift
+        self.value_shift_lambda = float(value_shift_lambda)
         if selection_mode not in ("topk", "abs_topk", "gated_topk"):
             raise ValueError(
                 f"unknown selection_mode: {selection_mode!r} (topk | abs_topk | gated_topk)"
@@ -255,6 +269,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 # gradient on the J candidates is exactly zero by construction
                 # rather than merely absent.
                 self._record_hard(cand_scores.to(self.solver_dtype).detach())
+            if self.value_shift != "none":
+                return self._shifted(value, hard_mask)
             return value * hard_mask
 
         cand = cand_scores.to(self.solver_dtype)
@@ -289,6 +305,44 @@ class AdaptiveLapSumTopKGate(nn.Module):
         if self.log_diagnostics:
             self._record(detached, b, t, p.detach(), solver_diag)
         return value * mask
+
+    # ---- value shift (hard forward) -------------------------------------------- #
+    def _shifted(self, value: torch.Tensor, hard_mask: torch.Tensor) -> torch.Tensor:
+        """``sign(z) * max(|z| - delta, 0)`` on the TopK support, zero elsewhere.
+
+        ``delta`` is per token: ``value_shift_lambda * RMS(z)`` ("fixed"), or the
+        root of ``mean_S (|z| - delta)^2 = mean_all z^2`` ("energy"), i.e.
+        ``delta = m1 - sqrt(m1^2 - m2 + sigma^2)`` with ``m1``, ``m2`` the mean
+        and mean square of the kept magnitudes and ``sigma^2`` the mean square
+        of all N.  ``m2 >= sigma^2`` (the kept are the largest) makes the root
+        at most ``m1``, so ``delta >= 0``; when the kept magnitudes are so spread
+        that no shift gets down to ``sigma^2``, the discriminant is floored and
+        ``delta ~ m1``, the shift of least energy.  Statistics in float32,
+        gradients through everything (delta included): this is the forward.
+        """
+        # at least float32 (bf16/fp16 are promoted; float64 stays float64)
+        v = value.to(torch.promote_types(value.dtype, torch.float32))
+        m = hard_mask.to(v.dtype)
+        sig2 = (v * v).mean(-1, keepdim=True)
+        if self.value_shift == "fixed":
+            delta = self.value_shift_lambda * sig2.sqrt()
+        else:
+            a = v.abs() * m
+            m1 = a.sum(-1, keepdim=True) / self.k
+            m2 = (a * a).sum(-1, keepdim=True) / self.k
+            # floored away from 0: sqrt's slope is unbounded there
+            disc = (m1 * m1 - m2 + sig2).clamp_min(1e-6 * sig2.detach()
+                                                   + torch.finfo(v.dtype).tiny)
+            delta = m1 - disc.sqrt()
+        out = v.sign() * torch.relu(v.abs() - delta) * m
+        if self.log_diagnostics and self.training:
+            with torch.no_grad():
+                sig = sig2.sqrt().clamp_min(torch.finfo(v.dtype).tiny)
+                self._forward_diag["shift_rel"] = (delta / sig).mean()
+                # kept by TopK but below delta, so output as zero
+                self._forward_diag["shift_clamped_frac"] = (
+                    ((v.abs() <= delta) & (m > 0)).float().sum(-1) / self.k).mean()
+        return out.to(value.dtype)
 
     # ---- rblapsum ------------------------------------------------------------- #
     def _rblapsum(self, scores: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
@@ -468,10 +522,15 @@ class AdaptiveLapSumTopKGate(nn.Module):
         return floor.clamp_min(self.barrier_solver_tol * max(self.k, 1))
 
     def extra_repr(self) -> str:
+        shift = ""
+        if self.value_shift == "fixed":
+            shift = f", value_shift=fixed({self.value_shift_lambda:.4g})"
+        elif self.value_shift == "energy":
+            shift = ", value_shift=energy"
         return (
             f"n_features={self.n_features}, k={self.k}, j={self.j}, "
             f"mode={self.selection_mode}, surrogate={self.surrogate_mode}, "
-            f"temperature={self.temperature:g}"
+            f"temperature={self.temperature:g}{shift}"
         )
 
 
