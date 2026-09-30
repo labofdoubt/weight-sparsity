@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Run TensorBoard on this machine over a local copy of the box's event files.
 #
-#   bash scripts/tb_local.sh                 # sync, then serve on :6006
+#   TB_HOST=<host> TB_SSH_PORT=<port> bash scripts/tb_local.sh   # sync, then serve on :6006
 #   bash scripts/tb_local.sh --no-sync       # serve what is already local
 #   bash scripts/tb_local.sh --port 6007
+#
+# There is no default box: boxes are rented and destroyed as needed, so the
+# address is the current box's `ssh -p <port> root@<host>`.
 #
 # Why bother, when `ssh -L 16006:localhost:16006` already works: a local copy
 # keeps working after the box is stopped or destroyed, survives the SSH session
@@ -13,8 +16,8 @@
 # Only event files and small metadata are pulled (~100 MB), never checkpoints.
 set -euo pipefail
 
-HOST=${TB_HOST:-174.164.26.93}
-PORT_SSH=${TB_SSH_PORT:-45324}
+HOST=${TB_HOST:-}
+PORT_SSH=${TB_SSH_PORT:-}
 REMOTE=${TB_REMOTE:-/workspace/runs}
 LOCAL=${TB_LOCAL:-$HOME/tb-logs/weight-sparsity}
 VENV=${TB_VENV:-$HOME/.venvs/tb}
@@ -31,6 +34,12 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+if [ "$SYNC" = 1 ] && { [ -z "$HOST" ] || [ -z "$PORT_SSH" ]; }; then
+  echo "[tb] set TB_HOST and TB_SSH_PORT to the current box (ssh -p <port> root@<host>)," >&2
+  echo "     or pass --no-sync to serve what is already local" >&2
+  exit 2
+fi
 
 # ---- 1. tensorboard, in its own venv ------------------------------------- #
 # This machine has no tensorboard and no uv/pipx, and the system Python should
