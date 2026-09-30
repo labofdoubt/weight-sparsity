@@ -91,7 +91,7 @@ class _RBLapSumGate(torch.autograd.Function):
     @staticmethod
     def forward(ctx, value_c, active_c, score_c, sign_c, b, t, mode_id, k,
                 cap_active, sink, supp_scale=1.0,
-                perm_rho=0.0):  # type: ignore[override]
+                perm_rho=0.0, inactive_only=False):  # type: ignore[override]
         ctx.save_for_backward(value_c, active_c, score_c, sign_c, b, cap_active)
         ctx.t = float(t)
         ctx.mode_id = int(mode_id)
@@ -99,6 +99,7 @@ class _RBLapSumGate(torch.autograd.Function):
         ctx.sink = sink
         ctx.supp_scale = float(supp_scale)
         ctx.perm_rho = float(perm_rho)
+        ctx.inactive_only = bool(inactive_only)
         return value_c * active_c
 
     @staticmethod
@@ -123,11 +124,22 @@ class _RBLapSumGate(torch.autograd.Function):
 
         # raw support gradient in score-margin space:  a = dL/dp * kappa
         kappa = laplace_pdf((score_c - b) / t) / t
+        if ctx.inactive_only:
+            # rblapsum_surrogate_scope="inactive": the support term only for the
+            # J inactive members; active ones keep the exact hard gradient, and
+            # every correction below is taken over the inactive members alone
+            # (the (K+1)-st position is inactive by definition)
+            kappa = kappa * (1 - active_c)
         a = g_p * kappa
         a_raw = a
 
         if mode_id == 1:  # project: remove the common-mode direction where cap binds
-            a_proj = a - a.mean(-1, keepdim=True)
+            if ctx.inactive_only:
+                inact = 1 - active_c
+                mean_in = a.sum(-1, keepdim=True) / inact.sum(-1, keepdim=True).clamp_min(1)
+                a_proj = a - inact * mean_in
+            else:
+                a_proj = a - a.mean(-1, keepdim=True)
             a = torch.where(cap_active, a_proj, a)
         elif mode_id == 2:  # through_rank: -sum(a) onto the (K+1)-st position
             total = a.sum(-1, keepdim=True)
@@ -175,7 +187,7 @@ class _RBLapSumGate(torch.autograd.Function):
                     omag = gs.abs().mean()
                     sink["rb_boundary_grad_ratio"] = (bmag / (omag + eps)).detach()
         return (grad_value, None, None, None, None, None, None, None, None, None,
-                None, None)
+                None, None, None)
 
 
 class _RBLapSumSFGate(torch.autograd.Function):
@@ -309,7 +321,8 @@ def rblapsum_sf_gate(value_c, p_c, active_c, score_c, sign_c, b, t, mode, k,
 
 
 def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
-                  cap_active, sink=None, supp_scale=1.0, perm_rho=0.0):
+                  cap_active, sink=None, supp_scale=1.0, perm_rho=0.0,
+                  inactive_only=False):
     """Apply the rank-boundary support gate; see :class:`_RBLapSumGate`.
 
     ``value_c`` (signed z at the sorted Top(K+J) candidates) carries gradient;
@@ -317,9 +330,11 @@ def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
     ``supp_scale`` multiplies the surrogate support gradient in the backward
     (1.0 = normal; 0.0 = hard task path only) -- an experiment knob used by
     analysis/scale_dynamics.py for gradient-decomposition counterfactuals.
+    ``inactive_only`` restricts the support term to the inactive pool members
+    (rblapsum_surrogate_scope="inactive").
     """
     return _RBLapSumGate.apply(
         value_c, active_c, score_c.detach(), sign_c.detach(), b.detach(),
         float(t), _MODE_ID[mode], int(k), cap_active.detach(), sink,
-        float(supp_scale), float(perm_rho),
+        float(supp_scale), float(perm_rho), bool(inactive_only),
     )

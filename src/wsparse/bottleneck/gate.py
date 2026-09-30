@@ -48,6 +48,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         temperature: float = 1.0,
         rblapsum_sf_value_grad: str = "pool",
         rblapsum_rho_random_perm_prob_grad: float = 0.0,
+        rblapsum_surrogate_scope: str = "pool",
         barrier_solver_tol: float = 1e-6,
         solver_dtype: str = "float32",
         log_diagnostics: bool = True,
@@ -105,6 +106,13 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self.rblapsum_sf_value_grad = rblapsum_sf_value_grad
         self.rblapsum_rho_random_perm_prob_grad = float(
             rblapsum_rho_random_perm_prob_grad)
+        # see ActivationBottleneckConfig.rblapsum_surrogate_scope; "update" is
+        # the model's routing (TransformerLM._code_residual_stack), so the gate
+        # itself only acts on "inactive"
+        if rblapsum_surrogate_scope not in ("pool", "inactive", "update"):
+            raise ValueError(
+                f"unknown rblapsum_surrogate_scope: {rblapsum_surrogate_scope!r}")
+        self.rblapsum_surrogate_scope = rblapsum_surrogate_scope
         # Experiment-only knobs, set programmatically (analysis/scale_dynamics.py),
         # deliberately not config fields.  support_scale multiplies the surrogate
         # support gradient g_s in the backward (0 = pure hard task path).
@@ -394,7 +402,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
                                 self.rblapsum_boundary_grad_mode, self.k, cap_active, sink,
                                 supp_scale=float(self.rblapsum_support_scale),
                                 perm_rho=(self.rblapsum_rho_random_perm_prob_grad
-                                          if self.training else 0.0))
+                                          if self.training else 0.0),
+                                inactive_only=(self.rblapsum_surrogate_scope
+                                               == "inactive"))
         y = torch.zeros_like(value).scatter(-1, cand_idx, y_c.to(value.dtype))
         if alpha != 1.0:
             y = y / alpha

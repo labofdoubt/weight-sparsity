@@ -332,3 +332,110 @@ def test_unshared_code_residual_gives_every_block_its_own_pair():
             assert not torch.allclose(model(idx)[0], base)
             w.copy_(saved)
         assert torch.equal(model(idx)[0], base)
+
+
+# ---- rblapsum_surrogate_scope ------------------------------------------------ #
+
+def rbk_gate(scope="pool", mode="through_rank_kappa", n=64, k=8, j=24, t=1.0):
+    gate = AdaptiveLapSumTopKGate(n_features=n, k=k, j=j, surrogate_mode="rblapsum",
+                                  rblapsum_boundary_grad_mode=mode, temperature=t,
+                                  rblapsum_surrogate_scope=scope)
+    gate.train()
+    return gate
+
+
+@pytest.mark.parametrize("mode", ["detach", "project", "through_rank", "through_rank_kappa"])
+def test_inactive_scope_leaves_active_features_on_the_exact_gradient(mode):
+    torch.manual_seed(0)
+    z = (3 * torch.randn(5, 64, dtype=torch.float64)).requires_grad_(True)
+    w = torch.randn(5, 64, dtype=torch.float64)
+    gate = rbk_gate("inactive", mode)
+    y = gate(z)
+    (y * w).sum().backward()
+    active = (y.detach() != 0)
+    # active features: exactly dL/dy (the hard mask's gradient), nothing added
+    assert torch.equal(z.grad[active], w[active])
+    # some inactive pool members do receive the support term
+    pool = z.detach().abs().topk(8 + 24, dim=-1).indices
+    inactive_pool = torch.zeros_like(z, dtype=torch.bool).scatter(-1, pool, True) & ~active
+    assert float(z.grad[inactive_pool].abs().sum()) > 0
+    if mode == "through_rank_kappa":  # zero-sum over the inactive members (s-space)
+        gs = (z.grad * z.detach().sign())[inactive_pool].reshape(5, 24)
+        assert torch.allclose(gs.sum(-1), torch.zeros(5, dtype=torch.float64), atol=1e-12)
+
+
+def test_pool_scope_is_the_unchanged_backward():
+    torch.manual_seed(1)
+    z = (3 * torch.randn(4, 64)).requires_grad_(True)
+    w = torch.randn(4, 64)
+    a = AdaptiveLapSumTopKGate(n_features=64, k=8, j=24, surrogate_mode="rblapsum",
+                               rblapsum_boundary_grad_mode="through_rank_kappa")
+    b = rbk_gate("pool")
+    a.train()
+    (a(z) * w).sum().backward()
+    g0 = z.grad.clone(); z.grad = None
+    (b(z) * w).sum().backward()
+    assert torch.equal(g0, z.grad)
+
+
+def test_update_scope_routes_the_support_term_to_the_update_only():
+    from wsparse.model import TransformerLM
+    torch.manual_seed(2)
+    gate = rbk_gate("update")
+    carry = (3 * torch.randn(4, 64)).requires_grad_(True)
+    update = torch.randn(4, 64).requires_grad_(True)
+    w = torch.randn(4, 64)
+    y = TransformerLM._split_surrogate(gate, carry, update)
+    # the forward is the gate's own
+    ref_in = (carry.detach() + update.detach()).requires_grad_(True)
+    y_ref = gate(ref_in)
+    assert torch.equal(y.detach(), y_ref.detach())
+    (y * w).sum().backward()
+    (y_ref * w).sum().backward()
+    mask = (y_ref.detach() != 0).to(w.dtype)
+    # the carry: exact hard gradient; the update: the gate's full gradient
+    assert torch.equal(carry.grad, w * mask)
+    assert torch.allclose(update.grad, ref_in.grad)
+    assert not torch.allclose(update.grad, w * mask)  # the support term is there
+
+
+def test_surrogate_scope_config_validation():
+    base = dict(enabled=True, n_features=64, k=8, j=8, placement="residual_out",
+                share_projections=True)
+    ActivationBottleneckConfig(**base, surrogate_mode="rblapsum",
+                               rblapsum_surrogate_scope="inactive")
+    ActivationBottleneckConfig(**base, surrogate_mode="rblapsum", code_residual=True,
+                               rblapsum_surrogate_scope="update")
+    with pytest.raises(ValueError):  # unknown value
+        ActivationBottleneckConfig(**base, surrogate_mode="rblapsum",
+                                   rblapsum_surrogate_scope="bogus")
+    with pytest.raises(ValueError):  # hard-forward rblapsum only
+        ActivationBottleneckConfig(**base, surrogate_mode="lapsum",
+                                   rblapsum_surrogate_scope="inactive")
+    with pytest.raises(ValueError):  # the update routing needs a code residual
+        ActivationBottleneckConfig(**base, surrogate_mode="rblapsum",
+                                   rblapsum_surrogate_scope="update")
+
+
+def test_update_scope_keeps_the_code_residual_forward():
+    torch.manual_seed(0)
+    def model(scope):
+        torch.manual_seed(0)
+        cfg = ActivationBottleneckConfig(
+            enabled=True, n_features=128, k=16, j=16, surrogate_mode="rblapsum",
+            placement="residual_out", share_projections=True, code_residual=True,
+            init_mode="unit_norm_dictionary", rblapsum_surrogate_scope=scope)
+        m = build_model(ModelConfig(vocab_size=97, max_seq_len=32, n_layers=3,
+                                    d_model=32, n_heads=4))
+        apply_activation_bottleneck(m, cfg)
+        return m
+    idx = torch.randint(0, 97, (2, 8))
+    a, b = model("pool"), model("update")
+    a.train(); b.train()
+    la, lb = a(idx, idx)[1], b(idx, idx)[1]
+    assert torch.equal(la.detach(), lb.detach())
+    la.backward(); lb.backward()
+    # the gradients differ (the carry no longer takes the support term)
+    ga = a.blocks[0].mlp.fc1.weight.grad
+    gb = b.blocks[0].mlp.fc1.weight.grad
+    assert not torch.allclose(ga, gb)

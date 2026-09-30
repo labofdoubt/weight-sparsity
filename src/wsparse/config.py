@@ -464,6 +464,21 @@ class ActivationBottleneckConfig:
     # 1.0 permutes the whole pool.  Training only; eval is unaffected.
     rblapsum_rho_random_perm_prob_grad: float = 0.0
 
+    # Which support (surrogate) gradient the hard-forward rblapsum passes back:
+    #   "pool"      every Top(K+J) member, active or not (the original backward)
+    #   "inactive"  only the J inactive members; active features keep the exact
+    #               hard gradient (multiplier 1)
+    #   "update"    code_residual only: the full pool term, routed into the
+    #               block's own update alpha E Delta_l; the carried code gets the
+    #               exact hard gradient m * g
+    # In a code-residual stack the carry is the identity on each coordinate, so
+    # a support term on the carried code multiplies the gradient of a coordinate
+    # near the boundary by 1 + |u| kappa at every gate it passes, and the product
+    # grows ~1.5x per block toward the input at T = 1-2
+    # (docs/rblapsum-code-residual-journal.tex).  "inactive" and "update" keep
+    # the carry's backward exact.  surrogate_mode="rblapsum" only.
+    rblapsum_surrogate_scope: str = "pool"
+
     # rblapsum_sf only: which candidates' VALUES train.  "pool" (default) is
     # the gradient of the soft forward -- every Top(K+J) member gets the value
     # path u * p_i.  "support" masks the value path to the hard support: the J
@@ -670,6 +685,19 @@ class ActivationBottleneckConfig:
                 )
         if self.solver_dtype not in ("float32", "float64"):
             raise ValueError(f"unknown solver_dtype: {self.solver_dtype} (float32 | float64)")
+        if self.rblapsum_surrogate_scope not in ("pool", "inactive", "update"):
+            raise ValueError(
+                "unknown rblapsum_surrogate_scope: "
+                f"{self.rblapsum_surrogate_scope!r} (pool | inactive | update)")
+        if self.rblapsum_surrogate_scope != "pool":
+            if self.surrogate_mode != "rblapsum":
+                raise ValueError(
+                    "rblapsum_surrogate_scope applies to the hard-forward "
+                    f"surrogate_mode='rblapsum' only, got {self.surrogate_mode!r}")
+            if self.rblapsum_surrogate_scope == "update" and not self.code_residual:
+                raise ValueError(
+                    "rblapsum_surrogate_scope='update' routes the support term into "
+                    "a code-residual block's update; set code_residual=true")
         if self.value_shift not in ("none", "fixed", "energy"):
             raise ValueError(
                 f"unknown value_shift: {self.value_shift!r} (none | fixed | energy)")

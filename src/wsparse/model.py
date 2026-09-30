@@ -334,8 +334,27 @@ class TransformerLM(nn.Module):
         for block in self.blocks:
             bot = block.residual_out_bottleneck
             delta = block.branches(bot.decode(code))
-            code = bot.gate(code + alpha * bot.in_proj(delta))
+            update = alpha * bot.in_proj(delta)
+            if getattr(bot.gate, "rblapsum_surrogate_scope", "pool") == "update":
+                code = self._split_surrogate(bot.gate, code, update)
+            else:
+                code = bot.gate(code + update)
         return entry.decode(code)
+
+    @staticmethod
+    def _split_surrogate(gate: nn.Module, carry: torch.Tensor,
+                         update: torch.Tensor) -> torch.Tensor:
+        """``gate(carry + update)`` with the support term routed to ``update``.
+
+        rblapsum_surrogate_scope="update": the forward is the gate's own; the
+        carried code receives the exact hard gradient ``m * g`` and the update
+        the gate's full gradient (hard + support).  ``y_hard - y_hard.detach()``
+        is zero in the forward, so only its gradient ``m * g`` reaches the carry.
+        """
+        y = gate(carry.detach() + update)
+        mask = (y.detach() != 0).to(carry.dtype)
+        y_hard = (carry + update.detach()) * mask
+        return y + (y_hard - y_hard.detach())
 
     @torch.no_grad()
     def generate(

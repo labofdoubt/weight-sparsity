@@ -170,6 +170,7 @@ class SparseTopKBottleneck(nn.Module):
             rblapsum_sf_value_grad=getattr(cfg, "rblapsum_sf_value_grad", "pool"),
             rblapsum_rho_random_perm_prob_grad=getattr(
                 cfg, "rblapsum_rho_random_perm_prob_grad", 0.0),
+            rblapsum_surrogate_scope=getattr(cfg, "rblapsum_surrogate_scope", "pool"),
             barrier_solver_tol=cfg.barrier_solver_tol,
             solver_dtype=cfg.solver_dtype,
             log_diagnostics=cfg.log_diagnostics,
