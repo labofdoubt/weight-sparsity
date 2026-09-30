@@ -412,3 +412,26 @@ def test_config_roundtrip_and_defaults():
     assert cfg.model.bottleneck_decoder_scale == "none"
     tree = cfg.to_dict()
     assert tree["model"]["bottleneck_init"] == "standard"
+
+
+@pytest.mark.parametrize("post_norm", [False, True])
+def test_a_rebuild_from_the_config_restores_g_D(tmp_path, post_norm):
+    """g_D is not state: load_for_inference (build + install + load_state_dict,
+    no md_init_) must still come back with it, or a no-post-norm checkpoint is
+    evaluated as a different network."""
+    from wsparse.config import Config
+    from wsparse.train import load_for_inference, save_checkpoint
+
+    model, ctl, _ = build(bottleneck_init="standard",
+                          decoder_scale="backward_preserving", k=8, j=8,
+                          post_norm=post_norm)
+    cfg = Config(model=model.cfg, activation_bottleneck=ctl.cfg)
+    path = str(tmp_path / "ckpt.pt")
+    opt = torch.optim.SGD(model.parameters(), lr=0.0)
+    save_checkpoint(path, cfg, model, opt, step=0)
+    loaded, _, lctl = load_for_inference(path)
+    want = math.sqrt(D_MODEL / 8)
+    assert all(m.decoder_scale == pytest.approx(want) for _, m in lctl.layers)
+    model.eval(); loaded.eval()
+    x = torch.randint(0, 97, (2, 8))
+    assert torch.allclose(model(x)[0], loaded(x)[0], atol=1e-5)

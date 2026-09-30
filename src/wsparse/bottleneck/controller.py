@@ -9,6 +9,7 @@ the gates stay per module regardless.
 
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
@@ -141,6 +142,26 @@ class ActivationBottleneckController:
                 self.layers.append((label, bottleneck))
         if getattr(cfg, "code_residual", False):
             self._install_code_residual(indices, len(blocks), d_model, norm_eps, source)
+        self._restore_decoder_scale(d_model)
+
+    def _restore_decoder_scale(self, d_model: int) -> None:
+        """Set ``g_D`` from the model config at install time.
+
+        ``g_D`` is a plain float, not state, so a checkpoint does not carry it;
+        md_init_ sets it for a fresh run, but every loader that rebuilds a model
+        from a saved config (load_for_inference, the analysis --ckpt paths) runs
+        build_model + apply_activation_bottleneck + load_state_dict and never
+        md_init_.  Setting the same value here makes those rebuilds exact;
+        md_init_ still sets it again (same value), so training is unchanged.
+        """
+        mode = str(getattr(getattr(self.model, "cfg", None),
+                           "bottleneck_decoder_scale", "none"))
+        if mode == "none":
+            return
+        from .module import effective_backward_support
+        for _, layer in self.layers:
+            layer.decoder_scale = math.sqrt(
+                d_model / effective_backward_support(layer.gate))
 
     def _install_code_residual(self, indices, n_blocks: int, d_model: int,
                                norm_eps: float, source) -> None:
