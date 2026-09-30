@@ -479,6 +479,19 @@ class ActivationBottleneckConfig:
     # the carry's backward exact.  surrogate_mode="rblapsum" only.
     rblapsum_surrogate_scope: str = "pool"
 
+    # Scale-free kernel (surrogate_mode="rblapsum" only): the temperature
+    # becomes temperature * b per row, b the rank boundary, so ``temperature``
+    # is read as a width relative to the boundary.  Hard Top-K is equivariant
+    # to the scale of its input (TopK(c u) = c TopK(u)); with an absolute T the
+    # surrogate is not -- its strength relative to the hard gradient grows
+    # with the score scale (|u| kappa = b / 2T at the boundary).  Where nothing
+    # normalizes the gate input (a code-residual stack), a model can then
+    # change the surrogate's strength by changing its code scale.  With the
+    # relative kernel, scaling the gate input by c scales the whole backward
+    # consistently (an exact reparameterization) and |u| kappa = 1 / 2T at the
+    # boundary at every scale.  False keeps the absolute temperature.
+    rblapsum_relative_temperature: bool = False
+
     # rblapsum_sf only: which candidates' VALUES train.  "pool" (default) is
     # the gradient of the soft forward -- every Top(K+J) member gets the value
     # path u * p_i.  "support" masks the value path to the hard support: the J
@@ -698,6 +711,10 @@ class ActivationBottleneckConfig:
                 raise ValueError(
                     "rblapsum_surrogate_scope='update' routes the support term into "
                     "a code-residual block's update; set code_residual=true")
+        if self.rblapsum_relative_temperature and self.surrogate_mode != "rblapsum":
+            raise ValueError(
+                "rblapsum_relative_temperature applies to the hard-forward "
+                f"surrogate_mode='rblapsum' only, got {self.surrogate_mode!r}")
         if self.value_shift not in ("none", "fixed", "energy"):
             raise ValueError(
                 f"unknown value_shift: {self.value_shift!r} (none | fixed | energy)")

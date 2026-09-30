@@ -78,6 +78,16 @@ _MODE_ID = {"detach": 0, "project": 1, "through_rank": 2,
             "through_rank_kappa": 3}
 
 
+def relative_kernel_width(t: float, b: torch.Tensor) -> torch.Tensor:
+    """The scale-free kernel width ``t * b`` (rblapsum_relative_temperature).
+
+    ``b`` is the per-row rank boundary; the floor keeps the kernel finite on a
+    row whose boundary is zero (fewer than K+1 nonzero scores).
+    """
+    return (float(t) * b).clamp_min(1e-6)
+
+
+
 class _RBLapSumGate(torch.autograd.Function):
     """``y_c = value_c * active_c`` with the rank-boundary support gradient.
 
@@ -91,7 +101,8 @@ class _RBLapSumGate(torch.autograd.Function):
     @staticmethod
     def forward(ctx, value_c, active_c, score_c, sign_c, b, t, mode_id, k,
                 cap_active, sink, supp_scale=1.0,
-                perm_rho=0.0, inactive_only=False):  # type: ignore[override]
+                perm_rho=0.0, inactive_only=False,
+                relative_t=False):  # type: ignore[override]
         ctx.save_for_backward(value_c, active_c, score_c, sign_c, b, cap_active)
         ctx.t = float(t)
         ctx.mode_id = int(mode_id)
@@ -100,12 +111,16 @@ class _RBLapSumGate(torch.autograd.Function):
         ctx.supp_scale = float(supp_scale)
         ctx.perm_rho = float(perm_rho)
         ctx.inactive_only = bool(inactive_only)
+        ctx.relative_t = bool(relative_t)
         return value_c * active_c
 
     @staticmethod
     def backward(ctx, grad_y):  # type: ignore[override]
         value_c, active_c, score_c, sign_c, b, cap_active = ctx.saved_tensors
         t, mode_id, k = ctx.t, ctx.mode_id, ctx.k
+        if ctx.relative_t:
+            # scale-free kernel: width t * b per row (rblapsum_relative_temperature)
+            t = relative_kernel_width(t, b)
 
         # ordinary hard-forward path: dL/dz_i += upstream_i * m_i, unmodified
         grad_value = grad_y * active_c
@@ -187,7 +202,7 @@ class _RBLapSumGate(torch.autograd.Function):
                     omag = gs.abs().mean()
                     sink["rb_boundary_grad_ratio"] = (bmag / (omag + eps)).detach()
         return (grad_value, None, None, None, None, None, None, None, None, None,
-                None, None, None)
+                None, None, None, None)
 
 
 class _RBLapSumSFGate(torch.autograd.Function):
@@ -322,7 +337,7 @@ def rblapsum_sf_gate(value_c, p_c, active_c, score_c, sign_c, b, t, mode, k,
 
 def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
                   cap_active, sink=None, supp_scale=1.0, perm_rho=0.0,
-                  inactive_only=False):
+                  inactive_only=False, relative_t=False):
     """Apply the rank-boundary support gate; see :class:`_RBLapSumGate`.
 
     ``value_c`` (signed z at the sorted Top(K+J) candidates) carries gradient;
@@ -331,10 +346,12 @@ def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
     (1.0 = normal; 0.0 = hard task path only) -- an experiment knob used by
     analysis/scale_dynamics.py for gradient-decomposition counterfactuals.
     ``inactive_only`` restricts the support term to the inactive pool members
-    (rblapsum_surrogate_scope="inactive").
+    (rblapsum_surrogate_scope="inactive").  ``relative_t`` reads ``t`` as a
+    width relative to the boundary: the kernel is ``kappa_{t b}`` per row
+    (rblapsum_relative_temperature).
     """
     return _RBLapSumGate.apply(
         value_c, active_c, score_c.detach(), sign_c.detach(), b.detach(),
         float(t), _MODE_ID[mode], int(k), cap_active.detach(), sink,
-        float(supp_scale), float(perm_rho), bool(inactive_only),
+        float(supp_scale), float(perm_rho), bool(inactive_only), bool(relative_t),
     )

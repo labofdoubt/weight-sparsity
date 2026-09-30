@@ -27,7 +27,8 @@ import torch
 import torch.nn as nn
 
 from .lapsum import lapsum_barrier_sorted, lapsum_probs, laplace_cdf
-from .rblapsum import GRAD_MODES, VALUE_GRAD_MODES, rblapsum_gate, rblapsum_sf_gate
+from .rblapsum import (GRAD_MODES, VALUE_GRAD_MODES, rblapsum_gate, rblapsum_sf_gate,
+                       relative_kernel_width)
 
 _DTYPES = {"float32": torch.float32, "float64": torch.float64}
 
@@ -49,6 +50,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         rblapsum_sf_value_grad: str = "pool",
         rblapsum_rho_random_perm_prob_grad: float = 0.0,
         rblapsum_surrogate_scope: str = "pool",
+        rblapsum_relative_temperature: bool = False,
         barrier_solver_tol: float = 1e-6,
         solver_dtype: str = "float32",
         log_diagnostics: bool = True,
@@ -113,6 +115,12 @@ class AdaptiveLapSumTopKGate(nn.Module):
             raise ValueError(
                 f"unknown rblapsum_surrogate_scope: {rblapsum_surrogate_scope!r}")
         self.rblapsum_surrogate_scope = rblapsum_surrogate_scope
+        # see ActivationBottleneckConfig.rblapsum_relative_temperature: the
+        # kernel width is temperature * b per row
+        if rblapsum_relative_temperature and surrogate_mode != "rblapsum":
+            raise ValueError(
+                "rblapsum_relative_temperature applies to surrogate_mode='rblapsum' only")
+        self.rblapsum_relative_temperature = bool(rblapsum_relative_temperature)
         # Experiment-only knobs, set programmatically (analysis/scale_dynamics.py),
         # deliberately not config fields.  support_scale multiplies the surrogate
         # support gradient g_s in the backward (0 = pure hard task path).
@@ -404,7 +412,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
                                 perm_rho=(self.rblapsum_rho_random_perm_prob_grad
                                           if self.training else 0.0),
                                 inactive_only=(self.rblapsum_surrogate_scope
-                                               == "inactive"))
+                                               == "inactive"),
+                                relative_t=self.rblapsum_relative_temperature)
         y = torch.zeros_like(value).scatter(-1, cand_idx, y_c.to(value.dtype))
         if alpha != 1.0:
             y = y / alpha
@@ -416,6 +425,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 self._record_usage(mask_full)
                 self._record_rblapsum(active_c, cap_active, b_rank, b,
                                       p_c if soft else None)
+                if self.rblapsum_relative_temperature:
+                    self._forward_diag["rb_temperature"] = (
+                        relative_kernel_width(t, b).mean().detach())
         return y
 
     @torch.no_grad()

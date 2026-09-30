@@ -439,3 +439,60 @@ def test_update_scope_keeps_the_code_residual_forward():
     ga = a.blocks[0].mlp.fc1.weight.grad
     gb = b.blocks[0].mlp.fc1.weight.grad
     assert not torch.allclose(ga, gb)
+
+
+# ---- rblapsum_relative_temperature ------------------------------------------- #
+
+def rel_gate(t, relative, scope="pool", mode="through_rank_kappa"):
+    gate = AdaptiveLapSumTopKGate(n_features=64, k=8, j=24, surrogate_mode="rblapsum",
+                                  rblapsum_boundary_grad_mode=mode, temperature=t,
+                                  rblapsum_surrogate_scope=scope,
+                                  rblapsum_relative_temperature=relative)
+    gate.train()
+    return gate
+
+
+def gate_grad(gate, z, w):
+    z = z.clone().requires_grad_(True)
+    (gate(z) * w).sum().backward()
+    return z.grad
+
+
+@pytest.mark.parametrize("scope", ["pool", "inactive"])
+@pytest.mark.parametrize("mode", ["detach", "project", "through_rank_kappa"])
+def test_relative_temperature_makes_the_backward_scale_equivariant(scope, mode):
+    # hard TopK is equivariant to its input scale; with the relative kernel the
+    # surrogate is too: for L(z) = <w, gate(c z)> / c every gradient is
+    # independent of c.  With an absolute T it is not (the surrogate's strength
+    # |u| kappa = b / 2T grows with the scale).
+    torch.manual_seed(3)
+    z = 3 * torch.randn(6, 64, dtype=torch.float64)
+    w = torch.randn(6, 64, dtype=torch.float64)
+    for relative in (True, False):
+        gate = rel_gate(0.3, relative, scope, mode)
+        g1 = gate_grad(gate, z, w)
+        g4 = gate_grad(gate, 4 * z, w / 4) * 4          # d/dz of <w, gate(4z)>/4
+        assert torch.allclose(g1, g4, atol=1e-12) == relative
+
+
+def test_relative_temperature_is_the_absolute_kernel_at_width_t_times_b():
+    torch.manual_seed(4)
+    z = 3 * torch.randn(1, 64, dtype=torch.float64)
+    w = torch.randn(1, 64, dtype=torch.float64)
+    b = float(z.abs().topk(9, dim=-1).values[0, 8])      # the (K+1)-st score
+    g_rel = gate_grad(rel_gate(0.25, True), z, w)
+    g_abs = gate_grad(rel_gate(0.25 * b, False), z, w)
+    assert torch.allclose(g_rel, g_abs, atol=1e-12)
+    # the forward is the hard gate's either way
+    assert torch.equal(rel_gate(0.25, True)(z), rel_gate(1.0, False)(z))
+
+
+def test_relative_temperature_config_validation():
+    base = dict(enabled=True, n_features=64, k=8, j=8, placement="residual_out",
+                share_projections=True)
+    ActivationBottleneckConfig(**base, surrogate_mode="rblapsum",
+                               rblapsum_relative_temperature=True)
+    for mode in ("hard", "lapsum", "rblapsum_sf"):
+        with pytest.raises(ValueError):
+            ActivationBottleneckConfig(**base, surrogate_mode=mode,
+                                       rblapsum_relative_temperature=True)
