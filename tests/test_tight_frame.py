@@ -360,6 +360,39 @@ def test_two_steps_of_md_training(bn_init, scale, surrogate):
             assert float(w_hat.norm()) == pytest.approx(float(st["c_f"]), rel=1e-4)
 
 
+def test_shared_projections_are_initialized_once_and_train_under_md():
+    """md_init_ visits a shared matrix once, the optimizer keeps one state for
+    it, and the frame still lands on the (single) encoder and decoder."""
+    model, ctl, stats = build(bottleneck_init="orthogonal",
+                              decoder_scale="backward_preserving",
+                              share_projections=True)
+    plain, _, stats_plain = build(bottleneck_init="orthogonal",
+                                  decoder_scale="backward_preserving")
+    # two blocks share one pair: two matrices fewer than the unshared stack
+    assert stats_plain["matrix"] - stats["matrix"] == 2
+    assert stats["bottlenecks"] == 2
+    mod = ctl.layers[0][1]
+    assert ctl.layers[1][1].in_proj is mod.in_proj
+    for W in (mod.in_proj.weight, mod.out_proj.weight):
+        assert gram_rel_err(W, D_MODEL, N_FEATURES / D_MODEL) < 1e-4
+    opt = build_decoupled_optimizer(model, _Train())
+    opt_plain = build_decoupled_optimizer(plain, _Train())
+    n_md = lambda o: sum(len(g["params"]) for g in o.param_groups if g["kind"] == "md")
+    assert n_md(opt_plain) - n_md(opt) == 2
+    x = torch.randint(0, 97, (2, 8))
+    for _ in range(2):
+        opt.zero_grad(set_to_none=True)
+        _, loss = model(x, x)
+        loss.backward()
+        opt.step()
+        assert math.isfinite(float(loss))
+    for W in (mod.in_proj.weight, mod.out_proj.weight):
+        st = opt.state[W]
+        w_hat = W.detach() / (F.softplus(st["raw_grow"]).unsqueeze(1)
+                              * F.softplus(st["raw_gcol"]).unsqueeze(0))
+        assert float(w_hat.norm()) == pytest.approx(float(st["c_f"]), rel=1e-4)
+
+
 def test_orthogonal_rejects_a_tied_decoder():
     with pytest.raises(ValueError, match="tied decoder"):
         build(n_features=D_MODEL, tie_encoder_decoder=True,

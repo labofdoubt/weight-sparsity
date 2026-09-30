@@ -991,6 +991,135 @@ def test_tying_requires_the_dictionary_init_and_rejects_gated():
         )
 
 
+# --------------------------------------------------------------------------- #
+# shared projections
+# --------------------------------------------------------------------------- #
+
+
+def _shared_pair(placement="residual_out", n_layers=3, **kw):
+    """The same model built without and with share_projections, same seed."""
+    plain, ctl_plain = placed_model(placement, n_layers=n_layers, **kw)
+    shared, ctl_shared = placed_model(placement, n_layers=n_layers,
+                                      share_projections=True, **kw)
+    return (plain, ctl_plain), (shared, ctl_shared)
+
+
+def test_shared_projections_are_the_same_objects_in_every_bottleneck():
+    _, (_, ctl) = _shared_pair()
+    mods = [m for _, m in ctl.layers]
+    assert len(mods) == 3
+    assert all(m.in_proj is mods[0].in_proj for m in mods)
+    assert all(m.out_proj is mods[0].out_proj for m in mods)
+    assert all(m.shared for m in mods)
+    # the modules themselves, and their gates, stay one per bottleneck
+    assert len({id(m) for m in mods}) == 3
+    assert len({id(m.gate) for m in mods}) == 3
+    assert "projections shared" in repr(mods[0])
+
+
+def test_unshared_bottlenecks_still_draw_their_own_projections():
+    (_, ctl), _ = _shared_pair()
+    mods = [m for _, m in ctl.layers]
+    assert not any(m.shared for m in mods)
+    assert len({id(m.in_proj.weight) for m in mods}) == 3
+    assert len(ctl.projection_owners()) == 3
+
+
+def test_sharing_costs_one_bottleneck_of_parameters():
+    (plain, ctl_plain), (shared, ctl_shared) = _shared_pair()
+    assert 3 * ctl_shared.n_parameters == ctl_plain.n_parameters
+    assert len(ctl_shared.projection_owners()) == 1
+    # the model's own count agrees: the shared tensors are counted once
+    dense = tiny_model(n_layers=3).num_parameters()
+    assert shared.num_parameters() == dense + ctl_shared.n_parameters
+    assert plain.num_parameters() == dense + ctl_plain.n_parameters
+
+
+def test_post_norm_stays_per_bottleneck_under_sharing():
+    _, ctl = placed_model("residual_out", n_layers=3, share_projections=True,
+                          post_norm=True)
+    norms = [m.post_norm for _, m in ctl.layers]
+    assert len({id(n) for n in norms}) == 3
+    # one encoder/decoder pair, plus two norms (the last feeds norm_f already)
+    assert ctl.n_parameters == 2 * 32 * 128 + 2 * 32
+
+
+def test_shared_projections_compute_the_same_function_and_sum_the_gradients():
+    """A shared stack equals an unshared one whose layers all hold the same
+    weights, and the shared matrix's gradient is the sum over those layers."""
+    (plain, ctl_plain), (shared, ctl_shared) = _shared_pair()
+    # every unshared bottleneck takes the shared weights (the transformer body
+    # is identical already: same seed, built before the bottlenecks)
+    plain.load_state_dict(shared.state_dict())
+    plain.train(), shared.train()
+    torch.manual_seed(1)
+    x = torch.randint(0, 97, (2, 8))
+    _, loss_plain = plain(x, x)
+    _, loss_shared = shared(x, x)
+    torch.testing.assert_close(loss_shared, loss_plain)
+    loss_plain.backward()
+    loss_shared.backward()
+    src = ctl_shared.layers[0][1]
+    for proj in ("in_proj", "out_proj"):
+        summed = sum(getattr(m, proj).weight.grad for _, m in ctl_plain.layers)
+        torch.testing.assert_close(getattr(src, proj).weight.grad, summed,
+                                   atol=1e-6, rtol=1e-5)
+
+
+def test_shared_projections_survive_a_state_dict_round_trip():
+    _, (a, ctl_a) = _shared_pair()
+    _, (b, ctl_b) = _shared_pair()
+    with torch.no_grad():
+        ctl_a.layers[0][1].in_proj.weight.add_(1.0)  # so that a != b
+    sd = a.state_dict()
+    keys = [k for k in sd if k.endswith("bottleneck.in_proj.weight")]
+    assert len(keys) == 3                                # under every prefix ...
+    assert len({sd[k].data_ptr() for k in keys}) == 1    # ... but one storage
+    b.load_state_dict(sd)
+    mods = [m for _, m in ctl_b.layers]
+    assert all(m.in_proj is mods[0].in_proj for m in mods)  # still shared
+    torch.testing.assert_close(mods[0].in_proj.weight,
+                               ctl_a.layers[0][1].in_proj.weight)
+
+
+def test_sharing_spans_placements_and_the_score_projection():
+    _, ctl = placed_model("post_attn,post_mlp", n_layers=2, share_projections=True,
+                          selection_mode="gated_topk")
+    mods = [m for _, m in ctl.layers]
+    assert len(mods) == 4
+    assert mods[0].score_proj is not None
+    for proj in ("in_proj", "score_proj", "out_proj"):
+        assert all(getattr(m, proj) is getattr(mods[0], proj) for m in mods), proj
+    assert len(ctl.projection_owners()) == 1
+
+
+def test_sharing_composes_with_tying_to_a_single_matrix():
+    _, ctl = placed_model("residual_out", n_layers=3, share_projections=True,
+                          tie_encoder_decoder=True, init_mode="unit_norm_dictionary")
+    mods = [m for _, m in ctl.layers]
+    assert ctl.n_parameters == 32 * 128  # d_model x n_features, once
+    assert all(m.out_proj is mods[0].out_proj for m in mods)
+    assert torch.equal(mods[-1].out_proj.weight, mods[0].in_proj.weight.t())
+
+
+def test_share_from_rejects_a_source_of_different_geometry():
+    torch.manual_seed(0)
+    src = SparseTopKBottleneck(32, bottleneck_cfg(n_features=64, share_projections=True))
+    with pytest.raises(ValueError, match="different geometry"):
+        SparseTopKBottleneck(32, bottleneck_cfg(n_features=128, share_projections=True),
+                             share_from=src)
+
+
+def test_share_projections_is_off_by_default_and_reaches_the_dumped_config():
+    from wsparse.config import load_config
+
+    assert Config().activation_bottleneck.share_projections is False
+    assert Config().to_dict()["activation_bottleneck"]["share_projections"] is False
+    cfg = load_config(None, ["--activation_bottleneck.enabled=true",
+                             "--activation_bottleneck.share_projections=true"])
+    assert cfg.activation_bottleneck.share_projections is True
+
+
 def test_post_norm_installs_everywhere_but_the_final_residual_out():
     _, ctl = _post_norm_model(True)
     kinds = [type(mod.post_norm).__name__ for _, mod in ctl.layers]

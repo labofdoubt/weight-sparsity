@@ -515,6 +515,18 @@ class ActivationBottleneckConfig:
     # meaningful when both sides have the same scale, so it requires
     # unit_norm_dictionary.  Halves the bottleneck's parameters.
     tie_encoder_decoder: bool = False
+    # One encoder and one decoder for EVERY installed bottleneck -- all selected
+    # layers and, under a combined placement, all placements -- instead of a
+    # fresh pair per module.  in_proj (plus score_proj under gated_topk) and
+    # out_proj are then the same nn.Linear objects in every bottleneck: the
+    # parameter cost is one bottleneck's worth however many are installed, and
+    # each matrix receives the sum of every bottleneck's gradient.  The
+    # state_dict still lists the matrices under every bottleneck's prefix (all
+    # copies identical, as with a tied lm_head), so checkpoints load either
+    # way.  What stays per bottleneck: the gate with its usage buffers and
+    # diagnostics, post_norm's gain and the decoder scale g_D.  Composes with
+    # tie_encoder_decoder, which then leaves a single matrix for the stack.
+    share_projections: bool = False
 
     # LapSum barrier solve: bisection stops at this absolute residual on
     # sum p_i = K, in solver_dtype (float32 keeps the boundary reproducible

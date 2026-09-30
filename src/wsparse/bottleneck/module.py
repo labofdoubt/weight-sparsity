@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -94,19 +95,34 @@ class SparseTopKBottleneck(nn.Module):
     supplies the value ``v``.  That splits the two roles the single projection
     otherwise plays, at the cost of ``d_model * n_features`` more parameters
     per layer.  No nonlinearity is applied to ``v``, so values stay signed.
+
+    ``share_from`` makes this module reuse another one's projections instead of
+    creating its own: ``in_proj``, ``score_proj`` and ``out_proj`` become the
+    *same* ``nn.Linear`` objects, nothing is re-initialized, and only the gate
+    (with its usage buffers), the optional post-norm and ``decoder_scale`` are
+    this module's own.  The controller passes the first bottleneck it built
+    when ``cfg.share_projections`` is set.
     """
 
     def __init__(self, d_model: int, cfg, bias: bool = True,
-                 post_norm: bool = False, norm_eps: float = 1e-6):
+                 post_norm: bool = False, norm_eps: float = 1e-6,
+                 share_from: Optional["SparseTopKBottleneck"] = None):
         super().__init__()
         self.d_model = int(d_model)
         self.n_features = int(cfg.n_features)
         self.gated = cfg.selection_mode == "gated_topk"
-        # in_proj is the value branch; score_proj (gated_topk only) ranks.
-        self.in_proj = nn.Linear(self.d_model, self.n_features, bias=bias)
-        self.score_proj = (
-            nn.Linear(self.d_model, self.n_features, bias=bias) if self.gated else None
-        )
+        self.tied = bool(getattr(cfg, "tie_encoder_decoder", False))
+        # The config flag, true for every bottleneck built under it -- the one
+        # the others adopt from included; `share_from` is the mechanism.
+        self.shared = bool(getattr(cfg, "share_projections", False))
+        if share_from is not None:
+            self._adopt_projections(share_from, bias)
+        else:
+            # in_proj is the value branch; score_proj (gated_topk only) ranks.
+            self.in_proj = nn.Linear(self.d_model, self.n_features, bias=bias)
+            self.score_proj = (
+                nn.Linear(self.d_model, self.n_features, bias=bias) if self.gated else None
+            )
         self.gate = AdaptiveLapSumTopKGate(
             n_features=self.n_features,
             k=cfg.k,
@@ -135,17 +151,17 @@ class SparseTopKBottleneck(nn.Module):
             raise ValueError(
                 f"unknown bottleneck init_mode: {self.init_mode!r} ({' | '.join(INIT_MODES)})"
             )
-        self.tied = bool(getattr(cfg, "tie_encoder_decoder", False))
         if self.tied and self.init_mode != "unit_norm_dictionary":
             raise ValueError(
                 "tie_encoder_decoder requires init_mode='unit_norm_dictionary': "
                 "tying only makes sense when both sides share a scale"
             )
-        if self.tied:
-            self.out_proj = TiedDecoder(self.in_proj, bias=bias)
-        else:
-            self.out_proj = nn.Linear(self.n_features, self.d_model, bias=bias)
-        self._init_projections(int(cfg.k))
+        if share_from is None:  # an adopter took the source's, initialized once
+            if self.tied:
+                self.out_proj = TiedDecoder(self.in_proj, bias=bias)
+            else:
+                self.out_proj = nn.Linear(self.n_features, self.d_model, bias=bias)
+            self._init_projections(int(cfg.k))
         # An optional RMSNorm on this bottleneck's output.  It lives inside the
         # module so the gate hooks and `_PLACEMENT_ATTR` lookups are unchanged,
         # and Identity costs nothing when the option is off.
@@ -158,6 +174,27 @@ class SparseTopKBottleneck(nn.Module):
         # from model.bottleneck_decoder_scale.  1.0 is the identity and takes
         # the untouched forward path below.
         self.decoder_scale = 1.0
+
+    def _adopt_projections(self, source: "SparseTopKBottleneck", bias: bool) -> None:
+        """Take ``source``'s projections as this module's own (share_projections).
+
+        Assigning a module that another module already holds registers it here
+        too, so ``parameters()``, ``state_dict()`` and ``.to(device)`` all see
+        the shared objects; ``nn.Module`` deduplicates the parameters and
+        ``.to`` is idempotent on an already-moved tensor.
+        """
+        want = (self.d_model, self.n_features, self.gated, self.tied, bool(bias))
+        have = (source.d_model, source.n_features, source.gated, source.tied,
+                source.in_proj.bias is not None)
+        if want != have:
+            raise ValueError(
+                "share_from: cannot share projections between bottlenecks of "
+                "different geometry -- (d_model, n_features, gated, tied, bias) "
+                f"is {want} here but {have} in the source"
+            )
+        self.in_proj = source.in_proj
+        self.score_proj = source.score_proj
+        self.out_proj = source.out_proj
 
     def _init_projections(self, k: int) -> None:
         """Re-initialize the projections; ``default`` leaves PyTorch's alone.
@@ -242,7 +279,8 @@ class SparseTopKBottleneck(nn.Module):
     def extra_repr(self) -> str:
         branches = "score+value" if self.gated else "single"
         scale = "" if self.decoder_scale == 1.0 else f", g_D={self.decoder_scale:.4g}"
+        shared = ", projections shared" if self.shared else ""
         return (
             f"d_model={self.d_model}, n_features={self.n_features}, "
-            f"branches={branches}{scale}"
+            f"branches={branches}{scale}{shared}"
         )

@@ -341,6 +341,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             f"({cb.selection_mode}, {cb.surrogate_mode}) "
             f"density={cb.k / cb.n_features:.3f} "
             f"params={human(bottleneck.n_parameters)}"
+            + (" (one encoder/decoder pair shared by every bottleneck)"
+               if cb.share_projections else "")
         )
 
     model.train()

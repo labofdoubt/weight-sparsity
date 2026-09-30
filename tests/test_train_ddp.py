@@ -55,8 +55,11 @@ def tiny_overrides(data_dir, out_dir, **extra):
     return [f"--{k}={v}" for k, v in ov.items()]
 
 
-def test_single_process_end_to_end(tmp_path):
-    cfg = load_config(None, tiny_overrides(make_data(tmp_path), str(tmp_path / "runs")))
+@pytest.mark.parametrize("share", ["false", "true"])
+def test_single_process_end_to_end(tmp_path, share):
+    cfg = load_config(None, tiny_overrides(
+        make_data(tmp_path), str(tmp_path / "runs"),
+        **{"activation_bottleneck.share_projections": share}))
     summary = train(cfg)
     assert "val/ce" in summary and np.isfinite(summary["val/ce"])
     run_dir = tmp_path / "runs" / "tiny"
@@ -109,16 +112,21 @@ def test_guard_stop_step_subprocess(tmp_path):
 @pytest.mark.skipif(os.environ.get("WSPARSE_DDP_TEST") != "1",
                     reason="spawns torchrun; set WSPARSE_DDP_TEST=1 (run on the training box)")
 @pytest.mark.skipif(not torch.distributed.is_available(), reason="no torch.distributed")
-def test_two_process_gloo_ddp(tmp_path):
+@pytest.mark.parametrize("share", ["false", "true"])
+def test_two_process_gloo_ddp(tmp_path, share):
     data = make_data(tmp_path)
     out = str(tmp_path / "runs")
+    # shared projections are one parameter used by every block: DDP must
+    # reduce that gradient once, like a tied embedding's
+    overrides = tiny_overrides(data, out,
+                               **{"activation_bottleneck.share_projections": share})
     runner = tmp_path / "runner.py"
     runner.write_text(
         "import sys\n"
         f"sys.path.insert(0, {os.path.join(REPO, 'src')!r})\n"
         "from wsparse.config import load_config\n"
         "from wsparse.train import train\n"
-        f"cfg = load_config(None, {tiny_overrides(data, out)!r})\n"
+        f"cfg = load_config(None, {overrides!r})\n"
         "s = train(cfg)\n"
         "print('RANK-DONE', s.get('val/ce'))\n")
     r = subprocess.run(

@@ -147,6 +147,32 @@ def test_activation_bottleneck_checkpoint_round_trip(tmp_path):
     assert torch.isfinite(logits).all()
 
 
+def test_shared_projections_train_reload_and_resume(tmp_path):
+    data_dir = make_fake_dataset(tmp_path)
+    out = str(tmp_path / "runs_bn_shared")
+    cfg = bottleneck_smoke_config(data_dir, out, share_projections=True)
+    cfg.train.run_name = "bn_shared"
+    summary = train(cfg)
+    assert np.isfinite(summary["best_val_ce"])
+
+    model, loaded_cfg, ctl = load_for_inference(
+        str(tmp_path / "runs_bn_shared" / "bn_shared" / "latest.pt"))
+    assert loaded_cfg.activation_bottleneck.share_projections
+    mods = [m for _, m in ctl.layers]
+    assert len(mods) == 2 and mods[0].in_proj is mods[1].in_proj
+    logits, _ = model(torch.randint(0, VOCAB, (1, 8)))
+    assert torch.isfinite(logits).all()
+
+    cfg2 = bottleneck_smoke_config(data_dir, out, share_projections=True)
+    cfg2.train.run_name = "bn_shared"
+    cfg2.train.max_steps = 9
+    cfg2.train.resume = "auto"
+    train(cfg2)
+    records = [json.loads(l) for l in
+               open(tmp_path / "runs_bn_shared" / "bn_shared" / "metrics.jsonl")]
+    assert max(r["step"] for r in records) == 9
+
+
 def test_tensorboard_can_be_disabled(tmp_path):
     data_dir = make_fake_dataset(tmp_path)
     cfg = smoke_config(data_dir, str(tmp_path / "runs_notb"))

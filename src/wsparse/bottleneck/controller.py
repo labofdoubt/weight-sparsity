@@ -2,12 +2,14 @@
 
 The bottleneck's two projections are dense parameters trained normally; what
 is sparse is the code between them.  Each module keeps its own diagnostics and
-the controller only aggregates them.
+the controller only aggregates them.  Under ``share_projections`` every
+installed module holds the same projection objects (see ``projection_owners``);
+the gates stay per module regardless.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -115,6 +117,11 @@ class ActivationBottleneckController:
         d_model = self.model.cfg.d_model
         norm_eps = float(getattr(self.model.cfg, "norm_eps", 1e-6))
         last = len(blocks) - 1
+        # Under share_projections the first module built owns the one encoder
+        # / decoder pair and every later module adopts it (all layers, all
+        # placements); otherwise each module draws its own.
+        share = bool(getattr(cfg, "share_projections", False))
+        source: Optional[SparseTopKBottleneck] = None
         for i in indices:
             block = blocks[i]
             for name in placements:
@@ -124,18 +131,43 @@ class ActivationBottleneckController:
                 bottleneck = SparseTopKBottleneck(
                     d_model, cfg, bias=cfg.bias,
                     post_norm=bool(cfg.post_norm) and not already_normed,
-                    norm_eps=norm_eps)
-                # each selected layer *and* placement gets its own parameters
+                    norm_eps=norm_eps, share_from=source)
+                if share and source is None:
+                    source = bottleneck
+                # each selected layer *and* placement gets its own module -- and
+                # its own parameters, unless they are shared
                 setattr(block, _PLACEMENT_ATTR[name], bottleneck)
                 label = f"blocks.{i}" if len(placements) == 1 else f"blocks.{i}.{name}"
                 self.layers.append((label, bottleneck))
 
 
     def parameters(self) -> List[nn.Parameter]:
+        """Every bottleneck parameter once: shared projections are not repeated."""
         params: List[nn.Parameter] = []
+        seen = set()
         for _, layer in self.layers:
-            params.extend(layer.parameters())
+            for p in layer.parameters():
+                if id(p) not in seen:
+                    seen.add(id(p))
+                    params.append(p)
         return params
+
+    def projection_owners(self) -> List[Tuple[str, SparseTopKBottleneck]]:
+        """``layers`` restricted to one module per distinct set of projections.
+
+        Without ``share_projections`` that is every bottleneck; with it, only
+        the first.  Anything that scales or re-initializes projection weights
+        in place has to loop over this rather than over ``layers``, or a shared
+        matrix takes the change once per module that holds it.
+        """
+        owners: List[Tuple[str, SparseTopKBottleneck]] = []
+        seen = set()
+        for name, layer in self.layers:
+            key = id(layer.in_proj.weight)
+            if key not in seen:
+                seen.add(key)
+                owners.append((name, layer))
+        return owners
 
     @property
     def n_parameters(self) -> int:

@@ -211,6 +211,7 @@ activation_bottleneck:
   post_norm: false         # an RMSNorm on each bottleneck's own output
   init_mode: default       # default | sqrt_k | sqrt_k_selection_corrected | unit_norm_dictionary
   tie_encoder_decoder: false
+  share_projections: false # one encoder and one decoder for every installed bottleneck
   bias: false              # biasless projections (the family convention)
   # --- numerics ---
   barrier_solver_tol: 1.0e-6
@@ -233,6 +234,16 @@ constrain what a branch may *contribute* instead of what it may read.
 `residual` / `residual_out` replace the stream itself at the head or the tail of
 the block, so nothing routes around them — which is the regime where the
 depth-compounding effects in `docs/` show up.
+
+`share_projections: true` installs the bottlenecks as usual but gives them one
+encoder and one decoder: `in_proj` / `out_proj` (and `score_proj` under
+`gated_topk`) are the same objects in every module, so the parameter cost is one
+bottleneck's worth however many layers and placements are selected, and each
+matrix receives the sum of every bottleneck's gradient. Gates and their usage
+statistics, `post_norm` gains and the decoder scale stay per bottleneck. The
+state dict lists the shared matrices under every bottleneck's prefix, all
+copies identical, so checkpoints load either way. `tie_encoder_decoder`
+composes with it and leaves a single matrix for the whole stack.
 
 ### Forward: exact hard TopK
 

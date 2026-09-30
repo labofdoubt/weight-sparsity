@@ -44,8 +44,11 @@ def main() -> None:
         cb = cfg.activation_bottleneck
         added = bottleneck.n_parameters
         dense = total - added
-        print(f"bottleneck        : {len(bottleneck.layers)} layers x "
-              f"(2 x {cfg.model.d_model} x {cb.n_features}) = {added:,} ({human(added)}) "
+        n_sets = len(bottleneck.projection_owners())  # 1 under share_projections
+        print(f"bottleneck        : {len(bottleneck.layers)} layers, {n_sets} x "
+              f"(2 x {cfg.model.d_model} x {cb.n_features})"
+              f"{' shared by all' if cb.share_projections else ''} "
+              f"= {added:,} ({human(added)}) "
               f"added, {added / dense:+.1%} over the {dense:,}-param dense model")
         print(f"  active / layer  : K={cb.k} of N={cb.n_features} "
               f"({cb.k / cb.n_features:.1%} of features, {cb.k / cfg.model.d_model:.2f}x d_model)")

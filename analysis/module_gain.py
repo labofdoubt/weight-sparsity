@@ -162,7 +162,10 @@ def main() -> None:
                              "it spreads into are MD's)")
         from wsparse.decouple import md_spread_gain_
         placement = str(args.md_alpha_in)
-        for _, mod in bn.layers:
+        # one visit per distinct pair: under share_projections every bottleneck
+        # holds the same matrices, which must take the factor once, not once
+        # per module
+        for _, mod in bn.projection_owners():
             if placement == "split":
                 # two matrices in series, so each takes the square root
                 per = math.sqrt(md_alpha)
@@ -194,7 +197,7 @@ def main() -> None:
         # A tied decoder IS the encoder transposed, so scaling in_proj already
         # scales both sides; touching out_proj as well would square the factor.
         with torch.no_grad():
-            for _, mod in bn.layers:
+            for _, mod in bn.projection_owners():  # once per shared pair
                 mod.in_proj.weight.mul_(args.proj_scale)
                 if not getattr(mod, "tied", False):
                     mod.out_proj.weight.mul_(args.proj_scale)
