@@ -165,15 +165,15 @@ class ActivationBottleneckController:
 
     def _install_code_residual(self, indices, n_blocks: int, d_model: int,
                                norm_eps: float, source) -> None:
-        """The entry gate that makes ``c_0``, and the model-side switch.
+        """The entry module that makes ``c_0``, and the model-side switch.
 
-        The per-block modules above already hold the one shared dictionary; the
-        code-residual forward (TransformerLM._code_residual_stack) additionally
-        needs a gate for the embedding's code before block 0.  It adopts the
-        same projections, so it adds no parameters -- only its own usage
-        buffers.  Registered on the model (``model.code_entry``), so it is part
-        of the state_dict and of ``model.modules()``, which is how md_init_
-        finds it to set its decoder scale.
+        The code-residual forward (TransformerLM._code_residual_stack) needs a
+        gate for the embedding's code before block 0 and a decoder for the final
+        readout.  Under share_projections the entry adopts the one shared pair
+        (no parameters, only its own usage buffers); otherwise it has its own
+        encoder and decoder.  Registered on the model (``model.code_entry``), so
+        it is part of the state_dict and of ``model.modules()``, which is how
+        md_init_ finds it.
         """
         cfg = self.cfg
         if list(indices) != list(range(n_blocks)):

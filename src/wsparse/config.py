@@ -556,15 +556,19 @@ class ActivationBottleneckConfig:
     value_shift_lambda: Optional[float] = None
     # code_residual: carry the K-sparse CODE between blocks instead of
     # re-encoding the decoded stream,
-    #     c_0 = TopK(E x_emb),  x_l = g_D D c_l,
-    #     c_{l+1} = TopK(c_l + code_residual_scale * E Delta_l(x_l)),
+    #     c_0 = TopK(E x_emb),  x_l = g_D D_l c_l,
+    #     c_{l+1} = TopK(c_l + code_residual_scale * E_l Delta_l(x_l)),
     # where Delta_l is block l's attention + MLP contribution.  TopK is the
     # Euclidean projection onto K-sparse vectors, so a block that contributes
     # nothing leaves the code unchanged and the carry's Jacobian is the support
     # mask: the stack is a residual network in code space, and every stream
-    # between blocks is still exactly a K-sparse code in the one dictionary.
-    # Requires placement=residual_out, layers=all, share_projections=true and
-    # post_norm=false; adds one entry gate (no parameters) for c_0.
+    # between blocks is still exactly a K-sparse code.  With share_projections
+    # (the tested default) that code lives in one dictionary; without it block
+    # l reads through its own decoder D_l and writes through its own encoder
+    # E_l, and an entry module adds E_in (for c_0) and D_out (the final
+    # readout) -- the same carry, one more projection pair.  Requires
+    # placement=residual_out, layers=all and post_norm=false; adds one entry
+    # gate for c_0 (no parameters when shared).
     code_residual: bool = False
     code_residual_scale: float = 1.0
 
@@ -688,10 +692,6 @@ class ActivationBottleneckConfig:
                     "code_residual carries the code between blocks, so the "
                     "bottleneck must be the stream itself at every block's tail: "
                     f"placement='residual_out' only, got {self.placement!r}")
-            if not self.share_projections:
-                raise ValueError(
-                    "code_residual needs one dictionary for the whole stack: set "
-                    "share_projections=true")
             if self.post_norm:
                 raise ValueError(
                     "code_residual carries the code values themselves; a post-norm "

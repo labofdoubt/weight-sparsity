@@ -316,20 +316,24 @@ class TransformerLM(nn.Module):
     def _code_residual_stack(self, x: torch.Tensor, entry: nn.Module) -> torch.Tensor:
         """The block stack with the K-sparse code, not the stream, carried.
 
-            c_0 = TopK(E x),   x_l = g_D D c_l,
-            c_{l+1} = TopK(c_l + alpha * E Delta_l(x_l)),   returns g_D D c_L
+            c_0 = TopK(E_in x),   x_l = g_D D_l c_l,
+            c_{l+1} = TopK(c_l + alpha * E_l Delta_l(x_l)),   returns g_D D_out c_L
 
-        with one shared encoder ``E`` / decoder ``D`` (share_projections) and
-        each block's own gate.  TopK is the Euclidean projection onto K-sparse
+        Block l reads the code through its own decoder ``D_l`` and writes
+        through its own encoder ``E_l`` (its residual_out module) and gate; the
+        entry module supplies ``E_in`` for the embedding's code and ``D_out``
+        for the final readout.  Under share_projections all of them are one
+        encoder / decoder pair.  TopK is the Euclidean projection onto K-sparse
         vectors, so a block with ``Delta = 0`` is the identity on the code and
         the carry's Jacobian is the support mask -- the residual connection of a
-        pre-norm transformer, moved into code space.
+        pre-norm transformer, moved into code space -- whichever matrices the
+        blocks read and write with.
         """
         alpha = float(getattr(self, "code_residual_scale", 1.0))
         code = entry.gate(entry.in_proj(x))
         for block in self.blocks:
             bot = block.residual_out_bottleneck
-            delta = block.branches(entry.decode(code))
+            delta = block.branches(bot.decode(code))
             code = bot.gate(code + alpha * bot.in_proj(delta))
         return entry.decode(code)
 

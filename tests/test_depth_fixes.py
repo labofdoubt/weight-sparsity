@@ -172,11 +172,11 @@ def test_shifted_bottleneck_uses_the_critical_lambda_by_default():
 
 # ---- code residual ---------------------------------------------------------- #
 
-def code_model(n_layers=3, scale=1.0, **kw):
+def code_model(n_layers=3, scale=1.0, share=True, **kw):
     torch.manual_seed(0)
     cfg = ActivationBottleneckConfig(
         enabled=True, n_features=128, k=16, j=0, surrogate_mode="hard",
-        placement="residual_out", share_projections=True, code_residual=True,
+        placement="residual_out", share_projections=share, code_residual=True,
         code_residual_scale=scale, init_mode="unit_norm_dictionary", **kw)
     model = build_model(ModelConfig(vocab_size=97, max_seq_len=32,
                                     n_layers=n_layers, d_model=32, n_heads=4))
@@ -188,8 +188,10 @@ def test_code_residual_config_validation():
     base = dict(enabled=True, n_features=64, k=8, j=8, surrogate_mode="hard",
                 placement="residual_out", share_projections=True)
     ActivationBottleneckConfig(**base, code_residual=True)
-    for bad in ({"placement": "residual"}, {"share_projections": False},
-                {"post_norm": True}, {"code_residual_scale": 0.0}):
+    # per-block projections are allowed (each block reads and writes its own)
+    ActivationBottleneckConfig(**{**base, "share_projections": False}, code_residual=True)
+    for bad in ({"placement": "residual"}, {"post_norm": True},
+                {"code_residual_scale": 0.0}):
         with pytest.raises(ValueError):
             ActivationBottleneckConfig(**{**base, **bad}, code_residual=True)
     with pytest.raises(ValueError):
@@ -224,8 +226,9 @@ def test_code_residual_adds_an_entry_gate_and_no_parameters():
     assert "code_entry.in_proj.weight" in model.state_dict()
 
 
-def test_code_residual_with_silent_blocks_is_the_identity_on_the_code():
-    model, _ = code_model(n_layers=3)
+@pytest.mark.parametrize("share", [True, False])
+def test_code_residual_with_silent_blocks_is_the_identity_on_the_code(share):
+    model, _ = code_model(n_layers=3, share=share)
     with torch.no_grad():
         for blk in model.blocks:  # every block's contribution is zero
             blk.attn.proj.weight.zero_()
@@ -254,8 +257,9 @@ def test_code_residual_forward_is_k_sparse_between_blocks():
         assert int((c != 0).sum(-1).max()) <= 16
 
 
-def test_code_residual_gradient_reaches_the_first_block():
-    model, _ = code_model(n_layers=4, scale=0.3)
+@pytest.mark.parametrize("share", [True, False])
+def test_code_residual_gradient_reaches_the_first_block(share):
+    model, _ = code_model(n_layers=4, scale=0.3, share=share)
     model.train()
     idx = torch.randint(0, 97, (2, 16))
     _, loss = model(idx, idx)
@@ -301,3 +305,30 @@ def test_gathered_shift_matches_the_dense_formulation(mode, dtype):
     want = reference_shift(z, 64, mode, gate.value_shift_lambda)
     tol = 1e-5 if dtype == torch.float32 else 1e-2
     assert torch.allclose(got, want, rtol=tol, atol=tol * float(want.abs().max()))
+
+
+def test_unshared_code_residual_gives_every_block_its_own_pair():
+    """Without share_projections block l reads through its own decoder and
+    writes through its own encoder; the entry adds one more pair (E_in for c_0,
+    D_out for the final readout)."""
+    model, ctl = code_model(n_layers=3, share=False)
+    mods = [m for _, m in ctl.layers]
+    assert len({id(m.in_proj.weight) for m in mods}) == len(mods) == 4
+    assert len({id(m.out_proj.weight) for m in mods}) == 4
+    plain = build_model(ModelConfig(vocab_size=97, max_seq_len=32, n_layers=3,
+                                    d_model=32, n_heads=4))
+    pair = 2 * 32 * 128  # biasless in_proj + out_proj
+    assert model.num_parameters() - plain.num_parameters() == 4 * pair
+    # each block really reads through its own decoder: perturbing block 1's
+    # decoder changes the output, and so does perturbing the entry's (readout)
+    idx = torch.randint(0, 97, (2, 8))
+    model.eval()
+    with torch.no_grad():
+        base = model(idx)[0].clone()
+        for mod in (model.blocks[1].residual_out_bottleneck, model.code_entry):
+            w = mod.out_proj.weight
+            saved = w.clone()
+            w.add_(0.1 * torch.randn_like(w))
+            assert not torch.allclose(model(idx)[0], base)
+            w.copy_(saved)
+        assert torch.equal(model(idx)[0], base)
