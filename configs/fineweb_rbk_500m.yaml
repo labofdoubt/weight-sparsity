@@ -27,7 +27,7 @@
 #
 # Checkpoint/egress policy (guide 9c): local cadence below is for crash
 # recovery; the ckpt WATCHER uploads latest.pt on a 7200 s cycle
-# (--with-checkpoints), so >= 1 checkpoint per 2 h reaches Drive and
+# (--checkpoints-only), so >= 1 checkpoint per 2 h reaches Drive and
 # intermediate ckpt_step*.pt stay local-only.
 # ============================================================================
 
