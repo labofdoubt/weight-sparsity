@@ -496,3 +496,59 @@ def test_relative_temperature_config_validation():
         with pytest.raises(ValueError):
             ActivationBottleneckConfig(**base, surrogate_mode=mode,
                                        rblapsum_relative_temperature=True)
+
+
+@pytest.mark.parametrize("scope,members", [("update_inactive", "inactive"),
+                                           ("update_active", "active")])
+def test_update_scopes_restrict_the_routed_support_term(scope, members):
+    from wsparse.model import TransformerLM
+    torch.manual_seed(5)
+    carry = (3 * torch.randn(4, 64, dtype=torch.float64)).requires_grad_(True)
+    update = torch.randn(4, 64, dtype=torch.float64).requires_grad_(True)
+    w = torch.randn(4, 64, dtype=torch.float64)
+    y = TransformerLM._split_surrogate(rbk_gate(scope), carry, update)
+    (y * w).sum().backward()
+    active = (y.detach() != 0)
+    mask = active.to(w.dtype)
+    assert torch.equal(carry.grad, w * mask)                 # the carry: exact
+    diff = update.grad - w * mask                            # the routed support term
+    pool = (carry + update).detach().abs().topk(8 + 24, dim=-1).indices
+    in_pool = torch.zeros_like(active).scatter(-1, pool, True)
+    side = active if members == "active" else (in_pool & ~active)
+    assert float(diff[side].abs().sum()) > 0
+    assert torch.equal(diff[~side], torch.zeros_like(diff[~side]))
+    # zero-sum over the chosen side, in score space (through_rank_kappa)
+    gs = (diff * (carry + update).detach().sign())[side].reshape(4, -1)
+    assert torch.allclose(gs.sum(-1), torch.zeros(4, dtype=torch.float64), atol=1e-12)
+
+
+def test_update_scope_is_the_sum_of_its_two_halves_under_detach():
+    # without a boundary correction the support term is diagonal, so the two
+    # restricted scopes partition it exactly
+    from wsparse.model import TransformerLM
+    torch.manual_seed(6)
+    base_c = 3 * torch.randn(3, 64, dtype=torch.float64)
+    base_u = torch.randn(3, 64, dtype=torch.float64)
+    w = torch.randn(3, 64, dtype=torch.float64)
+    grads = {}
+    for scope in ("update", "update_inactive", "update_active"):
+        carry, update = base_c.clone().requires_grad_(True), base_u.clone().requires_grad_(True)
+        y = TransformerLM._split_surrogate(rbk_gate(scope, mode="detach"), carry, update)
+        (y * w).sum().backward()
+        grads[scope] = update.grad - w * (y.detach() != 0).to(w.dtype)
+    assert torch.allclose(grads["update"], grads["update_inactive"] + grads["update_active"],
+                          atol=1e-12)
+
+
+def test_restricted_update_scopes_config_validation():
+    base = dict(enabled=True, n_features=64, k=8, j=8, placement="residual_out",
+                share_projections=True, surrogate_mode="rblapsum")
+    for scope in ("update_inactive", "update_active"):
+        ActivationBottleneckConfig(**base, code_residual=True, rblapsum_surrogate_scope=scope,
+                                   rblapsum_boundary_grad_mode="through_rank_kappa")
+        with pytest.raises(ValueError):  # needs the code residual
+            ActivationBottleneckConfig(**base, rblapsum_surrogate_scope=scope)
+    with pytest.raises(ValueError):      # the point-mass correction is on an inactive feature
+        ActivationBottleneckConfig(**base, code_residual=True,
+                                   rblapsum_surrogate_scope="update_active",
+                                   rblapsum_boundary_grad_mode="through_rank")

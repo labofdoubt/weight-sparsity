@@ -27,8 +27,8 @@ import torch
 import torch.nn as nn
 
 from .lapsum import lapsum_barrier_sorted, lapsum_probs, laplace_cdf
-from .rblapsum import (GRAD_MODES, VALUE_GRAD_MODES, rblapsum_gate, rblapsum_sf_gate,
-                       relative_kernel_width)
+from .rblapsum import (GRAD_MODES, SURROGATE_SCOPES, VALUE_GRAD_MODES, rblapsum_gate,
+                       rblapsum_sf_gate, relative_kernel_width)
 
 _DTYPES = {"float32": torch.float32, "float64": torch.float64}
 
@@ -108,10 +108,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self.rblapsum_sf_value_grad = rblapsum_sf_value_grad
         self.rblapsum_rho_random_perm_prob_grad = float(
             rblapsum_rho_random_perm_prob_grad)
-        # see ActivationBottleneckConfig.rblapsum_surrogate_scope; "update" is
-        # the model's routing (TransformerLM._code_residual_stack), so the gate
-        # itself only acts on "inactive"
-        if rblapsum_surrogate_scope not in ("pool", "inactive", "update"):
+        # see ActivationBottleneckConfig.rblapsum_surrogate_scope; the
+        # "update*" routing is the model's (TransformerLM._code_residual_stack),
+        # the gate itself only restricts the members
+        if rblapsum_surrogate_scope not in SURROGATE_SCOPES:
             raise ValueError(
                 f"unknown rblapsum_surrogate_scope: {rblapsum_surrogate_scope!r}")
         self.rblapsum_surrogate_scope = rblapsum_surrogate_scope
@@ -411,8 +411,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
                                 supp_scale=float(self.rblapsum_support_scale),
                                 perm_rho=(self.rblapsum_rho_random_perm_prob_grad
                                           if self.training else 0.0),
-                                inactive_only=(self.rblapsum_surrogate_scope
-                                               == "inactive"),
+                                members=SURROGATE_SCOPES[self.rblapsum_surrogate_scope],
                                 relative_t=self.rblapsum_relative_temperature)
         y = torch.zeros_like(value).scatter(-1, cand_idx, y_c.to(value.dtype))
         if alpha != 1.0:

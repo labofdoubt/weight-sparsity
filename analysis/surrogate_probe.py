@@ -15,6 +15,13 @@ entry gate first, then the blocks):
   n_window         mean number of pool members with |s_i - b| < T
   pool_grad_rms    RMS of dL/dy over the Top(K+J) pool (the upstream the
                    surrogate multiplies)
+  b_over_t         mean b / T_eff (T_eff = T, or T * b under
+                   rblapsum_relative_temperature): |u| kappa at the boundary is
+                   half of it
+  n_eff            mean kernel population (sum kappa)^2 / sum kappa^2 over the pool
+  pi_surr          mean and median over tokens of the exact surrogate gain
+                   ||L_kappa D_z||_F^2 of docs/scale-dynamics-note-neutral.tex
+                   (pi_surr, pi_surr_med)
 
 Energies are per token over the N code coordinates, then averaged over tokens.
 The gradient at the gate's input and output is captured with tensor hooks, so
@@ -94,6 +101,7 @@ def main():
     assert getattr(model, "code_entry", None) is not None, "needs a code_residual model"
     ab = cfg.activation_bottleneck
     k, t = int(ab.k), float(ab.temperature)
+    rel_t = bool(getattr(ab, "rblapsum_relative_temperature", False))
 
     gates = [model.code_entry.gate] + [b.residual_out_bottleneck.gate for b in model.blocks]
     cap, hooks = {}, []
@@ -136,7 +144,20 @@ def main():
         rec["kept_rms"] = float(kept.pow(2).mean().sqrt())
         rec["u_rms"] = float(u.pow(2).mean().sqrt())
         pool_s = top.values
-        rec["n_window"] = float(((pool_s - b.unsqueeze(-1)).abs() < t).float().sum(-1).mean())
+        t_eff = (t * b).clamp_min(1e-6) if rel_t else torch.full_like(b, t)
+        rec["b_over_t"] = float((b / t_eff).mean())
+        rec["n_window"] = float(((pool_s - b.unsqueeze(-1)).abs()
+                                 < t_eff.unsqueeze(-1)).float().sum(-1).mean())
+        # kernel population and the exact surrogate gain ||L_kappa D_z||_F^2
+        kap = (torch.exp(-(pool_s - b.unsqueeze(-1)).abs() / t_eff.unsqueeze(-1))
+               / (2 * t_eff.unsqueeze(-1)))
+        z_sum, k_sq = kap.sum(-1, keepdim=True), kap.pow(2).sum(-1, keepdim=True)
+        rec["n_eff"] = float((z_sum.pow(2) / k_sq).mean())
+        zc = u.gather(-1, top.indices)
+        pi = (zc.pow(2) * kap.pow(2) * ((1 - kap / z_sum).pow(2)
+                                        + (k_sq - kap.pow(2)) / z_sum.pow(2))).sum(-1)
+        rec["pi_surr"] = float(pi.mean())
+        rec["pi_surr_med"] = float(pi.flatten().median())
         if du is not None and dy is not None:
             du, dy = du.float(), dy.float()
             hard = dy * mask
@@ -163,7 +184,10 @@ def main():
           f"x{out.get('per_block_factor', float('nan')):.3f}  sigma mean {sum(sig)/max(1,len(sig)):.3f}  "
           f"b mean {sum(g['boundary'] for g in G)/len(G):.2f}  kept_rms "
           f"{sum(g['kept_rms'] for g in G)/len(G):.2f}  n_window "
-          f"{sum(g['n_window'] for g in G)/len(G):.1f} -> {args.out}")
+          f"{sum(g['n_window'] for g in G)/len(G):.1f}  b/T "
+          f"{sum(g['b_over_t'] for g in G)/len(G):.2f}  Pi max "
+          f"{max(g['pi_surr'] for g in G):.3g}  n_eff min "
+          f"{min(g['n_eff'] for g in G):.1f} -> {args.out}")
 
 
 if __name__ == "__main__":

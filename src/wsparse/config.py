@@ -471,6 +471,9 @@ class ActivationBottleneckConfig:
     #   "update"    code_residual only: the full pool term, routed into the
     #               block's own update alpha E Delta_l; the carried code gets the
     #               exact hard gradient m * g
+    #   "update_inactive", "update_active"
+    #               the same routing with the term restricted to the inactive
+    #               or to the active members (the ablation of "update")
     # In a code-residual stack the carry is the identity on each coordinate, so
     # a support term on the carried code multiplies the gradient of a coordinate
     # near the boundary by 1 + |u| kappa at every gate it passes, and the product
@@ -698,19 +701,28 @@ class ActivationBottleneckConfig:
                 )
         if self.solver_dtype not in ("float32", "float64"):
             raise ValueError(f"unknown solver_dtype: {self.solver_dtype} (float32 | float64)")
-        if self.rblapsum_surrogate_scope not in ("pool", "inactive", "update"):
+        scopes = ("pool", "inactive", "update", "update_inactive", "update_active")
+        if self.rblapsum_surrogate_scope not in scopes:
             raise ValueError(
                 "unknown rblapsum_surrogate_scope: "
-                f"{self.rblapsum_surrogate_scope!r} (pool | inactive | update)")
+                f"{self.rblapsum_surrogate_scope!r} ({' | '.join(scopes)})")
         if self.rblapsum_surrogate_scope != "pool":
             if self.surrogate_mode != "rblapsum":
                 raise ValueError(
                     "rblapsum_surrogate_scope applies to the hard-forward "
                     f"surrogate_mode='rblapsum' only, got {self.surrogate_mode!r}")
-            if self.rblapsum_surrogate_scope == "update" and not self.code_residual:
+            if (self.rblapsum_surrogate_scope.startswith("update")
+                    and not self.code_residual):
                 raise ValueError(
-                    "rblapsum_surrogate_scope='update' routes the support term into "
-                    "a code-residual block's update; set code_residual=true")
+                    f"rblapsum_surrogate_scope={self.rblapsum_surrogate_scope!r} "
+                    "routes the support term into a code-residual block's update; "
+                    "set code_residual=true")
+            if (self.rblapsum_surrogate_scope == "update_active"
+                    and self.rblapsum_boundary_grad_mode == "through_rank"):
+                raise ValueError(
+                    "through_rank puts the correction on the (K+1)-st feature, which "
+                    "is inactive; it does not apply to rblapsum_surrogate_scope="
+                    "'update_active'")
         if self.rblapsum_relative_temperature and self.surrogate_mode != "rblapsum":
             raise ValueError(
                 "rblapsum_relative_temperature applies to the hard-forward "

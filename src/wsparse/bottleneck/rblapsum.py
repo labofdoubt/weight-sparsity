@@ -76,6 +76,12 @@ def permute_fraction(x: torch.Tensor, rho: float) -> torch.Tensor:
     return out.reshape(x.shape)
 _MODE_ID = {"detach": 0, "project": 1, "through_rank": 2,
             "through_rank_kappa": 3}
+_MEMBERS_ID = {"pool": 0, "inactive": 1, "active": 2}
+# rblapsum_surrogate_scope -> which pool members get the support term; the
+# "update*" scopes are also routed into a code-residual block's update
+# (TransformerLM._code_residual_stack)
+SURROGATE_SCOPES = {"pool": "pool", "inactive": "inactive", "update": "pool",
+                    "update_inactive": "inactive", "update_active": "active"}
 
 
 def relative_kernel_width(t: float, b: torch.Tensor) -> torch.Tensor:
@@ -101,7 +107,7 @@ class _RBLapSumGate(torch.autograd.Function):
     @staticmethod
     def forward(ctx, value_c, active_c, score_c, sign_c, b, t, mode_id, k,
                 cap_active, sink, supp_scale=1.0,
-                perm_rho=0.0, inactive_only=False,
+                perm_rho=0.0, members=0,
                 relative_t=False):  # type: ignore[override]
         ctx.save_for_backward(value_c, active_c, score_c, sign_c, b, cap_active)
         ctx.t = float(t)
@@ -110,7 +116,7 @@ class _RBLapSumGate(torch.autograd.Function):
         ctx.sink = sink
         ctx.supp_scale = float(supp_scale)
         ctx.perm_rho = float(perm_rho)
-        ctx.inactive_only = bool(inactive_only)
+        ctx.members = int(members)
         ctx.relative_t = bool(relative_t)
         return value_c * active_c
 
@@ -139,20 +145,21 @@ class _RBLapSumGate(torch.autograd.Function):
 
         # raw support gradient in score-margin space:  a = dL/dp * kappa
         kappa = laplace_pdf((score_c - b) / t) / t
-        if ctx.inactive_only:
-            # rblapsum_surrogate_scope="inactive": the support term only for the
-            # J inactive members; active ones keep the exact hard gradient, and
-            # every correction below is taken over the inactive members alone
-            # (the (K+1)-st position is inactive by definition)
-            kappa = kappa * (1 - active_c)
+        member = None
+        if ctx.members:
+            # rblapsum_surrogate_scope restricted to one side of the boundary:
+            # 1 = the J inactive members (active ones keep the exact hard
+            # gradient), 2 = the K active members (inactive ones get none);
+            # every correction below is taken over those members alone
+            member = (1 - active_c) if ctx.members == 1 else active_c
+            kappa = kappa * member
         a = g_p * kappa
         a_raw = a
 
         if mode_id == 1:  # project: remove the common-mode direction where cap binds
-            if ctx.inactive_only:
-                inact = 1 - active_c
-                mean_in = a.sum(-1, keepdim=True) / inact.sum(-1, keepdim=True).clamp_min(1)
-                a_proj = a - inact * mean_in
+            if member is not None:
+                mean_m = a.sum(-1, keepdim=True) / member.sum(-1, keepdim=True).clamp_min(1)
+                a_proj = a - member * mean_m
             else:
                 a_proj = a - a.mean(-1, keepdim=True)
             a = torch.where(cap_active, a_proj, a)
@@ -337,7 +344,7 @@ def rblapsum_sf_gate(value_c, p_c, active_c, score_c, sign_c, b, t, mode, k,
 
 def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
                   cap_active, sink=None, supp_scale=1.0, perm_rho=0.0,
-                  inactive_only=False, relative_t=False):
+                  members="pool", relative_t=False):
     """Apply the rank-boundary support gate; see :class:`_RBLapSumGate`.
 
     ``value_c`` (signed z at the sorted Top(K+J) candidates) carries gradient;
@@ -345,13 +352,13 @@ def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
     ``supp_scale`` multiplies the surrogate support gradient in the backward
     (1.0 = normal; 0.0 = hard task path only) -- an experiment knob used by
     analysis/scale_dynamics.py for gradient-decomposition counterfactuals.
-    ``inactive_only`` restricts the support term to the inactive pool members
-    (rblapsum_surrogate_scope="inactive").  ``relative_t`` reads ``t`` as a
+    ``members`` restricts the support term to the "inactive" or the "active"
+    pool members ("pool": all of them; rblapsum_surrogate_scope).  ``relative_t`` reads ``t`` as a
     width relative to the boundary: the kernel is ``kappa_{t b}`` per row
     (rblapsum_relative_temperature).
     """
     return _RBLapSumGate.apply(
         value_c, active_c, score_c.detach(), sign_c.detach(), b.detach(),
         float(t), _MODE_ID[mode], int(k), cap_active.detach(), sink,
-        float(supp_scale), float(perm_rho), bool(inactive_only), bool(relative_t),
+        float(supp_scale), float(perm_rho), _MEMBERS_ID[members], bool(relative_t),
     )
