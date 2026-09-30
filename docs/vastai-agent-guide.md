@@ -77,14 +77,22 @@ Expect it green. One test is known-flaky
 
 ## 2. Google Drive (rclone)
 
-**The user configures this, not you.** `rclone.conf` holds a live OAuth refresh
-token; it must never pass through a conversation. Ask them to run, from their
-own machine:
+`rclone.conf` holds a live OAuth refresh token and the client secret -- standing
+access to the whole Drive until revoked -- so **its contents must never enter a
+conversation**: anything that does is sent to the model and kept in session
+transcripts, and the only cure is revoke, reconnect and re-copy to every box.
+Copying the file is fine, since `scp` moves it without anyone reading it; what
+is not fine is opening or printing it (`cat`/`head`/`less`, `rclone config
+show`/`dump`, pasting error output that contains it). Copy it from the local
+machine:
 
 ```bash
 ssh -p <port> root@<host> 'mkdir -p /root/.config/rclone'
 scp -P <port> ~/.config/rclone/rclone.conf root@<host>:/root/.config/rclone/rclone.conf
 ```
+
+Creating or reconnecting the token (steps 1-3 below) is a Google login in a
+browser, so the user does it on their own machine.
 
 Then **verify with a write round-trip**, not just a listing. Read access proves
 the token works; it does not prove you can create files:
@@ -105,8 +113,10 @@ Known quirks:
   throttles aggressively under load — transfer failures like "rateLimitExceeded"
   and chunk-commit loops — and which rclone is retiring during 2026).  Verify,
   don't assume: `client_id` must have a **value** — the line being present but
-  empty means the shared default.  If a box shows it empty, the fix is on the
-  user's machine, then re-scp'd:
+  empty means the shared default (`grep -qE '^client_id = .+'
+  /root/.config/rclone/rclone.conf && echo set` tests it without printing
+  anything).  If a box shows it empty, the fix is on the user's machine, then
+  re-scp'd:
 
   1. Google Cloud Console → a project → enable the **Google Drive API** →
      **OAuth consent screen** (External; add the *working* Drive account as a
@@ -207,21 +217,39 @@ via Drive, since two vast boxes have no SSH trust with each other.
 
 ## 5. Backups
 
-Two watchers, because the tiers have very different sizes and you do not want
-event files waiting behind a 1.4 GB checkpoint upload:
+Separate watchers per tier, because the tiers have very different sizes and you
+do not want event files waiting behind a 1.4 GB checkpoint upload:
 
 ```bash
 cd /workspace/weight-sparsity
 rclone mkdir gdrive:weight-sparsity/runs_<name>       # BEFORE the watchers: see the
 rclone mkdir gdrive:weight-sparsity/analysis_<name>   # duplicate-directory race in §2
-tmux new-session -d -s backup_tb \
+tmux new-session -d -s backup_light \
   "bash scripts/backup_watch.sh /workspace/runs gdrive:weight-sparsity/runs_<name> 60"
 tmux new-session -d -s backup_ckpt \
-  "bash scripts/backup_watch.sh /workspace/runs gdrive:weight-sparsity/runs_<name> 600 --all-checkpoints"
+  "bash scripts/backup_watch.sh /workspace/runs gdrive:weight-sparsity/runs_<name> 600 --checkpoints-only --all-checkpoints"
 tmux new-session -d -s backup_analysis \
   "bash scripts/backup_analysis_watch.sh /workspace/analysis gdrive:weight-sparsity/analysis_<name> 600"
 ```
 
+* **Files that are still being written upload safely.** Training appends to
+  the event files, `metrics.jsonl` and the run log while the watchers run.
+  Left alone, rclone aborts such a file (`source file is being updated`) or,
+  when it grew between upload and hash check, reports `corrupted on transfer:
+  md5 hash differ` and *deletes the Drive copy*.  Measured on porto,
+  2026-09-30, on a live `bn_hard` run with the previous watcher set
+  (`tb_push.sh` snapshots next to `backup_watch.sh`): 7 of 8 cycles failed, 18
+  files went to Drive's trash in 8.5 min, and the run's event file was missing
+  from Drive when the test ended.  `backup_runs.sh` now passes
+  `--local-no-check-updated`, so rclone uploads the size it saw at first stat
+  and checksums only that -- a consistent prefix of an append-only file.
+  Under the layout above: 7 of 7 light cycles clean on a live run, nothing
+  trashed, and the Drive copy identical to the local one once the run
+  stopped.  `tb_push.sh`, and the 60 s `backup_tb` before it, are gone.
+* **One writer per file.** `backup_ckpt` runs with `--checkpoints-only`, so
+  the light files have a single uploader.  Two rclone processes uploading the
+  same new file at once leave two same-named objects on Drive (seen with
+  `config.json` in the same test).
 * Use a **distinct remote prefix per machine**; mixing them makes provenance
   unrecoverable.
 * **The runs watchers do not cover `/workspace/analysis`.** `backup_runs.sh`'s
@@ -289,11 +317,15 @@ Drive layout:
 | `runs_server3/` | sweden — 20 residual-placement runs, 8x768 |
 | `runs_taiwan/` | 4 init/dense-control runs, 8x768 |
 | `runs_dc/` | the `dc_*` 20k-step runs (8x768 soft j-sweep, hard k-sweep) |
-| `runs_lens_1/` | current machine — probe / gainsweep dynamics runs |
+| `runs_lens_1/` | the lens_1 box — probe / gainsweep dynamics runs |
 | `analysis_lens_1/` | the analysis datasets for the streamlit viewer (§8) |
 | `benchmark_data/` | also in git |
 | `data/` | tokenized corpus |
 | `interpretability_results/`, `plots/` | analysis output |
+
+Later boxes follow one pattern -- `runs_<box>/` and `analysis_<box>/` (e.g.
+`runs_california/`, `runs_korea/`) -- so this table is not the full list;
+`rclone lsf gdrive:weight-sparsity/` is.
 
 Each run holds `latest.pt` (~1.4 GB), several `ckpt_step*.pt`, `metrics.jsonl`,
 `config.json`, `config.yaml`, `summary.json`, `tb/`.
@@ -888,15 +920,14 @@ What an agent must know:
   latest-only tier on a two-hour cycle:
 
       tmux new-session -d -s backup_ckpt \
-        "bash scripts/backup_watch.sh /workspace/runs gdrive:...  7200 --with-checkpoints"
+        "bash scripts/backup_watch.sh /workspace/runs gdrive:...  7200 --checkpoints-only"
 
   so at least one checkpoint per two hours reaches Drive (worst-case loss on
   box death: <= 2 h of training, resumable from the uploaded latest.pt), and
   intermediate `ckpt_step*.pt` stay local-only.  Push once more with
-  `--with-checkpoints` at each run's end (the campaign runner should do this
-  explicitly) so the final state never waits for the next cycle.  The light
-  tier (metrics/config/summary/markers) and tb_push keep their usual 600 s /
-  60 s cadence -- they are kilobytes.
+  `backup_runs.sh ... --checkpoints-only` at each run's end (the campaign
+  runner should do this explicitly) so the final state never waits for the
+  next cycle.  The light watcher keeps its 60 s cadence -- a few MB per run.
 
 ## 9d. The 2026-09-28 cleanup: what is gone, and what archived configs do
 
@@ -988,6 +1019,14 @@ could move numerics in a surviving mode.
   `python -m` is not.  Launch clone code with `PYTHONPATH=<clone>/src` and
   verify with `python -c "import wsparse; print(wsparse.__file__)"` before
   trusting the run.
+* **After a reboot the tmux sessions are gone** -- watchers and queues with
+  them -- while the supervisor TensorBoard comes back by itself.  `tmux ls`
+  first, then relaunch the §5 watchers.
+* **`git pull` onto an old box leaves `__pycache__` behind**, so a module
+  removed upstream can still import: after the 2026-09-28 cleanup,
+  `import wsparse.sparsity` still succeeded on alberta as an empty namespace
+  package.  Purge after pulling:
+  `find . -name __pycache__ -type d -prune -exec rm -rf {} + && find src tests -type d -empty -delete`.
 * `torch.multinomial` raises a **device-side assert** on non-finite logits, so a
   collapsed model crashes in the *sampling* callback rather than in training.
   Read that as a symptom, not the cause.
