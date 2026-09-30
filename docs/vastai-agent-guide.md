@@ -372,7 +372,11 @@ mod.gate.register_forward_hook(lambda m, i, o: grab.__setitem__("z", o.detach())
 ```
 
 The decoder is `mod.out_proj.weight` `(d_model, n_features)`, columns are feature
-directions.  (Checkpoints from the removed output-calibration era carry an
+directions.  Its fixed scale `g_D` (`bottleneck_decoder_scale`) is a plain
+attribute, restored by the controller from the config since `f9a869c`; before
+that, `load_for_inference` and the analysis `--ckpt` paths evaluated
+`backward_preserving` checkpoints with `g_D = 1` (harmless behind a post-norm,
+a different network without one).  (Checkpoints from the removed output-calibration era carry an
 extra `output_scale` buffer; `load_state_dict` on the current code rejects it,
 so read those with a pre-cleanup commit -- see §9d.)
 `scripts/../interpretability/extract_bottleneck_activations.py` is a worked
@@ -451,6 +455,20 @@ one streamlit viewer over them. `analysis/README.md` is the complete manual; the
   bottleneck's per-layer gain compounds as `g^n_layers`. With `layers=all`,
   `residual` and `residual_out` differ in only one insertion point out of
   `n_layers + 1`.
+* **Depth with a stream bottleneck** (docs/stream-bottleneck-depth.tex). TopK
+  keeps the largest coefficients, so the forward energy gain exceeds the
+  backward one by `s^2(K/N) = E[z^2 | kept]` (4.02 at K/N = 1/8), invariant to
+  `g_D`, MD gains, a post-norm, orthogonal init and `share_projections`.
+  Without a norm the stream grows as `s^L` (24 layers: x^2 overflows float32 in
+  the RMSNorms, CE = ln V); with `post_norm` the gradient shrinks as `s^-L` and,
+  worse, the renormalized carry lets a token-independent block output compound
+  until every position holds the same vector (CE = unigram entropy 5.97).  Both
+  24-layer failures were this, not information loss.  Deep stacks train with
+  `activation_bottleneck.code_residual=true` (the code is carried,
+  `c_{l+1} = TopK(c_l + E Delta_l)`, one shared dictionary) or
+  `value_shift=energy` with `post_norm=false`; `analysis/depth_probe.py`
+  measures all of it per block.  Neither option is in the state_dict: resume a
+  run with its own `config.yaml`.
 * **The bottleneck does not inherit the model's conventions.** It is spliced in
   *after* `_init_weights` runs, so `init_scheme` / `init_std` / `init_gain` never
   touch it, and `activation_bottleneck.bias` is a separate field (since the

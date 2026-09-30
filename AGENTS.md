@@ -37,6 +37,7 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
    uv pip install -q -e . --no-deps
    mkdir -p /workspace/{runs,analysis,data,hf_cache,plots}
    ```
+   If `uv` fails with `invalid peer certificate: UnknownIssuer`, add `--system-certs`.
 3. **rclone config** (§2) holds a live Drive token and the client secret. Copy
    it from the local machine, but never open or print it: no `cat`/`head`, no
    `rclone config show`/`dump`, no quoting it in a message. Creating or
@@ -148,6 +149,9 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
   bottleneck's `in_proj`/`out_proj` (§9).
 - **The bottleneck does not inherit the model's init.** `init_mode=default`
   attenuates the output ~8× and collapses stream placements (§9).
+- **Deep stream bottlenecks** (beyond ~8 layers) need `code_residual` or
+  `value_shift` with `post_norm=false`; no scale, init or post-norm fixes them (§9).
+  Resume with the run's own `config.yaml`: those options are not in the state_dict.
 - **`rblapsum_sf` logs two losses:** `val/ce` is the hard Top-K forward,
   `val_soft/ce` the soft forward it trains (§9).
 - **rblapsum stability:** read Pi per block together with `n_eff`, never
