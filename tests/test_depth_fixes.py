@@ -274,3 +274,30 @@ def test_code_residual_checkpoint_roundtrip():
     idx = torch.randint(0, 97, (2, 8))
     model.eval(); fresh.eval()
     assert torch.equal(model(idx)[0], fresh(idx)[0])
+
+
+def reference_shift(z, k, mode, lam):
+    """The dense (N-sized) formulation the gathered implementation must match."""
+    v = z.double()
+    mask = torch.zeros_like(v).scatter(-1, v.abs().topk(k, dim=-1).indices, 1.0)
+    sig2 = (v * v).mean(-1, keepdim=True)
+    if mode == "fixed":
+        delta = lam * sig2.sqrt()
+    else:
+        a = v.abs() * mask
+        m1, m2 = a.sum(-1, keepdim=True) / k, (a * a).sum(-1, keepdim=True) / k
+        delta = m1 - (m1 * m1 - m2 + sig2).clamp_min(1e-6 * sig2).sqrt()
+    return v.sign() * torch.relu(v.abs() - delta) * mask
+
+
+@pytest.mark.parametrize("mode", ["fixed", "energy"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_gathered_shift_matches_the_dense_formulation(mode, dtype):
+    gate = shift_gate(mode, n=512, k=64)
+    torch.manual_seed(5)
+    g = torch.randn(32, 512)
+    z = (g.sign() * g.abs() ** torch.linspace(1.0, 2.0, 32).unsqueeze(1)).to(dtype)
+    got = gate(z).double()
+    want = reference_shift(z, 64, mode, gate.value_shift_lambda)
+    tol = 1e-5 if dtype == torch.float32 else 1e-2
+    assert torch.allclose(got, want, rtol=tol, atol=tol * float(want.abs().max()))

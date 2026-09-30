@@ -270,7 +270,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 # rather than merely absent.
                 self._record_hard(cand_scores.to(self.solver_dtype).detach())
             if self.value_shift != "none":
-                return self._shifted(value, hard_mask)
+                return self._shifted(value, cand_idx[..., : self.k])
             return value * hard_mask
 
         cand = cand_scores.to(self.solver_dtype)
@@ -307,7 +307,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         return value * mask
 
     # ---- value shift (hard forward) -------------------------------------------- #
-    def _shifted(self, value: torch.Tensor, hard_mask: torch.Tensor) -> torch.Tensor:
+    def _shifted(self, value: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
         """``sign(z) * max(|z| - delta, 0)`` on the TopK support, zero elsewhere.
 
         ``delta`` is per token: ``value_shift_lambda * RMS(z)`` ("fixed"), or the
@@ -317,32 +317,35 @@ class AdaptiveLapSumTopKGate(nn.Module):
         of all N.  ``m2 >= sigma^2`` (the kept are the largest) makes the root
         at most ``m1``, so ``delta >= 0``; when the kept magnitudes are so spread
         that no shift gets down to ``sigma^2``, the discriminant is floored and
-        ``delta ~ m1``, the shift of least energy.  Statistics in float32,
-        gradients through everything (delta included): this is the forward.
+        ``delta ~ m1``, the shift of least energy.  Gradients go through
+        everything (delta included): this is the forward.
+
+        ``idx`` holds the K kept positions, so everything but ``sigma^2`` works
+        on K gathered values rather than N (in at least float32; bf16/fp16 are
+        promoted, float64 stays float64), and the result is scattered back.
         """
-        # at least float32 (bf16/fp16 are promoted; float64 stays float64)
-        v = value.to(torch.promote_types(value.dtype, torch.float32))
-        m = hard_mask.to(v.dtype)
-        sig2 = (v * v).mean(-1, keepdim=True)
+        ft = torch.promote_types(value.dtype, torch.float32)
+        vk = value.gather(-1, idx).to(ft)
+        sig2 = torch.linalg.vector_norm(value, dim=-1, keepdim=True,
+                                        dtype=ft).pow(2) / value.shape[-1]
+        a = vk.abs()
         if self.value_shift == "fixed":
             delta = self.value_shift_lambda * sig2.sqrt()
         else:
-            a = v.abs() * m
-            m1 = a.sum(-1, keepdim=True) / self.k
-            m2 = (a * a).sum(-1, keepdim=True) / self.k
+            m1 = a.mean(-1, keepdim=True)
+            m2 = (a * a).mean(-1, keepdim=True)
             # floored away from 0: sqrt's slope is unbounded there
             disc = (m1 * m1 - m2 + sig2).clamp_min(1e-6 * sig2.detach()
-                                                   + torch.finfo(v.dtype).tiny)
+                                                   + torch.finfo(ft).tiny)
             delta = m1 - disc.sqrt()
-        out = v.sign() * torch.relu(v.abs() - delta) * m
+        yk = vk.sign() * torch.relu(a - delta)
         if self.log_diagnostics and self.training:
             with torch.no_grad():
-                sig = sig2.sqrt().clamp_min(torch.finfo(v.dtype).tiny)
+                sig = sig2.sqrt().clamp_min(torch.finfo(ft).tiny)
                 self._forward_diag["shift_rel"] = (delta / sig).mean()
                 # kept by TopK but below delta, so output as zero
-                self._forward_diag["shift_clamped_frac"] = (
-                    ((v.abs() <= delta) & (m > 0)).float().sum(-1) / self.k).mean()
-        return out.to(value.dtype)
+                self._forward_diag["shift_clamped_frac"] = (a <= delta).float().mean()
+        return torch.zeros_like(value).scatter(-1, idx, yk.to(value.dtype))
 
     # ---- rblapsum ------------------------------------------------------------- #
     def _rblapsum(self, scores: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
