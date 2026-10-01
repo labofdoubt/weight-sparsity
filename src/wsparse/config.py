@@ -495,6 +495,20 @@ class ActivationBottleneckConfig:
     # boundary at every scale.  False keeps the absolute temperature.
     rblapsum_relative_temperature: bool = False
 
+    # Token-centered support term (surrogate_mode="rblapsum" only): per gate
+    # and feature, the mean over the micro-batch's tokens of the support term
+    # (over the tokens whose Top(K+J) pool contains the feature) is removed,
+    # so the term sums to zero over tokens for every feature.  The surrogate
+    # then decides WHICH tokens use a feature but does not push a feature up
+    # or down for all tokens at once; how often a feature is used is left to
+    # the exact (hard) gradient.  The boundary correction already removes the
+    # other common mode (all of a token's scores moving together).  In a
+    # code-residual stack the token-mean push raises generic features until
+    # they are active for every token and hold all K slots: the code stops
+    # depending on the token and the model falls back to the unigram
+    # (docs/rblapsum-code-residual-journal.tex, Entry 6).
+    rblapsum_center_tokens: bool = False
+
     # rblapsum_sf only: which candidates' VALUES train.  "pool" (default) is
     # the gradient of the soft forward -- every Top(K+J) member gets the value
     # path u * p_i.  "support" masks the value path to the hard support: the J
@@ -723,6 +737,10 @@ class ActivationBottleneckConfig:
                     "through_rank puts the correction on the (K+1)-st feature, which "
                     "is inactive; it does not apply to rblapsum_surrogate_scope="
                     "'update_active'")
+        if self.rblapsum_center_tokens and self.surrogate_mode != "rblapsum":
+            raise ValueError(
+                "rblapsum_center_tokens applies to the hard-forward "
+                f"surrogate_mode='rblapsum' only, got {self.surrogate_mode!r}")
         if self.rblapsum_relative_temperature and self.surrogate_mode != "rblapsum":
             raise ValueError(
                 "rblapsum_relative_temperature applies to the hard-forward "

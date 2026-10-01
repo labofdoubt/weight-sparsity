@@ -552,3 +552,46 @@ def test_restricted_update_scopes_config_validation():
         ActivationBottleneckConfig(**base, code_residual=True,
                                    rblapsum_surrogate_scope="update_active",
                                    rblapsum_boundary_grad_mode="through_rank")
+
+
+# ---- rblapsum_center_tokens ---------------------------------------------------- #
+
+def center_gate(scope="pool", center=True, mode="through_rank_kappa"):
+    gate = AdaptiveLapSumTopKGate(n_features=64, k=8, j=24, surrogate_mode="rblapsum",
+                                  rblapsum_boundary_grad_mode=mode, temperature=1.0,
+                                  rblapsum_surrogate_scope=scope,
+                                  rblapsum_center_tokens=center)
+    gate.train()
+    return gate
+
+
+@pytest.mark.parametrize("scope", ["pool", "inactive", "update_active"])
+def test_center_tokens_zeroes_every_features_token_sum(scope):
+    torch.manual_seed(7)
+    z = 3 * torch.randn(2, 40, 64, dtype=torch.float64) + 2 * torch.randn(64, dtype=torch.float64)
+    w = torch.randn(2, 40, 64, dtype=torch.float64)
+    g = gate_grad(center_gate(scope), z, w)
+    g0 = gate_grad(center_gate(scope, center=False), z, w)
+    y = center_gate(scope)(z)
+    mask = (y != 0).to(w.dtype)
+    sign = z.sign()
+    supp = (g - w * mask) * sign                       # the support term, score space
+    supp0 = (g0 - w * mask) * sign
+    # every feature's support term sums to zero over the tokens ...
+    assert torch.allclose(supp.reshape(-1, 64).sum(0), torch.zeros(64, dtype=torch.float64),
+                          atol=1e-12)
+    assert supp0.reshape(-1, 64).sum(0).abs().max() > 1e-6   # ... which it did not before
+    # only pool members carry it, and the forward is unchanged
+    pool = z.abs().topk(32, dim=-1).indices
+    in_pool = torch.zeros_like(z, dtype=torch.bool).scatter(-1, pool, True)
+    assert torch.equal(supp[~in_pool], torch.zeros_like(supp[~in_pool]))
+    assert torch.equal(y, center_gate(scope, center=False)(z))
+
+
+def test_center_tokens_config_validation():
+    base = dict(enabled=True, n_features=64, k=8, j=8, placement="residual_out",
+                share_projections=True)
+    ActivationBottleneckConfig(**base, surrogate_mode="rblapsum", rblapsum_center_tokens=True)
+    for mode in ("hard", "lapsum", "rblapsum_sf"):
+        with pytest.raises(ValueError):
+            ActivationBottleneckConfig(**base, surrogate_mode=mode, rblapsum_center_tokens=True)

@@ -84,6 +84,30 @@ SURROGATE_SCOPES = {"pool": "pool", "inactive": "inactive", "update": "pool",
                     "update_inactive": "inactive", "update_active": "active"}
 
 
+def center_over_tokens(g_s: torch.Tensor, cand_idx: torch.Tensor,
+                       n_features: int) -> torch.Tensor:
+    """Remove, per feature, the token mean of the support term.
+
+    ``g_s`` (score space) and ``cand_idx`` are ``(..., K+J)``, one row per
+    token.  For every feature the mean of its support term over the rows whose
+    pool contains it is subtracted on those rows, so the term sums to zero
+    over the tokens for every feature (rblapsum_center_tokens).  Complements
+    the per-token zero-sum of the boundary correction: that one forbids
+    moving all of a token's scores together, this one moving one feature's
+    score for all tokens together.
+    """
+    q = g_s.shape[-1]
+    gs = g_s.reshape(-1, q)
+    idx = cand_idx.reshape(-1, q)
+    flat = idx.reshape(-1)
+    total = torch.zeros(n_features, dtype=gs.dtype, device=gs.device).index_add_(
+        0, flat, gs.reshape(-1))
+    count = torch.zeros(n_features, dtype=gs.dtype, device=gs.device).index_add_(
+        0, flat, torch.ones_like(gs).reshape(-1))
+    mean = total / count.clamp_min(1)
+    return (gs - mean[idx]).reshape(g_s.shape)
+
+
 def relative_kernel_width(t: float, b: torch.Tensor) -> torch.Tensor:
     """The scale-free kernel width ``t * b`` (rblapsum_relative_temperature).
 
@@ -108,8 +132,11 @@ class _RBLapSumGate(torch.autograd.Function):
     def forward(ctx, value_c, active_c, score_c, sign_c, b, t, mode_id, k,
                 cap_active, sink, supp_scale=1.0,
                 perm_rho=0.0, members=0,
-                relative_t=False):  # type: ignore[override]
-        ctx.save_for_backward(value_c, active_c, score_c, sign_c, b, cap_active)
+                relative_t=False, cand_idx=None,
+                n_features=0):  # type: ignore[override]
+        ctx.save_for_backward(value_c, active_c, score_c, sign_c, b, cap_active,
+                              cand_idx)
+        ctx.n_features = int(n_features)
         ctx.t = float(t)
         ctx.mode_id = int(mode_id)
         ctx.k = int(k)
@@ -122,7 +149,7 @@ class _RBLapSumGate(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_y):  # type: ignore[override]
-        value_c, active_c, score_c, sign_c, b, cap_active = ctx.saved_tensors
+        value_c, active_c, score_c, sign_c, b, cap_active, cand_idx = ctx.saved_tensors
         t, mode_id, k = ctx.t, ctx.mode_id, ctx.k
         if ctx.relative_t:
             # scale-free kernel: width t * b per row (rblapsum_relative_temperature)
@@ -181,6 +208,8 @@ class _RBLapSumGate(torch.autograd.Function):
             a = torch.where(cap_active, a - q.to(a.dtype) * total, a)
 
         g_s = a if ctx.supp_scale == 1.0 else a * ctx.supp_scale
+        if cand_idx is not None:
+            g_s = center_over_tokens(g_s, cand_idx, ctx.n_features)
         grad_value = grad_value + sign_c * g_s
 
         sink = ctx.sink
@@ -209,7 +238,7 @@ class _RBLapSumGate(torch.autograd.Function):
                     omag = gs.abs().mean()
                     sink["rb_boundary_grad_ratio"] = (bmag / (omag + eps)).detach()
         return (grad_value, None, None, None, None, None, None, None, None, None,
-                None, None, None, None)
+                None, None, None, None, None, None)
 
 
 class _RBLapSumSFGate(torch.autograd.Function):
@@ -344,7 +373,7 @@ def rblapsum_sf_gate(value_c, p_c, active_c, score_c, sign_c, b, t, mode, k,
 
 def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
                   cap_active, sink=None, supp_scale=1.0, perm_rho=0.0,
-                  members="pool", relative_t=False):
+                  members="pool", relative_t=False, cand_idx=None, n_features=0):
     """Apply the rank-boundary support gate; see :class:`_RBLapSumGate`.
 
     ``value_c`` (signed z at the sorted Top(K+J) candidates) carries gradient;
@@ -355,10 +384,13 @@ def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
     ``members`` restricts the support term to the "inactive" or the "active"
     pool members ("pool": all of them; rblapsum_surrogate_scope).  ``relative_t`` reads ``t`` as a
     width relative to the boundary: the kernel is ``kappa_{t b}`` per row
-    (rblapsum_relative_temperature).
+    (rblapsum_relative_temperature).  With ``cand_idx`` (the candidates'
+    feature indices) and ``n_features`` the support term is centered over the
+    tokens per feature (rblapsum_center_tokens, :func:`center_over_tokens`).
     """
     return _RBLapSumGate.apply(
         value_c, active_c, score_c.detach(), sign_c.detach(), b.detach(),
         float(t), _MODE_ID[mode], int(k), cap_active.detach(), sink,
         float(supp_scale), float(perm_rho), _MEMBERS_ID[members], bool(relative_t),
+        None if cand_idx is None else cand_idx.detach(), int(n_features),
     )

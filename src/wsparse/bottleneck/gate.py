@@ -51,6 +51,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         rblapsum_rho_random_perm_prob_grad: float = 0.0,
         rblapsum_surrogate_scope: str = "pool",
         rblapsum_relative_temperature: bool = False,
+        rblapsum_center_tokens: bool = False,
         barrier_solver_tol: float = 1e-6,
         solver_dtype: str = "float32",
         log_diagnostics: bool = True,
@@ -121,6 +122,11 @@ class AdaptiveLapSumTopKGate(nn.Module):
             raise ValueError(
                 "rblapsum_relative_temperature applies to surrogate_mode='rblapsum' only")
         self.rblapsum_relative_temperature = bool(rblapsum_relative_temperature)
+        # see ActivationBottleneckConfig.rblapsum_center_tokens
+        if rblapsum_center_tokens and surrogate_mode != "rblapsum":
+            raise ValueError(
+                "rblapsum_center_tokens applies to surrogate_mode='rblapsum' only")
+        self.rblapsum_center_tokens = bool(rblapsum_center_tokens)
         # Experiment-only knobs, set programmatically (analysis/scale_dynamics.py),
         # deliberately not config fields.  support_scale multiplies the surrogate
         # support gradient g_s in the backward (0 = pure hard task path).
@@ -412,7 +418,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
                                 perm_rho=(self.rblapsum_rho_random_perm_prob_grad
                                           if self.training else 0.0),
                                 members=SURROGATE_SCOPES[self.rblapsum_surrogate_scope],
-                                relative_t=self.rblapsum_relative_temperature)
+                                relative_t=self.rblapsum_relative_temperature,
+                                cand_idx=(cand_idx if self.rblapsum_center_tokens
+                                          and self.training else None),
+                                n_features=self.n_features)
         y = torch.zeros_like(value).scatter(-1, cand_idx, y_c.to(value.dtype))
         if alpha != 1.0:
             y = y / alpha
