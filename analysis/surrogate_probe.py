@@ -22,6 +22,13 @@ entry gate first, then the blocks):
   pi_surr          mean and median over tokens of the exact surrogate gain
                    ||L_kappa D_z||_F^2 of docs/scale-dynamics-note-neutral.tex
                    (pi_surr, pi_surr_med)
+  supp_common_frac share of the support term's energy (score space, over the
+                   pool) in its per-feature token mean -- the part that moves
+                   one feature's score for every token at once
+  push_usage_corr  correlation over features between that token-mean push
+                   (descent direction, + = score up for all tokens) and the
+                   feature's active frequency in the batch
+  n_half           features active for more than half of the batch's tokens
 
 Energies are per token over the N code coordinates, then averaged over tokens.
 The gradient at the gate's input and output is captured with tensor hooks, so
@@ -123,7 +130,11 @@ def main():
     dtype = resolve_dtype(cfg.train.dtype, dev)
     with autocast_context(dev, dtype):
         _, loss = model(x, y)
-    loss.backward()
+    if ab.rblapsum_surrogate_scope == "first_order":
+        from wsparse.bottleneck.rblapsum import first_order_backward
+        first_order_backward(loss, model.tok_emb.weight)
+    else:
+        loss.backward()
     for h in hooks:
         h.remove()
 
@@ -170,6 +181,26 @@ def main():
             rec["sigma"] = float((e_s / e_h.clamp_min(1e-30)).mean())
             pool_idx = top.indices
             rec["pool_grad_rms"] = float(dy.gather(-1, pool_idx).pow(2).mean().sqrt())
+            # the support term's per-feature token mean (score space, pool only)
+            q = pool_idx.shape[-1]
+            n_feat = u.shape[-1]
+            gs = (surr * u.sign()).gather(-1, pool_idx).reshape(-1, q).double()
+            flat = pool_idx.reshape(-1)
+            tot = torch.zeros(n_feat, dtype=gs.dtype, device=gs.device).index_add_(
+                0, flat, gs.reshape(-1))
+            cnt = torch.zeros(n_feat, dtype=gs.dtype, device=gs.device).index_add_(
+                0, flat, torch.ones_like(gs).reshape(-1))
+            mean = tot / cnt.clamp_min(1)
+            e_all = float(gs.pow(2).sum())
+            rec["supp_common_frac"] = (float((cnt * mean.pow(2)).sum()) / e_all
+                                       if e_all > 0 else 0.0)
+            usage = mask.reshape(-1, n_feat).mean(0).double()
+            push = -mean
+            sel = cnt > 0
+            if int(sel.sum()) > 2 and float(push[sel].std()) > 0:
+                pu = torch.stack([push[sel], usage[sel]])
+                rec["push_usage_corr"] = float(torch.corrcoef(pu)[0, 1])
+            rec["n_half"] = int((usage > 0.5).sum())
             rec["offsupport_grad_rms"] = float((dy * (1 - mask)).pow(2).mean().sqrt())
         out["gates"].append(rec)
 

@@ -595,3 +595,56 @@ def test_center_tokens_config_validation():
     for mode in ("hard", "lapsum", "rblapsum_sf"):
         with pytest.raises(ValueError):
             ActivationBottleneckConfig(**base, surrogate_mode=mode, rblapsum_center_tokens=True)
+
+
+# ---- rblapsum_surrogate_scope="first_order" ------------------------------------ #
+
+def vjp(gate, z, up):
+    z = z.detach().clone().requires_grad_(True)
+    (gate(z) * up).sum().backward()
+    return z.grad
+
+
+def test_first_order_scope_takes_one_support_term_per_path():
+    # two gates in a pure carry, y = G2(G1(x)): the first-order gradient is the
+    # hard path, plus gate 2's support term carried down through gate 1's mask,
+    # plus gate 1's support term computed from the hard-path upstream m2 * w
+    from wsparse.bottleneck.rblapsum import first_order_backward
+    torch.manual_seed(8)
+    x = (3 * torch.randn(5, 64, dtype=torch.float64)).requires_grad_(True)
+    w = torch.randn(5, 64, dtype=torch.float64)
+    f1, f2 = rbk_gate("first_order"), rbk_gate("first_order")
+    p1, p2 = rbk_gate("pool"), rbk_gate("pool")
+    c1 = f1(x)
+    y = f2(c1)
+    assert torch.equal(y.detach(), p2(p1(x.detach())))           # the forward is the gate's
+    first_order_backward((y * w).sum(), x)
+    m1 = (p1(x.detach()) != 0).to(w.dtype)
+    m2 = (y.detach() != 0).to(w.dtype)
+    total_c1 = vjp(p2, c1, w)                                     # m2 w + S2^T w
+    hard_c1 = m2 * w
+    expected = m1 * total_c1 + (vjp(p1, x, hard_c1) - m1 * hard_c1)
+    assert torch.allclose(x.grad, expected, atol=1e-12)
+    # the ordinary backward differs: it applies gate 1's support term to the total
+    pooled = vjp(p1, x, total_c1)
+    assert not torch.allclose(pooled, expected)
+
+
+def test_first_order_scope_trains_end_to_end(tmp_path, monkeypatch):
+    import numpy as np
+    import wsparse.train as wt
+    from tests.test_train import make_fake_dataset, smoke_config
+    calls = []
+    real = wt.first_order_backward
+    monkeypatch.setattr(wt, "first_order_backward",
+                        lambda loss, anchor: (calls.append(1), real(loss, anchor)))
+    data_dir = make_fake_dataset(tmp_path)
+    cfg = smoke_config(data_dir, str(tmp_path / "out"))
+    cfg.activation_bottleneck = ActivationBottleneckConfig(
+        enabled=True, placement="residual_out", layers="all", n_features=64, k=8, j=8,
+        surrogate_mode="rblapsum", rblapsum_boundary_grad_mode="through_rank_kappa",
+        share_projections=True, code_residual=True, rblapsum_surrogate_scope="first_order")
+    summary = wt.train(cfg)
+    assert np.isfinite(summary["best_val_ce"])
+    # two micro-batches per step, each through the two-pass backward
+    assert len(calls) == cfg.train.max_steps * cfg.train.grad_accum_steps

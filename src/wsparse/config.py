@@ -474,6 +474,13 @@ class ActivationBottleneckConfig:
     #   "update_inactive", "update_active"
     #               the same routing with the term restricted to the inactive
     #               or to the active members (the ablation of "update")
+    #   "first_order"  every gate's support term enters its input (carry and
+    #               update), computed from the gradient that reached the gate
+    #               along hard paths only, so no gradient carries more than one
+    #               support term: the first-order estimate (one support change
+    #               at a time) of the whole stack.  Costs a second, partial
+    #               backward pass per micro-batch (wsparse.train); single
+    #               process only
     # In a code-residual stack the carry is the identity on each coordinate, so
     # a support term on the carried code multiplies the gradient of a coordinate
     # near the boundary by 1 + |u| kappa at every gate it passes, and the product
@@ -715,7 +722,8 @@ class ActivationBottleneckConfig:
                 )
         if self.solver_dtype not in ("float32", "float64"):
             raise ValueError(f"unknown solver_dtype: {self.solver_dtype} (float32 | float64)")
-        scopes = ("pool", "inactive", "update", "update_inactive", "update_active")
+        scopes = ("pool", "inactive", "update", "update_inactive", "update_active",
+                  "first_order")
         if self.rblapsum_surrogate_scope not in scopes:
             raise ValueError(
                 "unknown rblapsum_surrogate_scope: "

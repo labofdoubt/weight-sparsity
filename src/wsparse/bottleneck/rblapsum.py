@@ -81,7 +81,50 @@ _MEMBERS_ID = {"pool": 0, "inactive": 1, "active": 2}
 # "update*" scopes are also routed into a code-residual block's update
 # (TransformerLM._code_residual_stack)
 SURROGATE_SCOPES = {"pool": "pool", "inactive": "inactive", "update": "pool",
-                    "update_inactive": "inactive", "update_active": "active"}
+                    "update_inactive": "inactive", "update_active": "active",
+                    "first_order": "pool"}
+
+
+class FirstOrderState:
+    """Which backward pass is running, for rblapsum_surrogate_scope="first_order".
+
+    The first-order estimator needs, at every gate, the gradient that reached
+    it along hard paths only.  :func:`first_order_backward` runs a backward
+    with ``phase = "hard"`` (every first-order gate passes back only ``m * g``
+    and keeps that ``g``), then the ordinary one, in which each such gate adds
+    its support term computed from the kept hard-path gradient instead of from
+    the total upstream.  One process trains one model, so the state is global.
+    """
+
+    def __init__(self) -> None:
+        self.phase = "total"
+
+
+FIRST_ORDER = FirstOrderState()
+
+
+class first_order_hard_pass:
+    """Context manager: the backward inside it is the hard pass."""
+
+    def __enter__(self):
+        FIRST_ORDER.phase = "hard"
+        return self
+
+    def __exit__(self, *exc):
+        FIRST_ORDER.phase = "total"
+        return False
+
+
+def first_order_backward(loss: torch.Tensor, anchor: torch.Tensor) -> None:
+    """``loss.backward()`` with the first-order support terms.
+
+    ``anchor`` is a leaf below every gate (the token embedding): the hard pass
+    is ``torch.autograd.grad`` to it, so no parameter's ``.grad`` is touched,
+    and only the second pass accumulates.
+    """
+    with first_order_hard_pass():
+        torch.autograd.grad(loss, [anchor], retain_graph=True, allow_unused=True)
+    loss.backward()
 
 
 def center_over_tokens(g_s: torch.Tensor, cand_idx: torch.Tensor,
@@ -133,7 +176,7 @@ class _RBLapSumGate(torch.autograd.Function):
                 cap_active, sink, supp_scale=1.0,
                 perm_rho=0.0, members=0,
                 relative_t=False, cand_idx=None,
-                n_features=0):  # type: ignore[override]
+                n_features=0, first_order=False):  # type: ignore[override]
         ctx.save_for_backward(value_c, active_c, score_c, sign_c, b, cap_active,
                               cand_idx)
         ctx.n_features = int(n_features)
@@ -145,6 +188,10 @@ class _RBLapSumGate(torch.autograd.Function):
         ctx.perm_rho = float(perm_rho)
         ctx.members = int(members)
         ctx.relative_t = bool(relative_t)
+        # rblapsum_surrogate_scope="first_order": the hard-path gradient kept by
+        # the hard pass, used for the support term in the total pass
+        ctx.first_order = bool(first_order)
+        ctx.hard_upstream = None
         return value_c * active_c
 
     @staticmethod
@@ -157,6 +204,17 @@ class _RBLapSumGate(torch.autograd.Function):
 
         # ordinary hard-forward path: dL/dz_i += upstream_i * m_i, unmodified
         grad_value = grad_y * active_c
+        g_up = grad_y
+        if ctx.first_order:
+            if FIRST_ORDER.phase == "hard":
+                # the hard pass: keep the hard-path gradient, pass back m * g
+                ctx.hard_upstream = grad_y.detach()
+                return (grad_value,) + (None,) * 16
+            if ctx.hard_upstream is not None:
+                # the total pass: one support term per gate, from the hard path
+                # (a jump at this gate times exact Jacobians elsewhere), never
+                # from another gate's support term
+                g_up, ctx.hard_upstream = ctx.hard_upstream, None
 
         # the surrogate signal dL/dp_i = upstream_i * z_i.  The permutation
         # ablation scrambles a rho fraction of it WITHIN each row's pool,
@@ -166,7 +224,7 @@ class _RBLapSumGate(torch.autograd.Function):
         # assignment of task signal to neuron is destroyed.  The hard task
         # path above is exact and is never permuted.  rho=0 is a no-op on the
         # exact code path of the original backward.
-        g_p = grad_y * value_c
+        g_p = g_up * value_c
         if ctx.perm_rho > 0.0:
             g_p = permute_fraction(g_p, ctx.perm_rho)
 
@@ -238,7 +296,7 @@ class _RBLapSumGate(torch.autograd.Function):
                     omag = gs.abs().mean()
                     sink["rb_boundary_grad_ratio"] = (bmag / (omag + eps)).detach()
         return (grad_value, None, None, None, None, None, None, None, None, None,
-                None, None, None, None, None, None)
+                None, None, None, None, None, None, None)
 
 
 class _RBLapSumSFGate(torch.autograd.Function):
@@ -373,7 +431,8 @@ def rblapsum_sf_gate(value_c, p_c, active_c, score_c, sign_c, b, t, mode, k,
 
 def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
                   cap_active, sink=None, supp_scale=1.0, perm_rho=0.0,
-                  members="pool", relative_t=False, cand_idx=None, n_features=0):
+                  members="pool", relative_t=False, cand_idx=None, n_features=0,
+                  first_order=False):
     """Apply the rank-boundary support gate; see :class:`_RBLapSumGate`.
 
     ``value_c`` (signed z at the sorted Top(K+J) candidates) carries gradient;
@@ -393,4 +452,5 @@ def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
         float(t), _MODE_ID[mode], int(k), cap_active.detach(), sink,
         float(supp_scale), float(perm_rho), _MEMBERS_ID[members], bool(relative_t),
         None if cand_idx is None else cand_idx.detach(), int(n_features),
+        bool(first_order),
     )
