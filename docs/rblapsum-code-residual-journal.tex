@@ -553,7 +553,14 @@ unmodified, scale 0.1  & \(-0.006\) & \(-0.014\) & \(-0.018\) & \(-0.015\) & \(-
 \end{center}
 
 \textbf{Measured:} every surrogate's advantage peaks between 2k and 4k steps and then shrinks; the hard backward is
-catching up.  The 20k values decide whether a gain remains.  Generality screens: first order at \(K=256\), \(J=256\) (with its hard
+catching up.
+
+\textbf{The 20k values} (val CE, difference to the hard backward): hard 1.5020; first order 1.4569 (\(-0.045\); \(-0.050\)
+at 10k, \(-0.048\) at 16k); first order at \(T=2\) 1.4657 (\(-0.036\); \(-0.088\) at 2k); unmodified at scale 0.3 1.4856
+(\(-0.016\)); at scale 0.1 1.4961 (\(-0.006\)).  The first-order advantage shrinks during the first 10k steps and is
+nearly constant after; the damped unmodified backward keeps little.  A second seed (initialization and data order)
+at step 2000: hard 2.0821, first order 2.0254 (\(-0.057\)), first order at \(T=2\) 2.0125 (\(-0.070\)); first seed
+\(-0.076\) and \(-0.088\).  Generality screens: first order at \(K=256\), \(J=256\) (with its hard
 control), at \(J=480\), and at \(T=2\); first order with per-block projections.
 
 % ============================================================
@@ -576,7 +583,7 @@ configuration & first order, val CE 500 / 1000 / 1500 / 2000 & hard backward at 
 \(K=32\), \(J=224\), \(T=2\)                & 2.877 / 2.391 / 2.158 / 2.016 & 2.104 & \(-0.088\) \\
 \(K=256\), \(J=256\), \(T=1\), inactive members only & 2.798 / 2.257 / 2.015 / 1.891 & 1.870 & \(+0.020\) \\
 \(K=256\), \(J=256\), \(T=1\), support scale 0.3 & 2.816 / 2.284 / 2.048 / 1.925 & 1.870 & \(+0.054\) \\
-\(K=256\), \(J=256\), \(T=0.3\,b\) (scale-free) & 2.850 / 2.329 / 2.085 / \PH{} & 1.870 & \PH{} \\
+\(K=256\), \(J=256\), \(T=0.3\,b\) (scale-free) & 2.850 / 2.329 / 2.085 / 1.949 & 1.870 & \(+0.078\) \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -645,9 +652,9 @@ where the selection is competitive and hurts where it can separate; at a given \
 \textbf{Measured: the active-member term at \(K=256\).}  Restricted to the inactive members, the first-order estimator
 at \(K=256\) is \(+0.041\), \(+0.036\), \(+0.026\), \(+0.020\) behind the hard backward at steps 500--2000, closing; its code
 looks like the hard model's: 5 / 7 / 13 always-on features at gates 6 / 12 / 18 (hard 5 / 10 / 15, full pool 164 /
-153 / 67) and a boundary at 3.0--3.5 (hard 2.7--3.2, full pool 1.6).  At \(K=32\) the same restriction costs: \(+0.016\),
-\(+0.021\) at steps 500, 1000, against \(-0.018\) at 1000 for the full pool.  The scale-free kernel does not help at
-\(K=256\) (\(+0.092\), \(+0.109\), \(+0.096\) at steps 500--1500).  At \(T=2\) the first-order estimator gains more at
+153 / 67) and a boundary at 3.0--3.5 (hard 2.7--3.2, full pool 1.6).  At \(K=32\) the same restriction loses the whole gain: \(+0.016\),
+\(+0.021\), \(+0.007\), \(+0.001\) at steps 500--2000 (val CE 2.105 at step 2000), against \(-0.076\) for the full pool.  The scale-free kernel does not help at
+\(K=256\) (\(+0.092\), \(+0.109\), \(+0.096\), \(+0.078\) at steps 500--2000).  At \(T=2\) the first-order estimator gains more at
 \(K=32\): \(-0.088\) at step 2000 (\(T=1\): \(-0.076\)).
 
 \textbf{Interpretation.}  The term on active features --- the one that pushes marginal selected features toward the
@@ -656,11 +663,14 @@ deficit closes; with it the surrogate is best at \(K=32\), where the selection n
 term alone is the safe part of the surrogate; the active features' term pays only where the competition for the
 last slots stays close.
 
-\emph{[pending: \(K=32\) inactive-only at 2k; 20k continuations of \(K=256\) (hard, full pool, inactive only) and of
-\(K=32\), \(T=2\)]}
+\textbf{The \(K=256\) runs to 20k} (val CE, difference to the hard backward 1.3067): first order 1.3844 (\(+0.078\);
+\(+0.069\) at 10k, \(+0.075\) at 16k); first order on the inactive members 1.2998 (\(-0.007\); \(+0.004\) at 10k, \(-0.000\)
+at 12k, \(-0.006\) at 16k).  \textbf{Measured:} the full first-order estimator does not close its gap at \(K=256\); the
+inactive-member version crosses near step 12k and ends slightly ahead.  At \(K=32\) the inactive-member version had
+no gain at 2k; the variant that helps depends on \(K\).
 
 % ============================================================
-\section{Summary so far}
+\section{Summary}
 % ============================================================
 
 \begin{enumerate}[leftmargin=1.4em]
@@ -681,8 +691,11 @@ last slots stays close.
   gradient plus, for each gate, the change its support term makes when every other gate is exact; one backward pass
   through each gate's input (R1) and no products (R2) (Entry 7).  Best at \(K=32\) (\(-0.076\) at 2k; \(-0.064\) at
   \(J=480\)); the advantage shrinks with training (\(-0.065\) at 5k).
-\item \textbf{Where it does not help.}  At \(K=256\) every variant is behind the hard backward in the first 2000 steps;
-  the hard model separates its selected features there, and the support term keeps the boundary crowded (Entry 8).
+\item \textbf{To 20k steps.}  At \(K=32\) the first-order estimator ends 0.045 below the hard backward (1.457 against
+  1.502), the damped unmodified backward 0.016 below (scale 0.3).  At \(K=256\) the full first-order estimator stays
+  0.078 behind; restricted to the inactive members it ends 0.007 ahead.  The term on active features helps where the
+  hard model's selection stays competitive at the boundary (\(K=32\)) and hurts where the hard model separates its
+  selected features (\(K=256\)) (Entry 8).
 \end{enumerate}
 
 \end{document}

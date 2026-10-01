@@ -199,11 +199,14 @@ SCREENS_256 = [  # run, label, color, marker, style
     ("li_sr8_k256_j256_fo_rel03", r"first order, $T{=}0.3b$", AQUA, "^", "-"),
     ("li_sr7_k256_j256_pool_t1_ss03", r"unmodified, $\gamma{=}0.3$", YELLOW, "s", "-"),
 ]
-LONG = [  # run, label, color, style
-    (HARD_RUN, "hard backward", INK, "-"),
-    ("li_sr4_k32_j224_fo_t1", r"first order, $\gamma{=}1$", BLUE, "-"),
-    ("li_sr2_k32_j224_pool_t1_ss03", r"unmodified, $\gamma{=}0.3$", YELLOW, "-"),
-    ("li_sr_k32_j224_t1_ss01", r"unmodified, $\gamma{=}0.1$", YELLOW, "--"),
+LONG = [  # run, its hard control, label, color, style, end label (K=256 only)
+    ("li_sr4_k32_j224_fo_t1", HARD_RUN, r"first order", BLUE, "-", None),
+    ("li_sr6_k32_j224_fo_t2", HARD_RUN, r"first order, $T{=}2$", BLUE, ":", None),
+    ("li_sr2_k32_j224_pool_t1_ss03", HARD_RUN, r"unmodified, $\gamma{=}0.3$", YELLOW, "-", None),
+    ("li_sr_k32_j224_t1_ss01", HARD_RUN, r"unmodified, $\gamma{=}0.1$", YELLOW, "--", None),
+    ("li_sr5_k256_j256_fo_t1", "li_sr5_k256_j256_ss0", None, BLUE, "-", r"$K{=}256$, first order"),
+    ("li_sr8_k256_j256_foinact_t1", "li_sr5_k256_j256_ss0", None, MAGENTA, "-",
+     r"$K{=}256$, inactive only"),
 ]
 DYN = [  # run, label, color, style
     (HARD_RUN, "hard backward", INK, "-"),
@@ -249,21 +252,30 @@ def fig_training():
     ax.legend(loc="lower left", fontsize=4.9)
     ax.set_title(r"b  $K{=}256$, $J{=}256$")
 
-    # (c) the long runs, K=32
+    # (c) the long runs, each against the hard backward of its own K
     ax = axes[2]
-    for run, lab, color, ls in LONG:
-        c = curves.get(run)
-        if c is None or run == HARD_RUN:
+    for run, ctrl, lab, color, ls, end in LONG:
+        c, h = curves.get(run), curves.get(ctrl)
+        if c is None or h is None:
             continue
-        pts = [(int(s), v - hard[int(s)]) for s, v in c["val"] if int(s) in hard]
-        if pts:
-            ax.plot(*zip(*pts), ls, color=color, lw=1.2, label=lab)
+        hv = dict((int(s), v) for s, v in h["val"])
+        pts = [(int(s), v - hv[int(s)]) for s, v in c["val"] if int(s) in hv]
+        if not pts:
+            continue
+        ax.plot(*zip(*pts), ls, color=color, lw=1.2 if end is None else 0.9,
+                alpha=1.0 if end is None else 0.85, label=lab)
+        if end is not None:
+            below = pts[-1][1] > 0.03
+            ax.text(pts[-1][0], pts[-1][1] + (-0.008 if below else 0.013), end, fontsize=5.2,
+                    color=INK2, ha="right", va="top" if below else "bottom")
     ax.axhline(0, color=INK, lw=0.8)
-    ax.set_ylim(-0.1, 0.03)
+    ax.set_ylim(-0.1, 0.17)
+    ax.set_xticks([0, 10000, 20000])
+    ax.set_xticklabels(["0", "10k", "20k"])
     ax.set_xlabel("step")
     ax.set_ylabel("val CE $-$ hard backward")
-    ax.legend(loc="upper right", fontsize=4.9)
-    ax.set_title(r"c  long runs, $K{=}32$")
+    ax.legend(loc="upper right", fontsize=4.8, title=r"$K{=}32$", title_fontsize=5.0)
+    ax.set_title(r"c  to 20k steps")
 
     # (d) scale of the code
     ax = axes[3]
