@@ -422,8 +422,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
                                 cand_idx=(cand_idx if self.rblapsum_center_tokens
                                           and self.training else None),
                                 n_features=self.n_features,
-                                first_order=(self.rblapsum_surrogate_scope
-                                             == "first_order"))
+                                first_order=self.rblapsum_surrogate_scope.startswith(
+                                    "first_order"))
         y = torch.zeros_like(value).scatter(-1, cand_idx, y_c.to(value.dtype))
         if alpha != 1.0:
             y = y / alpha

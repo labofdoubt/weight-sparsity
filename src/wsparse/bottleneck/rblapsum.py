@@ -82,7 +82,7 @@ _MEMBERS_ID = {"pool": 0, "inactive": 1, "active": 2}
 # (TransformerLM._code_residual_stack)
 SURROGATE_SCOPES = {"pool": "pool", "inactive": "inactive", "update": "pool",
                     "update_inactive": "inactive", "update_active": "active",
-                    "first_order": "pool"}
+                    "first_order": "pool", "first_order_inactive": "inactive"}
 
 
 class FirstOrderState:

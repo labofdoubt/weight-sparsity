@@ -694,3 +694,26 @@ def test_first_order_is_the_sum_of_single_gate_relaxations():
     pool = model("pool")
     pool(idx, idx)[1].backward()
     assert not torch.allclose(grads(pool), g_fo)
+
+
+def test_first_order_inactive_keeps_active_features_exact_and_sums_single_gates():
+    # the first-order estimator restricted to the inactive members: equals the hard
+    # gradient plus the single-gate "inactive" relaxations, summed over the gates
+    from wsparse.bottleneck.rblapsum import first_order_backward
+    torch.manual_seed(10)
+    x = (3 * torch.randn(4, 64, dtype=torch.float64)).requires_grad_(True)
+    w = torch.randn(4, 64, dtype=torch.float64)
+    f1, f2 = rbk_gate("first_order_inactive"), rbk_gate("first_order_inactive")
+    i1, i2 = rbk_gate("inactive"), rbk_gate("inactive")
+    c1 = f1(x)
+    y = f2(c1)
+    first_order_backward((y * w).sum(), x)
+    m1 = (i1(x.detach()) != 0).to(w.dtype)
+    m2 = (y.detach() != 0).to(w.dtype)
+    total_c1 = vjp(i2, c1, w)
+    hard_c1 = m2 * w
+    expected = m1 * total_c1 + (vjp(i1, x, hard_c1) - m1 * hard_c1)
+    assert torch.allclose(x.grad, expected, atol=1e-12)
+    ActivationBottleneckConfig(enabled=True, n_features=64, k=8, j=8, placement="residual_out",
+                               share_projections=True, surrogate_mode="rblapsum",
+                               code_residual=True, rblapsum_surrogate_scope="first_order_inactive")

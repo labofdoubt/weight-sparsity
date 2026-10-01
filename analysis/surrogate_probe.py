@@ -130,7 +130,7 @@ def main():
     dtype = resolve_dtype(cfg.train.dtype, dev)
     with autocast_context(dev, dtype):
         _, loss = model(x, y)
-    if ab.rblapsum_surrogate_scope == "first_order":
+    if ab.rblapsum_surrogate_scope.startswith("first_order"):
         from wsparse.bottleneck.rblapsum import first_order_backward
         first_order_backward(loss, model.tok_emb.weight)
     else:

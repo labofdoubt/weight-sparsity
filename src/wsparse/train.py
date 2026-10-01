@@ -321,7 +321,7 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
     # rblapsum_surrogate_scope="first_order": a hard backward pass to the token
     # embedding before every ordinary one (wsparse.bottleneck.rblapsum)
     first_order_anchor = None
-    if any(getattr(m, "rblapsum_surrogate_scope", None) == "first_order"
+    if any(str(getattr(m, "rblapsum_surrogate_scope", "")).startswith("first_order")
            for m in unwrap_model(model).modules()):
         if world > 1:
             raise ValueError("rblapsum_surrogate_scope='first_order' is single-process only")
