@@ -469,6 +469,19 @@ one streamlit viewer over them. `analysis/README.md` is the complete manual; the
   `value_shift=energy` with `post_norm=false`; `analysis/depth_probe.py`
   measures all of it per block.  Neither option is in the state_dict: resume a
   run with its own `config.yaml`.
+* **RBLapSum in a code-residual stack** (docs/rblapsum-code-residual.tex). The
+  carry is the identity on each code coordinate, and the default backward
+  (`rblapsum_surrogate_scope=pool`) applies every gate's support term to an
+  upstream that already holds the later gates' terms, so they multiply along a
+  carried feature (x1.67 per block at K=32, J=224, T=1; grad norm ~1e4, the run
+  collapses).  Use `rblapsum_surrogate_scope=first_order` (each gate's term
+  from the hard-path gradient; a second, partial backward pass, +45% per step,
+  single process only) or a support scale <= 0.3.  `update` (term into the
+  block's update only) gives the carry and the update different gradients and
+  collapses too; `rblapsum_center_tokens` collapses faster.  At K=32 the
+  first-order surrogate beats hard Top-K (-0.076 at 2k, shrinking with
+  training); at K=256 the term on active features crowds the boundary and it
+  loses, `first_order_inactive` stays close to hard.
 * **The bottleneck does not inherit the model's conventions.** It is spliced in
   *after* `_init_weights` runs, so `init_scheme` / `init_std` / `init_gain` never
   touch it, and `activation_bottleneck.bias` is a separate field (since the

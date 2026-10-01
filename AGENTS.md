@@ -152,6 +152,8 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
 - **Deep stream bottlenecks** (beyond ~8 layers) need `code_residual` or
   `value_shift` with `post_norm=false`; no scale, init or post-norm fixes them (§9).
   Resume with the run's own `config.yaml`: those options are not in the state_dict.
+- **RBLapSum with `code_residual`** needs `rblapsum_surrogate_scope=first_order` or a
+  support scale <= 0.3; the default backward multiplies the support terms along the carry and collapses (§9).
 - **`rblapsum_sf` logs two losses:** `val/ce` is the hard Top-K forward,
   `val_soft/ce` the soft forward it trains (§9).
 - **rblapsum stability:** read Pi per block together with `n_eff`, never
