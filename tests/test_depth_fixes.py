@@ -648,3 +648,49 @@ def test_first_order_scope_trains_end_to_end(tmp_path, monkeypatch):
     assert np.isfinite(summary["best_val_ce"])
     # two micro-batches per step, each through the two-pass backward
     assert len(calls) == cfg.train.max_steps * cfg.train.grad_accum_steps
+
+
+def test_first_order_is_the_sum_of_single_gate_relaxations():
+    # on a real code-residual stack (blocks read the code through the decoder):
+    # grad_first_order = grad_hard + sum_l (grad with only gate l relaxed - grad_hard)
+    from wsparse.bottleneck.rblapsum import first_order_backward
+    torch.manual_seed(9)
+
+    def model(scope):
+        torch.manual_seed(0)
+        cfg = ActivationBottleneckConfig(
+            enabled=True, n_features=96, k=8, j=24, surrogate_mode="rblapsum",
+            rblapsum_boundary_grad_mode="through_rank_kappa", placement="residual_out",
+            share_projections=True, code_residual=True, init_mode="unit_norm_dictionary",
+            rblapsum_surrogate_scope=scope)
+        m = build_model(ModelConfig(vocab_size=61, max_seq_len=16, n_layers=3, d_model=24,
+                                    n_heads=4)).double()
+        apply_activation_bottleneck(m, cfg)
+        m.double().train()
+        return m
+
+    idx = torch.randint(0, 61, (2, 12))
+
+    def grads(m):
+        return torch.cat([p.grad.reshape(-1) for p in m.parameters() if p.grad is not None])
+
+    fo = model("first_order")
+    first_order_backward(fo(idx, idx)[1], fo.tok_emb.weight)
+    g_fo = grads(fo)
+
+    def relaxed(only):
+        m = model("pool")
+        gates = [m.code_entry.gate] + [b.residual_out_bottleneck.gate for b in m.blocks]
+        for i, gate in enumerate(gates):
+            gate.rblapsum_support_scale = 1.0 if i == only else 0.0
+        m(idx, idx)[1].backward()
+        return grads(m)
+
+    g_hard = relaxed(-1)
+    expected = g_hard + sum(relaxed(i) - g_hard for i in range(4))
+    # float64; the reference sums 4 relaxed gradients minus 3 hard ones, so allow round-off
+    assert torch.allclose(g_fo, expected, rtol=1e-6, atol=1e-9)
+    # and it is not the ordinary backward
+    pool = model("pool")
+    pool(idx, idx)[1].backward()
+    assert not torch.allclose(grads(pool), g_fo)
