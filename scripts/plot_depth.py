@@ -97,7 +97,7 @@ def fig_init():
     # (a) selection gain: theory vs the K sweep of the 24-layer model
     ax = axes[0]
     rhos = [10 ** (x / 50) for x in range(-125, 1)]
-    ax.plot(rhos, [s2(r) for r in rhos], color=INK, lw=1.0, label=r"$s^2(K/N)$, eq. (1)")
+    ax.plot(rhos, [s2(r) for r in rhos], color=INK, lw=1.0, label=r"$s^2(K/N)$, eq. (2)")
     pn, bp = [], []
     for f in glob.glob(os.path.join(KSWEEP, "k_sweep", "*.json")):
         j = json.load(open(f))
@@ -164,7 +164,7 @@ def fig_init():
         fstar = kap * rc / (1 + r - kap)
         ax.plot([24.3], [fstar], "<", ms=4.0, color=INK, mec="white", mew=0.5)
         ax.text(25.2, fstar * nudge, lab, fontsize=6.0, color=INK2, va="center")
-    ax.text(25.0, 2.1, r"$f^\ast$, eq. (3)", fontsize=6.0, color=INK2, va="center")
+    ax.text(25.0, 2.1, r"$f^\ast$, eq. (4)", fontsize=6.0, color=INK2, va="center")
     for name, lab, color in (("kN_nopnorm", r"$K{=}N$, no norm", AQUA),
                              ("coderes_a1", "code residual, no norm", BLUE)):
         per_layer(ax, load("init3", f"{name}.json"), "f_stream", color, lw=1.3, label=lab)
@@ -265,29 +265,31 @@ def fig_training():
           (16, "li_16L_k512_nopnorm"), (24, "al_500m_hard_k512_nopnorm_bp_std")],
          "TopK, no norm", AQUA, "s"),
         ([(8, "li_8L_k512_coderes_a1"), (12, "li_12L_k512_coderes_a1"),
-          (16, "li_16L_k512_coderes_a1"), (24, "li_24L_k512_coderes_a1")],
+          (16, "li_16L_k512_coderes_a1"), (24, "li_24L_k512_coderes_a1"),
+          (48, "li_48L_k512_coderes_a1")],
          "code residual", BLUE, "o"),
     ]
     for pts, label, color, mk in sweeps:
         xy = []
         for L, run in pts:
             v = at(run)
-            if v is None and run == "al_500m_hard_k512_nopnorm_bp_std":
-                v = at(run, 1000)  # stopped by the guard at 1160 (ln V since ~380)
+            if v is None and curves.get(run) and curves[run]["val"]:
+                v = curves[run]["val"][-1][1]  # died before 2k (overflow, ln V)
             if v is not None:
                 xy.append((L, v))
         if xy:
             ax.plot(*zip(*xy), "-", marker=mk, color=color, ms=3.6, mec="white", mew=0.8,
                     label=label)
-    ax.set_xticks([8, 12, 16, 24])
+    ax.set_xticks([8, 16, 24, 48])
     ax.set_yscale("log")
     ax.set_ylim(1.4, 12)
     ax.set_yticks([1.5, 2, 3, 4, 6, 10])
     ax.set_yticklabels(["1.5", "2", "3", "4", "6", "10"])
     ax.minorticks_off()
+    ax.axhline(UNIGRAM, color=INK, lw=0.5, alpha=0.5, zorder=0)
     ax.set_xlabel("layers")
     ax.set_ylabel("validation CE at 2k")
-    ax.legend(loc="upper left")
+    ax.legend(loc="center left", bbox_to_anchor=(0.40, 0.56))
     ax.set_title("d  depth")
 
     handles = [plt.Line2D([], [], color=c, lw=1.4, marker=m, ms=2.8, mfc="white", mew=0.9)

@@ -1,0 +1,609 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{caption}
+
+\emergencystretch=1.5em
+\captionsetup{font=small,labelfont=bf,width=.92\textwidth}
+
+\setlength{\parskip}{4pt plus 1pt}
+\setlength{\parindent}{0pt}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\Gf}{G_{\mathrm{f}}}
+\newcommand{\Gb}{G_{\mathrm{b}}}
+\newcommand{\topk}{\operatorname{TopK}}
+\newcommand{\rms}{\operatorname{RMS}}
+\newcommand{\ok}{\checkmark}
+\newcommand{\fail}{\texttimes}
+
+\title{
+Why a 24-layer stream-bottleneck model does not train\\[2pt]
+\large Research journal
+}
+\author{}
+\date{Started 2026-09-30 (box \code{lisbon}, 8$\times$RTX 5090).}
+
+\begin{document}
+\maketitle
+\vspace{-2em}
+\tableofcontents
+
+% ============================================================
+\section{The question}
+% ============================================================
+
+Every block of the models studied here ends in a stream bottleneck
+(\code{placement=residual\_out}): the residual stream is replaced by
+\begin{equation}
+  B(h) = g_D\, W_D\, P_{S(h)}\, W_E\, h ,
+  \qquad S(h) = \topk_K\bigl(|W_E h|\bigr),
+  \label{eq:B}
+\end{equation}
+where \(W_E\in\mathbb{R}^{N\times d}\) is the encoder, \(W_D\in\mathbb{R}^{d\times N}\)
+the decoder, \(P_S\) the coordinate projection onto the \(K\) kept features and
+\(g_D\) a fixed scalar (\(\sqrt{d/K}\) under
+\code{bottleneck\_decoder\_scale=backward\_preserving}, ``bp'').  Nothing routes
+around \(B\): the stream entering block \(\ell+1\) is
+\(x_{\ell+1}=\mathcal N\bigl(B(h_\ell)\bigr)\) with \(h_\ell = x_\ell+\Delta_\ell\),
+\(\Delta_\ell\) the attention and MLP contributions of block \(\ell\), and
+\(\mathcal N\) either the identity or an RMSNorm (\code{post\_norm}).
+Throughout: \(d=1024\), \(N=4096\), \(K=512\) unless stated,
+magnitude--direction decoupling (MD), TinyStories, lr \(3\cdot10^{-4}\),
+cosine over 20k steps, batch \(64\times512\).
+
+Observed before this study:
+
+\begin{center}\small
+\begin{tabular}{p{5.6cm}lp{6.4cm}}
+\toprule
+run & layers & outcome \\
+\midrule
+\code{al\_8L\_hard\_k512\_nopnorm\_bp\_std} & 8 & trains: val CE 3.46 (500), 2.34 (2k), 1.418 (20k) \\
+\code{al\_500m\_hard\_k512\_pnorm\_bp\_std} & 24 & val CE 5.965 (500) \(\to\) 5.949 (10.5k), flat \\
+\code{po\_500m\_hard\_k512\_pnorm\_bp\_std\_shared} & 24 & same plateau (5.954 at 2.5k) \\
+\code{al\_500m\_hard\_k32\_pnorm\_md} & 24 & same plateau (5.947 at 4k) \\
+\code{al\_500m\_hard\_k512\_nopnorm\_bp\_std} & 24 & CE \(=10.8249=\ln 50257\) from step \(\sim\)380, zero gradient \\
+\code{al\_500m\_hard\_k512\_nopnorm\_bp\_ortho} & 24 & the same, from step \(\sim\)560 \\
+\code{al\_500m\_hard\_k512\_nopnorm\_bp\_std\_lr6e4} & 24 & the same \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{The plateau is the unigram entropy.}  The token-frequency entropy of
+\code{train.bin} is \(5.9665\) nats (and the cross-entropy of \code{val.bin}
+under the train unigram is \(5.9665\)).  The post-norm 24-layer runs therefore
+learn the token frequencies within \(\sim\)150 steps and nothing that depends on
+the input afterwards.  The no-post-norm runs end at exactly \(\ln V\): uniform
+logits.
+
+% ============================================================
+\section{Entry 1 --- the gains of one bottleneck}
+% ============================================================
+
+\textbf{Two exact properties of \eqref{eq:B}.}  Abs-\(\topk\) selection does not
+change under a positive rescaling of \(h\), so \(B(\alpha h)=\alpha B(h)\); and
+\(B\) is piecewise linear, \(B(h)=J(h)\,h\) with
+\(J(h)=g_D W_D P_{S(h)} W_E\), which is also the Jacobian autograd uses (the mask
+has zero derivative almost everywhere).
+
+\textbf{Two gains.}  Per token, the forward (signal) gain and the backward gain
+of a gradient \(g\) arriving at the output are
+\begin{equation}
+  \Gf=\frac{\|B(h)\|^2}{\|h\|^2},\qquad
+  \Gb=\frac{\|J(h)^\top g\|^2}{\|g\|^2}.
+\end{equation}
+At initialization the entries of \(W_E,W_D\) are i.i.d.\ \(\mathcal N(0,1/d)\)
+(projected to the MD sphere), so the pre-activations \(z=W_Eh\) are Gaussian with
+variance \(\sigma^2=\|h\|^2/d\), and the decoder columns are orthonormal up to
+\(O(d^{-1/2})\).  Then \(\|B(h)\|^2\approx g_D^2\sum_{i\in S}z_i^2\), while a
+gradient that the selection did not see (isotropic, independent of \(S\)) puts
+\(\|g\|^2/d\) on each kept coordinate:
+\begin{equation}
+  \Gf \approx g_D^2\,\frac{K}{d}\,s^2(\rho),\qquad
+  \Gb \approx g_D^2\,\frac{K}{d},\qquad
+  s^2(\rho)=\mathbb E\bigl[Z^2\,\big|\,|Z|>t_\rho\bigr]
+  = 1+\frac{2\,t_\rho\,\varphi(t_\rho)}{\rho},
+  \label{eq:s2}
+\end{equation}
+with \(\rho=K/N\), \(t_\rho=\Phi^{-1}(1-\rho/2)\) and \(\varphi\) the standard
+normal density.  \(s^2\) is the \emph{selection gain}: the kept coefficients are
+the largest ones, so their mean square exceeds that of a typical coefficient.
+\(s^2 = 4.019\) at \(\rho=1/8\) and \(8.898\) at \(\rho=1/128\) (\(K=32\)).
+
+\textbf{Check against the existing K sweep} (\code{docs/figures/diag500m/module\_gain},
+24 layers at init, geometric mean over layers):
+
+\begin{center}\small
+\begin{tabular}{rccccc}
+\toprule
+\(K\) & \(s^2(K/N)\) & \(\Gf/\Gb\) (post-norm, \(g_D=1\)) & \(\Gf\) (bp, ortho) & \(\Gb\) (bp, ortho) \\
+\midrule
+32   & 8.898 & 9.159 & 8.869 & 2.156 \\
+128  & 6.407 & 6.474 & 6.401 & 1.510 \\
+512  & 4.019 & 4.033 & 4.018 & 1.006 \\
+1024 & 2.894 & 2.926 & 2.896 & 0.999 \\
+2048 & 1.857 & 1.871 & 1.858 & 1.000 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+With a post-norm the ratio \(\Gf/\Gb\) equals \(s^2(K/N)\) to 0.5--3\,\% at
+every \(K\).  Without one (right columns) \(\Gf\) still equals \(s^2\) to
+0.3\,\%; \(\Gb\) exceeds 1 at small \(K\) because there the gradient arriving
+from the next bottleneck is no longer isotropic (it is concentrated on the
+direction of the signal, which receives the forward gain).
+
+\textbf{Invariance.}  Multiplying \(W_E\), \(W_D\) or \(g_D\) by scalars
+multiplies \(\Gf\) and \(\Gb\) by the same factor; an RMSNorm after \(B\) divides
+both by \(\Gf\); a tight-frame (orthogonal) initialization leaves the marginal of
+\(z\) Gaussian; sharing \(W_E,W_D\) across layers changes neither.  The ratio
+\(\Gf/\Gb=s^2\) is therefore unchanged by every intervention tried before this
+study (post-norm, bp scale, MD gain spread \(\alpha\), orthogonal init, shared
+projections).  Measured at init with \code{analysis/depth\_probe.py}: the
+per-layer factor of the gradient profile is \(\times2.095\) (baseline),
+\(\times2.096\) (shared), \(\times2.102\) (orthogonal).
+
+% ============================================================
+\section{Entry 2 --- consequences at depth}
+% ============================================================
+
+\textbf{Without a norm} the stream energy grows as \(\prod_\ell \Gf \approx s^{2L}\)
+(with bp).  \(4.02^{24}\approx 3\cdot10^{14}\): measured stream RMS at the last
+layer at init \(1.6\cdot10^{7}\) (predicted \(4.02^{12}=1.7\cdot10^7\)).  The final
+RMSNorm divides the loss gradient by that RMS, so every parameter gradient is
+\(10^{-11}\)--\(4\cdot10^{-8}\) (fc1 weight, layer 23 and layer 0), at or below
+Adam's \(\epsilon=10^{-8}\).  Once training grows any gain, \(x^2\) exceeds the
+float32 range inside the RMSNorm (\(|x|>1.8\cdot10^{19}\)), its output becomes
+zero and so do the logits: CE \(=\ln V\) and zero gradient, as in the three
+no-post-norm runs (their logged boundary gaps reach \(10^{18}\)--\(10^{24}\)).
+At 8 layers the growth is \(4^{8/2}=256\) in RMS (measured 238) and training works.
+
+\textbf{With a post-norm} the forward is normalized, and the backward through
+each post-norm is divided by the same \(\sqrt{\Gf}\): per layer the gradient
+energy is multiplied by \(\Gb/\Gf=s^{-2}\).  The gradient reaching block
+\(\ell\) is \(s^{-(L-\ell)}\) times the last block's.  Measured at init (fc1
+weight gradient RMS): \(6.7\cdot10^{-12}\) at layer 0 against
+\(1.6\cdot10^{-4}\) at layer 23, a ratio \(2.4\cdot10^{7}\) (\(\times2.095\) per
+layer; \(s=2.005\)).  At 8 layers the ratio is 247.
+
+% ============================================================
+\section{Entry 3 --- removing the selection gain (at initialization)}
+% ============================================================
+
+Two ways to make the forward stop carrying the selection bias, both now options
+of \code{ActivationBottleneckConfig}:
+
+\textbf{(a) Debiased values, \code{value\_shift}.}  Keep the support, shrink the
+kept magnitudes,
+\begin{equation}
+  y_i=\operatorname{sign}(z_i)\,\max\bigl(|z_i|-\delta,0\bigr),\quad i\in S .
+\end{equation}
+The tangent Jacobian on the support is unchanged, so \(\Gb\) is unchanged, while
+\(\Gf\) drops.  \code{energy} solves \(\delta\) per token from
+\(\operatorname{mean}_S y^2=\operatorname{mean}_{\text{all}} z^2\), which gives
+\(\Gf=\Gb\) exactly for a tight-frame encoder; \code{fixed} uses
+\(\delta=\lambda^\ast\rms(z)\) with \(\lambda^\ast\) the root of
+\(\mathbb E[(|Z|-\lambda)^2\mid |Z|>t_\rho]=1\) (\(\lambda^\ast=1.044\) at
+\(\rho=1/8\)).
+
+\textbf{(b) Code-space residual, \code{code\_residual}.}  Carry the \(K\)-sparse
+code instead of re-encoding the decoded stream:
+\begin{equation}
+  c_0=\topk(W_E x_{\mathrm{emb}}),\qquad x_\ell=g_D W_D c_\ell,\qquad
+  c_{\ell+1}=\topk\bigl(c_\ell+\alpha\,W_E\,\Delta_\ell(x_\ell)\bigr),
+\end{equation}
+one shared dictionary.  \(\topk\) is the Euclidean projection onto the set of
+\(K\)-sparse vectors, so a block with \(\Delta_\ell=0\) is the identity on the
+code, and \(\partial c_{\ell+1}/\partial c_\ell=P_{S_{\ell+1}}(I+\dots)\): the
+residual connection of a pre-norm transformer, moved into code space.
+
+Per-layer factor of the init gradient profile (fc1 weight gradient RMS,
+\(\bigl(g_{23}/g_0\bigr)^{1/23}\)); 1 is flat:
+
+\begin{center}\small
+\begin{tabular}{lcc}
+\toprule
+variant & per-layer factor & last-layer stream RMS \\
+\midrule
+baseline, post-norm & 2.095 & 1.0 \\
+baseline, no post-norm & 0.697 & \(1.6\cdot10^{7}\) \\
+value shift \code{fixed} \(\lambda=0.7\), post-norm & 1.387 & 1.0 \\
+value shift \code{fixed} \(\lambda^\ast=1.044\), post-norm & 1.044 & 1.0 \\
+value shift \code{fixed} \(\lambda=1.3\), post-norm & 0.798 & 1.0 \\
+value shift \code{energy}, post-norm & 1.044 & 1.0 \\
+value shift \code{energy}, no post-norm & 0.939 & 6.4 \\
+code residual \(\alpha=1\) / 0.3 / 0.1 & 1.008 / 0.995 / 0.997 & 8.7 / 3.0 / 2.1 \\
+rblapsum surrogate \(T=0.3\) / 1 / 3, post-norm & 0.709 / 1.070 / 1.445 & 1.0 \\
+lapsum surrogate \(T=1\), post-norm & 1.567 & 1.0 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+With the shift, the bottleneck's measured \(\Gf\) and \(\Gb\) are both
+\(1.00\pm0.01\) at every layer.  The surrogate rows show the other side of the
+same balance: a sharp surrogate (\(T=0.3\)) adds boundary-exchange gradient and
+the backward explodes toward the input, a wide one vanishes; \(T\approx1\) is
+close to critical for the backward only (its forward is the plain hard
+\(\topk\)).
+
+% ============================================================
+\section{Entry 4 --- round 1: the post-norm variants still do not train}
+% ============================================================
+
+Eight 24-layer runs, the baseline's config otherwise, screened to 2000 steps
+(\code{--stop-step}; the schedule stays defined over 20k steps).  Train CE:
+
+\begin{center}\small
+\begin{tabular}{lccccc}
+\toprule
+run & 100 & 200 & 300 & 500 & 1000 \\
+\midrule
+baseline (\code{al\_500m\_hard\_k512\_pnorm\_bp\_std}) & 6.43 & 5.98 & 5.97 & 5.98 & 5.99 \\
+value shift energy, post-norm & 6.40 & 5.99 & 5.97 & 5.98 & \\
+value shift fixed, post-norm & 6.40 & 5.98 & 5.97 & 5.99 & \\
+value shift energy, post-norm, shared & 6.42 & 5.98 & 5.98 & 5.99 & \\
+value shift energy, post-norm, \(K=32\) & 7.11 & 5.98 & 5.97 & & \\
+rblapsum \(T=1\), post-norm & 6.41 & 5.98 & 5.97 & 5.98 & \\
+value shift energy, \emph{no} post-norm & 6.53 & 5.41 & 4.85 & 4.25$^\dagger$ & \\
+code residual \(\alpha=1\) & 5.25 & 3.79 & 3.28 & 2.79 & 2.19 \\
+code residual \(\alpha=0.3\) & 5.13 & 3.75 & 3.29 & 2.84 & 2.21 \\
+8 layers, no post-norm (reference) & 6.72 & 4.53 & 4.06 & 3.53 & 2.89 \\
+\bottomrule
+\end{tabular}\\[2pt]
+\footnotesize$^\dagger$val CE at step 500.
+\end{center}
+
+\textbf{Measured:} every run with a post-norm follows the baseline to the second
+decimal, including those whose initial gradient profile is flat (value shift)
+or near-critical (rblapsum).  Both runs without a post-norm leave the plateau
+from the start; the code residual is ahead of the 8-layer reference at every
+step.  \textbf{Interpretation:} removing the selection gain is necessary (the
+no-post-norm baseline overflows) but not sufficient; the post-norm itself stops
+learning at this depth.
+
+% ============================================================
+\section{Entry 5 --- forensics of the failed run at step 2000}
+% ============================================================
+
+\code{analysis/depth\_probe.py --ckpt ... --init-reference} on
+\code{al\_500m\_hard\_k512\_pnorm\_bp\_std/ckpt\_step2000.pt} and, for
+contrast, \code{al\_8L\_hard\_k512\_nopnorm\_bp\_std/ckpt\_step2000.pt}.
+\(\Delta W/W_0=\|W-W_0\|/\|W_0\|\) against the run's own step-0 weights
+(rebuilt with the same seed; \code{md\_init\_} draws on the GPU, as in
+\code{train()}).
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+ & layers 0--12 & layer 18 & layer 21 & layer 23 \\
+\midrule
+\(\Delta W/W_0\), fc1 (24 layers, post-norm) & \(<5\cdot10^{-4}\) & 0.003 & 0.022 & 0.204 \\
+fc1 gradient RMS & \(10^{-20}\)--\(10^{-16}\) & \(5\cdot10^{-15}\) & \(2\cdot10^{-12}\) & \(5\cdot10^{-8}\) \\
+cosine between positions & 0.07--0.21 & 0.23 & 0.992 & 1.000 \\
+bottleneck \(\Gf\) & 3.97--4.05 & 4.64 & 81 & 2680 \\
+\midrule
+\(\Delta W/W_0\), fc1 (8 layers, no post-norm) & \multicolumn{4}{c}{0.30--0.54 at every layer; cosine between positions \(\le0.17\)} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Measured:} after 2000 steps the first 13 blocks of the 24-layer run have
+not moved (Adam with \(\epsilon=10^{-8}\) and gradients of \(10^{-20}\)--\(10^{-16}\));
+the per-layer gradient factor has grown from 2.1 at init to 3.5.  In the last
+three blocks the bottleneck's forward gain rises to 81--2680 (their outputs
+carry 56--18861 times the energy of the unit carry, Entry 6), and the streams of
+all positions are the same vector (cosine 1.000): the output cannot depend on the input, which is the
+unigram plateau.
+
+% ============================================================
+\section{Entry 6 --- the second mechanism: a renormalized carry}
+% ============================================================
+
+\textbf{Common-mode fraction.}  For the streams \(v_t\) of the positions of a
+sequence let \(f(v)=\|\bar v\|^2/\overline{\|v_t\|^2}\), \(\bar v\) the mean over
+positions (\(t\ge16\)).  For \(v_t=c+u_t\) with independent \(u_t\) this is
+\(\|c\|^2/(\|c\|^2+\|u\|^2)\), the expected cosine between two positions, and it
+is what \code{depth\_probe.py} records as \code{f\_stream} (and, sampled, as
+\code{tok\_cos}).  Per block it also records \(r=\overline{\|\Delta\|^2}/\overline{\|x\|^2}\)
+and \(r_c=\|\bar\Delta\|^2/\overline{\|x\|^2}\), the energy of the block's
+contribution and of its token-independent part relative to the carry.
+
+\textbf{Model.}  Adding \(\Delta\) gives \(f(h)\approx(f(x)+r_c)/(1+r)\).  The
+bottleneck maps a small common fraction by the slope of its correlation map;
+for Gaussian codes and \(\phi(z)=z\,\mathbf 1[|z|>t]\) the Hermite expansion
+gives
+\begin{equation}
+  \kappa=C_B'(0)=\frac{\mathbb E[Z\phi(Z)]^2}{\mathbb E[\phi(Z)^2]}
+  =\mathbb E\bigl[Z^2\mathbf 1(|Z|>t_\rho)\bigr]=\rho\,s^2(\rho),
+\end{equation}
+the Gaussian energy fraction that survives the selection (0.50 at
+\(\rho=1/8\), 0.070 at \(K=32\), 1 for \(K=N\)).  An RMSNorm leaves angles, and
+so \(f\), unchanged, but it resets the carry to unit RMS, so \(r\) and \(r_c\)
+stay \(O(1)\) at every depth and
+\begin{equation}
+  f_{\ell+1}=\kappa\,\frac{f_\ell+r_c}{1+r}
+  \quad\Longrightarrow\quad
+  f^\ast=\frac{\kappa\,r_c}{1+r-\kappa},
+  \label{eq:fstar}
+\end{equation}
+approached geometrically.  Without a norm the carry accumulates energy, \(r_\ell\)
+falls with depth, and there is no fixed point pulling \(f\) toward 1.
+
+\textbf{Measured at initialization} (24 layers, \code{init3/}; \(r\), \(r_c\)
+averaged over blocks 6--23, \(f\) over blocks 12--23):
+
+\begin{center}\small
+\begin{tabular}{lcccccc}
+\toprule
+ & \(\kappa=\rho s^2\) & \(\kappa\) measured & \(r_c\) & \(r\) & \(f^\ast\) \eqref{eq:fstar} & \(f\) measured \\
+\midrule
+post-norm, \(K=32\)   & 0.070 & 0.092 & 0.37 & 1.74 & 0.010 & 0.013 \\
+post-norm, \(K=512\)  & 0.502 & 0.544 & 0.88 & 1.91 & 0.183 & 0.197 \\
+post-norm, \(K=2048\) & 0.929 & 0.955 & 2.39 & 2.56 & 0.843 & 0.883 \\
+post-norm, \(K=N\)    & 1     & 1.000 & 2.62 & 2.66 & 0.985 & 0.989 \\
+\midrule
+no norm, \(K=N\)            & 1 & 1.002 & \multicolumn{2}{c}{\(r\): 0.17 \(\to\) 0.05} & -- & 0.56 \\
+dense, no bottleneck        & -- & 1.000 & \multicolumn{2}{c}{\(r\): 0.16 \(\to\) 0.05} & -- & 0.59 \\
+value shift, no norm        & 0.502 & 0.520 & \multicolumn{2}{c}{\(r\): 0.15 \(\to\) 0.04} & -- & 0.009 \\
+code residual               & -- & 0.883 & \multicolumn{2}{c}{\(r\): 0.06 \(\to\) 0.02} & -- & 0.06 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Measured:} with a post-norm, \eqref{eq:fstar} with the \emph{theoretical}
+\(\kappa\) predicts the common-mode fraction to within 0.003--0.04 from \(K=32\)
+to \(K=N\).  With \(K=N\) (a fixed random linear carry, no selection) the stream
+is token-independent already at initialization (\(f=0.99\)); the same carry
+without the post-norm stays at 0.56.  Most of \(r_c\) comes from the MLP (GELU
+has a nonzero mean): the attention's share is 0.2 of 0.9 at \(K=512\).
+\textbf{Interpretation:} the selection's decorrelation (\(\kappa<1\)) is what keeps
+the \(K=512\) post-norm stack at \(f\approx0.2\) at initialization.  Training
+makes the top blocks emit a large token-independent output (the unigram):
+their \(r_c\) grows (to 56--18861 times the carry energy in the failed run,
+table below), the selection becomes the same for every position (\(\kappa\to1\)), and
+\(f\to1\) (cosine 1.000 at step 2000, Entry 5).  The large \(\Gf\) of those
+blocks also divides the gradient reaching everything below them, which is why
+the per-layer gradient factor grew from 2.1 to 3.5.
+
+\textbf{The same quantities in the failed run} (\code{al\_500m\_hard\_k512\_pnorm\_bp\_std},
+\(\kappa_\ell=f_{\ell+1}/f(h_\ell)\) measured):
+
+\begin{center}\small
+\begin{tabular}{lcccccccc}
+\toprule
+block & 0--17 & 18 & 19 & 20 & 21 & 22 & 23 \\
+\midrule
+\(f\) (step 2000)            & 0.07--0.23 & 0.23 & 0.36 & 0.80 & 0.992 & 1.000 & 1.000 \\
+\(\kappa\)                  & 0.54--0.56 & 0.78 & 1.07 & 1.006 & 1.000 & 1.000 & -- \\
+\(r_c\)                     & 0.47--0.90 & 1.19 & 3.04 & 15.3 & 56.4 & 528 & 18861 \\
+\(r_c/r\)                   & 0.27--0.47 & 0.55 & 0.82 & 0.995 & 1.000 & 1.000 & 1.000 \\
+selection energy \(s^2\)     & 4.02 & 4.06 & 4.53 & 6.24 & 7.79 & 8.00 & 7.98 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Blocks 0--17 are still at their initialization values (they did not move).  The
+blocks that trained emit an almost purely token-independent output
+(\(r_c/r\to1\)); their inputs are then exactly \(K\)-sparse in the encoder
+(\(s^2\to N/K=8\): all of the energy on the kept features), the support is the
+same for every position (\(\kappa\to1\)), and \(f\to1\).  The recursion
+\eqref{eq:fstar} reproduces it block by block (block 20: \((0.80+15.3)/16.4=0.98\),
+measured 0.992).  Step 10000 is the same picture with larger top-block energies
+(\(r_c=5\cdot10^5\) at block 23).
+
+\textbf{The value shift under a post-norm collapses too} (\code{li\_24L\_k512\_pnorm\_shift\_energy},
+step 2000, val CE 5.959; its initial gradient profile was flat, \(\times1.047\) per block):
+
+\begin{center}\small
+\begin{tabular}{lcccccccc}
+\toprule
+block & 0 & 6 & 12 & 16 & 18 & 20 & 22 & 23 \\
+\midrule
+\(f\)                 & 0.07 & 0.50 & 0.67 & 0.91 & 0.994 & 1.000 & 1.000 & 1.000 \\
+\(\kappa\)            & 0.56 & 0.76 & 0.83 & 1.00 & 1.00 & 1.00 & 1.00 & -- \\
+\(r_c/r\)             & 0.28 & 0.78 & 0.86 & 0.98 & 1.00 & 1.00 & 1.00 & 1.00 \\
+bottleneck \(\Gf\)     & 1.00 & 1.07 & 1.11 & 1.53 & 2.23 & 5.82 & 244 & 470 \\
+\(\Delta W/W_0\), fc1 & \(5.9\cdot10^{-3}\) & \(6.8\cdot10^{-3}\) & \(6.7\cdot10^{-3}\) & \(8.3\cdot10^{-3}\) & 0.015 & 0.020 & 0.063 & 0.19 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Measured:} with a balanced bottleneck every block moved in the first steps
+(\(\Delta W/W_0\approx6\cdot10^{-3}\) at block 0, against \(4\cdot10^{-8}\) in the
+baseline), but the token-independent share then spread down the stack --- from
+block 16 on the streams of all positions coincide --- and the large forward gain
+of the collapsed blocks (up to 470) brought the vanishing gradient back
+(\(\times2.3\) per block at step 2000).  \textbf{Interpretation:} the renormalized
+carry is sufficient on its own to stop learning at 24 layers; the selection gain
+only decides how early it happens.
+
+\textbf{Training controls} (\(K=N\), 24 layers): with the post-norm val CE
+5.967 (500), 5.956 (1000), on the plateau; without it, \emph{[pending]}.
+
+\textbf{All runs at step 2000} (\code{depth\_probe.py --ckpt} on each run's \code{ckpt\_step2000.pt}).
+Per-block gradient factor \((g_{\mathrm{last}}/g_0)^{1/(L-1)}\) of the fc1
+weight, relative weight change of block 0 and of the last block, cosine between positions at the last
+block:
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+run (24 layers unless marked) & grad.\ factor & \(\Delta W/W_0\), block 0 & \(\Delta W/W_0\), last & cosine, last \\
+\midrule
+TopK, post-norm (the failed run) & 3.48 & 4.4e{-}08 & 0.20 & 1.000 \\
+value shift, post-norm & 2.30 & 5.9e{-}03 & 0.19 & 1.000 \\
+\(K=N\), post-norm & 2.64 & 2.0e{-}03 & 0.16 & 1.000 \\
+value shift, no norm & 0.93 & 3.1e{-}01 & 0.54 & 0.205 \\
+code residual & 1.02 & 3.9e{-}01 & 0.39 & 0.120 \\
+code residual, \(\alpha=0.3\) & 1.04 & 3.6e{-}01 & 0.45 & 0.111 \\
+code residual, \(K=32\) & 1.04 & 3.8e{-}01 & 0.40 & 0.082 \\
+code residual, 8 layers & 1.08 & 3.7e{-}01 & 0.41 & 0.106 \\
+TopK, no norm, 8 layers & 1.04 & 3.0e{-}01 & 0.54 & 0.173 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Measured:} the post-norm decides the outcome.  Every run with a post-norm ends with the
+positions collapsed (cosine 1.000) and a vanishing gradient (\(\times2.3\)--\(3.5\) per block, whatever its
+initial profile); every run without one keeps the positions apart (\(\le0.2\)), a flat gradient
+(\(\times0.93\)--\(1.08\)), and moves all of its blocks by 0.3--0.5.
+
+% ============================================================
+\section{Entry 7 --- what a stream bottleneck must do: the skip's job}
+% ============================================================
+
+A pre-norm transformer trains at depth because of two properties of its stream:
+every block is the identity plus a small update (the input--output Jacobian of
+the stack is close to an isometry), and nothing normalizes the carried stream
+(only the branch inputs are normalized).  A stream bottleneck replaces the skip,
+so it has to take over both roles.  The three requirements, and which variant
+meets them:
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+ & balanced (\(\Gf=\Gb\)) & carry not renormalized & identity when \(\Delta=0\) & 24 layers train \\
+\midrule
+TopK, post-norm (the failed runs)      & \fail\ (\(s^2\)) & \fail & \fail & \fail \\
+TopK, no norm                          & \fail\ (\(s^2\)) & \ok   & \fail & \fail\ (overflow) \\
+value shift, post-norm                 & \ok & \fail & \fail & \fail \\
+\(K=N\) (linear carry), post-norm      & \ok & \fail & \fail & \fail \\
+\(K=N\) (linear carry), no norm        & \ok & \ok   & \fail & \ok \\
+value shift, no norm                   & \ok & \ok   & \fail & \ok\ (slow) \\
+code residual                          & \ok & \ok   & \ok   & \ok \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The third column is idempotence: \(\topk\) is the Euclidean projection onto the
+\(K\)-sparse set, \(\topk(c)=c\) for \(K\)-sparse \(c\), so carrying the code
+makes a silent block the identity.  Re-encoding the decoded stream does not,
+because \(W_EW_D\neq I\) (and cannot be on \(512\)-sparse codes in \(d=1024\)
+with \(N=4096\): the leakage of \(W_E^\top W_D\) is comparable to the code at
+\(K/d=1/2\)); every block is a new random rank-\(K\) map, which preserves
+energy on average but spreads the singular values of the product over depth.
+The value shift and the linear carry satisfy the first two requirements and
+train; the code residual satisfies all three and trains fastest (Entry 8).
+
+\textbf{The non-idempotent carry, measured} (\code{analysis/carry\_spectrum.py}:
+exact Jacobian \(\partial x_L/\partial x_0\) of the carry alone, branches off,
+fresh Gaussian bottlenecks at the MD init statistics, 3 draws).  Effective rank
+\((\sum\sigma^2)^2/\sum\sigma^4\) out of \(d=1024\) and mean \(\sigma^2\):
+
+\begin{center}\small
+\begin{tabular}{lccccc}
+\toprule
+depth \(L\) & 1 & 4 & 8 & 16 & 24 \\
+\midrule
+value shift, no norm: effective rank & 256 & 78 & 41 & 21 & 14 \\
+\phantom{value shift, no norm:} mean \(\sigma^2\) & 1.00 & 0.99 & 0.99 & 1.00 & 1.02 \\
+TopK + post-norm: mean \(\sigma^2\) & 0.26 & \(3.9\cdot10^{-3}\) & \(1.5\cdot10^{-5}\) & \(2.1\cdot10^{-10}\) & \(2.9\cdot10^{-15}\) \\
+TopK, no norm: effective rank & 255 & 8.1 & 1.01 & 1 & 1 \\
+code residual (silent blocks) & \multicolumn{5}{c}{identity: all \(\sigma=1\), effective rank 1024} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Measured:} the balanced carry keeps the mean \(\sigma^2\) at 1, but its energy
+concentrates on ever fewer directions (effective rank \(\approx 256\cdot L^{-0.9}\));
+after 24 blocks the stack transmits the input along about 14 of 1024 directions.
+The post-norm carry has the same spectrum shape scaled by \(s^{-2L}\); the plain
+carry is a single spike along the signal (the selection gain).
+\textbf{Interpretation:} this is the information the value-shift model has to
+re-inject through attention and the MLPs at every block, and the likely reason it
+trains more slowly than the code residual, whose carry is the identity.
+
+
+
+% ============================================================
+\section{Entry 8 --- round 2: controls, depth, and the value shift in training}
+% ============================================================
+
+\textbf{Sparsity-free controls} (\(K=N\), 24 layers, 2000 steps): with the post-norm val CE 5.959
+(plateau, collapsed at step 2000: cosine 1.000, gradient \(\times2.64\) per block); without it 2.072.
+The post-norm alone decides the outcome for the same carry.
+
+\textbf{Depth sweep} (val CE at step 2000):
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+layers & 8 & 12 & 16 & 24 \\
+\midrule
+TopK, post-norm & 1.862 & 5.958 & 5.959 & 5.959 \\
+TopK, no norm   & 2.340 & 3.210 & 10.825 (\(\ln V\), guard stop 1240) & 10.825 (\(\ln V\)) \\
+code residual   & 1.890 & 1.860 & 1.839 & 1.814 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Measured:} with the post-norm the stack trains at 8 layers --- better than without a norm --- and
+sits on the plateau from 12 layers on, although at 12 layers the initial gradient ratio between the last
+and the first block is only \(\sim2\cdot10^3\).  Without a norm the plain stack slows at 12 layers and
+overflows at 16.  The code residual improves monotonically with depth.
+\textbf{Interpretation:} the collapse, not the size of the initial gradient ratio, sets the post-norm
+threshold: at 8 blocks the lower blocks learn token features before the top blocks' unigram output locks
+the collapse in; from 12 blocks on they do not.
+
+\textbf{The value shift drifts in training} (\code{li\_24L\_k512\_nopnorm\_shift\_energy}).  Val CE
+2.859 (2k), 2.426 (3.5k), 2.137 (6k), with spikes at single evaluations (2.527 at 5k, 2.730 at 6.5k) and
+raw gradient norms up to 15--23 (clipped at 1).  The fraction of kept features that the shift clamps to
+zero rises steadily: 0.15 (1k), 0.26 (2k), 0.43 (3k), 0.51 (5k), 0.56 (6.9k), with \(\delta/\sigma\) from
+1.04 to 1.95: the support is effectively \(\sim\)225 of \(K=512\).  The \code{fixed} rule
+(\(\delta=\lambda^\ast\sigma\) throughout) stalls instead (val 3.764, 3.575, 3.619 at 1k, 1.5k, 2k), and a
+shared dictionary does not help (3.443 at 1.5k against 3.205).
+\textbf{Interpretation:} the shift removes the selection gain of \emph{Gaussian} codes.  Training makes the
+kept magnitudes heavy-tailed, the selection gain of a trained code grows toward \(N/K=8\), and the
+energy-matching shift must remove ever more of it (clamping), while a fixed shift falls out of balance.
+The value shift therefore confirms the mechanism (it trains at 24 layers where plain TopK cannot) but
+is not a robust fix; the code residual, which never reselects from a fresh encoding, has none of these
+problems.
+
+\textbf{The 20k runs} (val CE at step 20\,000): code residual 1.2658 (seed 2: 1.2668); code residual with an
+encoder/decoder pair per block (\code{share\_projections=false}, 563M parameters, 1.06\,s/step) 1.2628, 1.797 at
+2k; value shift without a norm 1.5063; code residual at \(K=32\) 1.517.  \textbf{Measured:} per-block projections
+are ahead of the shared pair by 0.002--0.003 from step 17k on, three times the seed difference, for 55\,\% more
+parameters.
+
+% ============================================================
+\section{Note on how the two fixes were arrived at}
+% ============================================================
+
+Both fixes were designed against the first mechanism (Entry 3), before the second was known.  The value shift
+equalizes \(\Gf\) and \(\Gb\) directly.  The code residual came from the residual principle: a deep stack trains
+when every block is the identity plus a small update, and the stream bottleneck breaks that because it re-encodes
+the stream and reselects from fresh Gaussian coefficients in every block --- which is where the selection gain
+comes from.  Carrying the code makes \(\topk\) idempotent on its input, so a silent block is the identity and there
+is no fresh reselection.  It was run without a post-norm from the start, as a pre-norm residual stream would be.
+The second mechanism was found afterwards, when the value shift failed with the post-norm and trained without
+it (Entry 4).  In hindsight the recursion \eqref{eq:fstar} states what the second mechanism requires --- a carry
+that is not renormalized, so that \(r_\ell\) falls with depth --- and both no-norm fixes meet it for the same
+reason: neither normalizes the carry.  What the code residual adds is the identity carry (Entry 7).
+
+% ============================================================
+\section{Implementation notes}
+% ============================================================
+
+\begin{itemize}[leftmargin=1.2em]
+\item \code{value\_shift} works on the \(K\) gathered values (only
+  \(\sigma^2\) needs all \(N\)); gate forward+backward at \(8\times512\times4096\)
+  bf16: 2.2\,ms against 1.0\,ms for plain \(\topk\) (7.9\,ms for the first,
+  dense implementation, which the round-1 shift runs used).
+\item A latent bug found on the way: \(g_D\) is a plain attribute that only
+  \code{md\_init\_} set, so \code{load\_for\_inference} and the analysis
+  \code{--ckpt} paths evaluated every bp checkpoint with \(g_D=1\) --- harmless
+  behind a post-norm, a different network without one (e.g.\ the 8-layer
+  reference).  The controller now restores it at install
+  (\code{f9a869c}); training is unchanged (\code{tools/repro\_check.py}
+  identical in all three modes).
+\end{itemize}
+
+\end{document}

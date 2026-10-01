@@ -36,3 +36,5 @@ wandb/
 !docs/rblapsum-soft-forward.pdf
 !docs/rblapsum-sf-support-values.pdf
 !docs/rblapsum-signal-permutation.pdf
+!docs/stream-bottleneck-depth.pdf
+!docs/stream-bottleneck-depth-journal.pdf
