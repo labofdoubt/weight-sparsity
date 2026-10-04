@@ -261,7 +261,7 @@ if hard_ks:
           for k in hard_ks]
     hd += [Line2D([0], [0], color=ccol[k], lw=2.0, label=f"code residual, hard Top-${k}$")
            for k in hard_ks]
-    axes[1].legend(handles=hd, fontsize=8.5, loc="lower left", framealpha=0.93, ncol=2)
+    axes[1].legend(handles=hd, fontsize=8.5, loc="upper right", framealpha=0.93, ncol=2)
     fig.suptitle("Hard Top-$K'$ with the post-norm: stream carried (dashed, red) "
                  "vs code carried (solid, blue)", fontsize=14, y=0.995)
     save(fig, "cr_vs_stream_hard.png")

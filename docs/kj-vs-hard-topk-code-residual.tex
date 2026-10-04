@@ -254,6 +254,27 @@ hard Top-$\Kp$ & \PH{} & \PH{} & \PH{} & \PH{} \\
 
 \PH{reading of the tables}
 
+\paragraph{Stability.}
+Every hard run and every $T=2$ run finished. Five of the ten post-norm cells
+did not: their training collapsed to the unigram level (validation CE near
+$5.9$) after a sequence of gradient-norm spikes, and the divergence guard
+stopped them once the training CE had stayed more than $2.5$ nats above its
+best for 800 steps -- $(64,64)$ at step 8020, $(128,128)$ at 7960, $(64,192)$
+at 5840 and $(64,448)$ at 7860. The fifth, $(32,32)$, oscillated around the
+guard's threshold instead of staying above it and was stopped by hand at step
+9160, with its validation CE at $5.84$ at step 9000 after a best of $1.7923$
+at step 4500 (the run was ahead of its stream-carried twin until then). The
+spikes are a property of the post-norm arm under the code residual, not of
+the five cells alone: counting the logged training steps after step 1000 with
+a gradient norm above 1, every post-norm cell with $K \le 128$ has between
+11 and 192 of them (first spike between steps 1700 and 3700), the $(256,256)$
+post-norm cell has none, the $T=2$ cells have between 0 and 9 (largest norm
+44, each followed by recovery within a few hundred steps), and the hard cells
+none. The three small-$K$ post-norm cells that finished, $(32,96)$, $(32,224)$
+and $(32,480)$, carry their spikes to the end (largest norms $3.7 \times
+10^3$, $54$ and $8$) and still reach $1.5151$, $\PH{k32j224}$ and $1.4994$.
+In the stream-carried grid the same twenty cells showed no divergence.
+
 \subsection*{Per candidate pool}
 
 Each figure fixes the pool $\Kp = K+J$ and compares hard Top-$\Kp$ (dashed,
@@ -342,12 +363,29 @@ hard Top-$\Kp$ & \PH{} & \PH{} & \PH{} & \PH{} \\
 
 \subsection*{Hard Top-$\Kp$}
 
+Carrying the code lowers the final loss of every hard baseline by nearly the
+same amount, $0.061$ to $0.075$ nats: $1.6022 \to 1.5400$ at $\Kp = 32$,
+$1.5408 \to 1.4745$ at $64$, $1.4938 \to 1.4187$ at $128$, $1.4560 \to 1.3907$
+at $256$ and $1.4232 \to 1.3622$ at $512$. The gain is largest early and
+narrows: at step 2500 the code-carried Top-32 and Top-512 lead their
+stream-carried twins by $0.107$ and $0.102$, at step 20000 by $0.062$ and
+$0.061$. Measured against the stream-carried ladder, a code-carried Top-$\Kp$
+lands at or below the stream-carried Top-$2\Kp$: $1.5400$ against $1.5408$
+($\Kp = 32$ vs.\ $64$), $1.4745$ against $1.4938$ ($64$ vs.\ $128$), $1.4187$
+against $1.4560$ ($128$ vs.\ $256$) and $1.3907$ against $1.4232$ ($256$ vs.\
+$512$); the code-carried Top-128 ($1.4187$) also matches the stream-carried
+Top-512 ($1.4232$). The carry is thus worth at least one doubling of the
+active count for a hard bottleneck, at every scale tested.
+
 \begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj-cr/cr_vs_stream_hard.png}
 \caption{Hard Top-$\Kp$ with the post-norm, $\Kp = 32$ to $512$: stream
 carried (dashed, red ramp light to dark with $\Kp$) and code carried (solid,
 blue ramp). Left the whole run, right the last 12k steps on a tight scale.
-\PH{}}
+Every solid curve lies below the dashed curve of the same shade from the first
+validation point on, and the solid curve of each $\Kp$ runs along the dashed
+curve of $2\Kp$: code-carried Top-32 and stream-carried Top-64 are
+indistinguishable after step 12000.}
 \end{figure}
 
 \subsection*{RBLapSum, per active count}

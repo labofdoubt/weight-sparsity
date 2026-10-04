@@ -28,3 +28,16 @@ Run one as it is (self-contained, no `_base_`):
 Same seed (1337), data, schedule and architecture as the originals; bf16
 matmuls differ across GPU generations, so curves track the originals' rather
 than coincide.
+
+## The K=32, T=2 sweep (requested 2026-10-04)
+
+From the four code-residual cells `ma_cr_rbk_k32_j<J>_t2.yaml` (J = 32, 96,
+224, 480), one more change each, written by
+`scripts/make_cr_kj_configs.py --sweep configs/cr_kj`:
+
+| suffix | change |
+| --- | --- |
+| `_ss08`, `_ss06`, `_ss04` | `rblapsum_support_scale` 0.8, 0.6, 0.4 (the coefficient of the surrogate support term in the backward) |
+| `_fo` | `rblapsum_surrogate_scope: first_order` at support scale 1.0 |
+
+Sixteen runs, compared in the note with the stream-carried T=2 cells at K=32.

@@ -172,5 +172,52 @@ def main():
             print(f"   {k} = {v!r}")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" and "--sweep" not in sys.argv:
     main()
+
+
+# --------------------------------------------------------------------------- #
+# The K=32, T=2 support-scale / first-order sweep (requested 2026-10-04)
+# --------------------------------------------------------------------------- #
+SWEEP_HEADER = """# {name}: the K=32, T=2 sweep of the code-residual K+J grid.
+# {base}.yaml (code_residual: true, T=2, no output norm) with one more change:
+#   {change}
+# rblapsum_support_scale multiplies the RBLapSum support term in the backward
+# (1.0 = the unmodified surrogate, 0.0 = the hard-TopK backward);
+# rblapsum_surrogate_scope=first_order evaluates every gate's support term on
+# the hard-path upstream gradient (two backward passes per micro-batch, single
+# process).  Written by scripts/make_cr_kj_configs.py --sweep.
+"""
+
+
+def write_sweep(out_dir):
+    import yaml
+    for j in (32, 96, 224, 480):
+        base = f"ma_cr_rbk_k32_j{j}_t2"
+        tree0 = yaml.safe_load(open(os.path.join(out_dir, base + ".yaml")))
+        assert tree0["activation_bottleneck"]["code_residual"] is True
+        assert tree0["activation_bottleneck"]["temperature"] == 2.0
+        assert tree0["activation_bottleneck"]["post_norm"] is False
+        variants = [(f"{base}_ss08", {"rblapsum_support_scale": 0.8}),
+                    (f"{base}_ss06", {"rblapsum_support_scale": 0.6}),
+                    (f"{base}_ss04", {"rblapsum_support_scale": 0.4}),
+                    (f"{base}_fo", {"rblapsum_surrogate_scope": "first_order"})]
+        for name, change in variants:
+            tree = copy.deepcopy(tree0)
+            tree["activation_bottleneck"].update(change)
+            tree["train"]["run_name"] = name
+            config_from_dict(copy.deepcopy(tree))  # validates
+            path = os.path.join(out_dir, name + ".yaml")
+            with open(path, "w") as f:
+                f.write(SWEEP_HEADER.format(name=name, base=base,
+                                            change=", ".join(f"{k}: {v}" for k, v in change.items())))
+                yaml.safe_dump(tree, f, sort_keys=False)
+            b = load_config(path).activation_bottleneck
+            print(f"{name:30s} k={b.k} j={b.j} T={b.temperature:g} post_norm={b.post_norm} "
+                  f"code_residual={b.code_residual} support_scale={b.rblapsum_support_scale:g} "
+                  f"scope={b.rblapsum_surrogate_scope}")
+
+
+if __name__ == "__main__" and "--sweep" in sys.argv:
+    # python scripts/make_cr_kj_configs.py --sweep configs/cr_kj
+    write_sweep(sys.argv[sys.argv.index("--sweep") + 1])
