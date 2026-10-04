@@ -28,12 +28,3 @@ Run one as it is (self-contained, no `_base_`):
 Same seed (1337), data, schedule and architecture as the originals; bf16
 matmuls differ across GPU generations, so curves track the originals' rather
 than coincide.
-
-## Supplementary: the first-order scope
-
-`ma_cr_rbk_k<K>_j<K>_pnorm_fo.yaml` (K = 32, 64, 128) are the three post-norm
-cells whose pool-scope run diverged under the code residual, with one more
-change, `rblapsum_surrogate_scope: first_order` (each gate's support term from
-the hard-path gradient; two backward passes per micro-batch, single process;
-docs/rblapsum-code-residual.tex).  They are not part of the one-flag grid and
-the note reports them separately.
