@@ -415,6 +415,46 @@ carried (solid, blue ramp); left panel $T=2$, right panel post-norm.
 \end{figure}
 
 % ============================================================
+\section{The support scale and the first-order scope at $K=32$, $T=2$}
+% ============================================================
+
+The surrogate's backward adds to the hard gradient a support term over the
+Top-$(K{+}J)$ pool; \code{rblapsum\_support\_scale} $= \gamma$ multiplies that
+term ($\gamma = 1$ the unmodified surrogate, $\gamma = 0$ the hard backward),
+and the first-order scope evaluates every gate's term on the gradient that
+reached it along hard paths, so that no gradient carries more than one
+support term (Section~2). Sixteen further runs take the four code-carried
+$T=2$ cells at $K = 32$ -- $J = 32, 96, 224, 480$, no output norm -- and
+change one thing each: $\gamma = 0.8$, $0.6$, $0.4$, or the first-order scope
+at $\gamma = 1$ (\code{configs/cr\_kj/ma\_cr\_rbk\_k32\_j<J>\_t2\_\{ss08,ss06,ss04,fo\}}).
+Each is compared with the stream-carried $T=2$ cell of the same $J$, the
+family of the K+J note.
+
+\begin{center}\small
+\begin{tabular}{lcccccc}
+\toprule
+$J$ & stream & code, $\gamma{=}1$ & $\gamma{=}0.8$ & $\gamma{=}0.6$ & $\gamma{=}0.4$ & first-order \\
+\midrule
+$32$  & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} \\
+$96$  & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} \\
+$224$ & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} \\
+$480$ & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\PH{reading of the sweep}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_k32_sweep.png}
+\caption{$K = 32$, $T = 2$, no output norm. Each panel compares one
+code-carried family (solid, blue ramp light to dark with $J = 32, 96, 224,
+480$) with the stream-carried $T=2$ cells at $K=32$ (dashed, red ramp):
+support scale $\gamma = 0.8$, $0.6$, $0.4$, and the first-order scope at
+$\gamma = 1$. \PH{}}
+\end{figure}
+
+% ============================================================
 \section{Interpretation}
 % ============================================================
 

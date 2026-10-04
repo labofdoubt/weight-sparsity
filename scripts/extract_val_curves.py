@@ -33,6 +33,7 @@ def read_run(run_dir):
         "post_norm": bool(b.get("post_norm", False)),
         "code_residual": bool(b.get("code_residual", False)),
         "scope": b.get("rblapsum_surrogate_scope", "pool"),
+        "support_scale": float(b.get("rblapsum_support_scale", 1.0)),
         "grad_mode": b.get("rblapsum_boundary_grad_mode"),
         "b0": b.get("rblapsum_boundary_floor"),
         "n_layers": m["n_layers"], "d_model": m["d_model"], "decouple": bool(m.get("decouple")),
