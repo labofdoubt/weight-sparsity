@@ -469,6 +469,18 @@ one streamlit viewer over them. `analysis/README.md` is the complete manual; the
   `value_shift=energy` with `post_norm=false`; `analysis/depth_probe.py`
   measures all of it per block.  Neither option is in the state_dict: resume a
   run with its own `config.yaml`.
+* **`code_residual` changed definition on 2026-10-04.** Block 0 is now the
+  ordinary stream bottleneck, `c_1 = TopK(E_0 (x_0 + Delta_0(x_0)))` with
+  `x_0` the embedding, and the carry starts from block 1; no module is added,
+  the parameters and state_dict are the stream-carried model's, and
+  `post_norm` is allowed (it normalizes the decoded stream a block reads, the
+  code itself is never normalized).  The depth and code-residual notes
+  (`stream-bottleneck-depth*.tex`, `rblapsum-code-residual*.tex`, runs
+  `li_*coderes*`, `li_sr*`) measured the earlier definition: an entry gate
+  `c_0 = TopK(E_in x_0)` before block 0, block 0 reading `D c_0` and encoding
+  only `Delta_0`.  Checkpoints from then carry `code_entry.*` keys and fail to
+  load into the current model (unexpected keys) -- rebuild them from a commit
+  before the change (`e41eefe`).
 * **RBLapSum in a code-residual stack** (docs/rblapsum-code-residual.tex). The
   carry is the identity on each code coordinate, and the default backward
   (`rblapsum_surrogate_scope=pool`) applies every gate's support term to an

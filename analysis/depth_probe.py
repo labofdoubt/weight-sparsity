@@ -169,7 +169,7 @@ def main() -> None:
         hooks.append(blk.mlp.register_forward_hook(
             lambda m_, i, o, li=li: cap.__setitem__(("m", li), o.detach())))
 
-    code_res = getattr(model, "code_entry", None) is not None
+    code_res = bool(getattr(model, "code_residual", False))
     mods = {}
     for label, mod in bn.layers:
         if label.startswith("blocks."):

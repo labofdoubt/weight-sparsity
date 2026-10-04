@@ -158,17 +158,24 @@ class Block(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.residual_bottleneck(x)
+        x = self.body(x)
+        x = self.residual_out_bottleneck(x)
+        return x
+
+    def body(self, x: torch.Tensor) -> torch.Tensor:
+        """``forward`` between the two stream placements: ``x + Delta``, with
+        the attention and MLP contributions added in the order ``forward`` adds
+        them (so the code-residual stack's block 0 is bit-identical to it)."""
         x = x + self.post_attn_bottleneck(self.attn(self.norm1(x)))
         x = x + self.post_mlp_bottleneck(self.mlp(self.mlp_bottleneck(self.norm2(x))))
-        x = self.residual_out_bottleneck(x)
         return x
 
     def branches(self, x: torch.Tensor) -> torch.Tensor:
         """The block's residual contribution ``Delta`` with no stream bottleneck.
 
-        ``forward`` minus the stream placements: attention then MLP, each added
-        as in ``forward``, returned as the sum of the two contributions rather
-        than as ``x + Delta`` (the code-residual stack encodes ``Delta`` alone).
+        ``body`` minus its input: attention then MLP, each computed as in
+        ``forward``, returned as the sum of the two contributions rather than
+        as ``x + Delta`` (the code-residual stack encodes ``Delta`` alone).
         """
         a = self.post_attn_bottleneck(self.attn(self.norm1(x)))
         m = self.post_mlp_bottleneck(
@@ -294,14 +301,13 @@ class TransformerLM(nn.Module):
             pos = torch.arange(T, device=idx.device)
             x = x + self.pos_emb(pos)[None]
         x = self.emb_dropout(x)
-        # installed by the bottleneck controller under code_residual; absent
+        # set by the bottleneck controller under code_residual; absent
         # otherwise, so plain models keep their state_dict and forward
-        entry = getattr(self, "code_entry", None)
-        if entry is None:
+        if getattr(self, "code_residual", False):
+            x = self._code_residual_stack(x)
+        else:
             for block in self.blocks:
                 x = block(x)
-        else:
-            x = self._code_residual_stack(x, entry)
         x = self.norm_f(x)
         logits = self.lm_head(x)
         if self.logit_mult != 1.0:
@@ -313,33 +319,49 @@ class TransformerLM(nn.Module):
             )
         return logits, loss
 
-    def _code_residual_stack(self, x: torch.Tensor, entry: nn.Module) -> torch.Tensor:
+    def _code_residual_stack(self, x: torch.Tensor) -> torch.Tensor:
         """The block stack with the K-sparse code, not the stream, carried.
 
-            c_0 = TopK(E_in x),   x_l = g_D D_l c_l,
-            c_{l+1} = TopK(c_l + alpha * E_l Delta_l(x_l)),   returns g_D D_out c_L
+            c_1     = TopK(E_0 (x_0 + Delta_0(x_0))),         x_0 the embedding
+            x_l     = norm_l(g_D D_{l-1} c_l),                l = 1 .. L-1
+            c_{l+1} = TopK(c_l + alpha * E_l Delta_l(x_l)),   l = 1 .. L-1
+            returns g_D D_{L-1} c_L
 
-        Block l reads the code through its own decoder ``D_l`` and writes
-        through its own encoder ``E_l`` (its residual_out module) and gate; the
-        entry module supplies ``E_in`` for the embedding's code and ``D_out``
-        for the final readout.  Under share_projections all of them are one
-        encoder / decoder pair.  TopK is the Euclidean projection onto K-sparse
-        vectors, so a block with ``Delta = 0`` is the identity on the code and
-        the carry's Jacobian is the support mask -- the residual connection of a
-        pre-norm transformer, moved into code space -- whichever matrices the
-        blocks read and write with.
+        Block 0 is the ordinary stream bottleneck: it reads the embedding and
+        its bottleneck encodes the block's whole output, so a code-residual
+        model and a stream-carried one coincide up to and including ``c_1``.
+        From block 1 on, block l reads the code through the previous
+        bottleneck's decoder ``D_{l-1}`` (and that module's post-norm, if any),
+        writes its contribution ``Delta_l`` through its own encoder ``E_l``,
+        and its gate adds the encoded contribution to the carried code instead
+        of re-encoding the decoded stream.  Under share_projections every
+        ``E_l``, ``D_l`` is one pair.  TopK is the Euclidean projection onto
+        K-sparse vectors, so a block with ``Delta = 0`` is the identity on the
+        code and the carry's Jacobian is the support mask -- the residual
+        connection of a pre-norm transformer, moved into code space.  No module
+        is added: the parameters and the state_dict are the stream-carried
+        model's.
+
+        Until 2026-10-04 the stack had an entry gate ``c_0 = TopK(E_in x_0)``
+        before block 0, block 0 read ``D c_0`` and encoded only its own
+        ``Delta_0``; checkpoints from then carry ``code_entry.*`` keys and
+        belong to that definition.
         """
         alpha = float(getattr(self, "code_residual_scale", 1.0))
-        code = entry.gate(entry.in_proj(x))
+        code = None
         for block in self.blocks:
             bot = block.residual_out_bottleneck
-            delta = block.branches(bot.decode(code))
-            update = alpha * bot.in_proj(delta)
-            if getattr(bot.gate, "rblapsum_surrogate_scope", "pool").startswith("update"):
-                code = self._split_surrogate(bot.gate, code, update)
+            if code is None:
+                # block 0: the installed stream bottleneck, up to its gate
+                code = bot.gate(bot.in_proj(block.body(x)))
             else:
-                code = bot.gate(code + update)
-        return entry.decode(code)
+                update = alpha * bot.in_proj(block.branches(x))
+                if getattr(bot.gate, "rblapsum_surrogate_scope", "pool").startswith("update"):
+                    code = self._split_surrogate(bot.gate, code, update)
+                else:
+                    code = bot.gate(code + update)
+            x = bot.post_norm(bot.decode(code))
+        return x
 
     @staticmethod
     def _split_surrogate(gate: nn.Module, carry: torch.Tensor,

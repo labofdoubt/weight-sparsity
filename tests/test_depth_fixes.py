@@ -188,10 +188,12 @@ def test_code_residual_config_validation():
     base = dict(enabled=True, n_features=64, k=8, j=8, surrogate_mode="hard",
                 placement="residual_out", share_projections=True)
     ActivationBottleneckConfig(**base, code_residual=True)
-    # per-block projections are allowed (each block reads and writes its own)
+    # per-block projections are allowed (block l writes through its own encoder,
+    # block l+1 reads through block l's decoder)
     ActivationBottleneckConfig(**{**base, "share_projections": False}, code_residual=True)
-    for bad in ({"placement": "residual"}, {"post_norm": True},
-                {"code_residual_scale": 0.0}):
+    # a post-norm normalizes the decoded stream a block reads; the code is untouched
+    ActivationBottleneckConfig(**base, code_residual=True, post_norm=True)
+    for bad in ({"placement": "residual"}, {"code_residual_scale": 0.0}):
         with pytest.raises(ValueError):
             ActivationBottleneckConfig(**{**base, **bad}, code_residual=True)
     with pytest.raises(ValueError):
@@ -209,21 +211,87 @@ def test_code_residual_rejects_a_partial_stack():
         apply_activation_bottleneck(model, cfg)
 
 
-def test_code_residual_adds_an_entry_gate_and_no_parameters():
-    model, ctl = code_model()
-    assert ctl.layers[0][0] == "entry"
-    assert model.code_entry.in_proj is model.blocks[0].residual_out_bottleneck.in_proj
-    assert len(ctl.layers) == 1 + len(model.blocks)
-    # the same stack with the stream carried: one shared pair either way
+def stream_model(n_layers=3, share=True, **kw):
+    """The same stack with the stream carried (code_residual off)."""
     torch.manual_seed(0)
-    shared = build_model(ModelConfig(vocab_size=97, max_seq_len=32, n_layers=3,
-                                     d_model=32, n_heads=4))
-    apply_activation_bottleneck(shared, ActivationBottleneckConfig(
+    cfg = ActivationBottleneckConfig(
         enabled=True, n_features=128, k=16, j=0, surrogate_mode="hard",
-        placement="residual_out", share_projections=True,
-        init_mode="unit_norm_dictionary"))
-    assert model.num_parameters() == shared.num_parameters()
-    assert "code_entry.in_proj.weight" in model.state_dict()
+        placement="residual_out", share_projections=share,
+        init_mode="unit_norm_dictionary", **kw)
+    model = build_model(ModelConfig(vocab_size=97, max_seq_len=32,
+                                    n_layers=n_layers, d_model=32, n_heads=4))
+    apply_activation_bottleneck(model, cfg)
+    return model
+
+
+def test_code_residual_adds_no_module_and_no_parameters():
+    model, ctl = code_model()
+    assert [n for n, _ in ctl.layers] == [f"blocks.{i}" for i in range(len(model.blocks))]
+    assert model.code_residual is True
+    assert not hasattr(model, "code_entry")
+    # the same stack with the stream carried: identical parameters and keys
+    stream = stream_model()
+    assert model.num_parameters() == stream.num_parameters()
+    assert list(model.state_dict()) == list(stream.state_dict())
+
+
+@pytest.mark.parametrize("post_norm", [False, True])
+def test_code_residual_block0_is_the_stream_bottleneck(post_norm):
+    """Same weights, one model carries the code and the other the stream: the
+    first bottleneck encodes block 0's whole output in both, so c_1 and the
+    stream block 1 reads coincide; the stacks differ only from block 1 on."""
+    def build(code_residual):
+        torch.manual_seed(0)
+        cfg = ActivationBottleneckConfig(
+            enabled=True, n_features=128, k=16, j=0, surrogate_mode="hard",
+            placement="residual_out", share_projections=False, post_norm=post_norm,
+            code_residual=code_residual, init_mode="unit_norm_dictionary")
+        m = build_model(ModelConfig(vocab_size=97, max_seq_len=32, n_layers=3,
+                                    d_model=32, n_heads=4))
+        apply_activation_bottleneck(m, cfg)
+        return m
+
+    cr, st = build(True), build(False)
+    for a, b in zip(cr.parameters(), st.parameters()):
+        assert torch.equal(a, b)
+    idx = torch.randint(0, 97, (2, 8))
+    caps = {}
+    for tag, m in (("cr", cr), ("st", st)):
+        cap = {}
+        bot = m.blocks[0].residual_out_bottleneck
+        hooks = [bot.gate.register_forward_hook(
+                     lambda mod, i, o: cap.__setitem__("c1", o.detach())),
+                 bot.post_norm.register_forward_hook(
+                     lambda mod, i, o: cap.__setitem__("x1", o.detach())),
+                 m.blocks[1].norm1.register_forward_pre_hook(
+                     lambda mod, i: cap.__setitem__("in1", i[0].detach()))]
+        m.eval()
+        cap["out"] = m(idx)[0].detach()
+        for h in hooks:
+            h.remove()
+        caps[tag] = cap
+    assert torch.equal(caps["cr"]["c1"], caps["st"]["c1"])
+    assert torch.equal(caps["cr"]["x1"], caps["st"]["x1"])
+    assert torch.equal(caps["cr"]["in1"], caps["cr"]["x1"])     # block 1 reads the decoded code
+    if post_norm:  # the post-norm is applied to what block 1 reads
+        assert float(caps["cr"]["x1"].pow(2).mean(-1).sqrt().mean()) == pytest.approx(1.0, abs=1e-3)
+    assert not torch.allclose(caps["cr"]["out"], caps["st"]["out"])
+
+
+def test_code_residual_with_one_block_is_the_stream_model():
+    def build(code_residual):
+        torch.manual_seed(0)
+        cfg = ActivationBottleneckConfig(
+            enabled=True, n_features=128, k=16, j=0, surrogate_mode="hard",
+            placement="residual_out", code_residual=code_residual,
+            init_mode="unit_norm_dictionary")
+        m = build_model(ModelConfig(vocab_size=97, max_seq_len=32, n_layers=1,
+                                    d_model=32, n_heads=4))
+        apply_activation_bottleneck(m, cfg)
+        m.eval()
+        return m
+    idx = torch.randint(0, 97, (2, 8))
+    assert torch.equal(build(True)(idx)[0], build(False)(idx)[0])
 
 
 @pytest.mark.parametrize("share", [True, False])
@@ -235,12 +303,15 @@ def test_code_residual_with_silent_blocks_is_the_identity_on_the_code(share):
             blk.mlp.fc2.weight.zero_()
     model.eval()
     idx = torch.randint(0, 97, (2, 16))
-    entry = model.code_entry
+    first = model.blocks[0].residual_out_bottleneck
+    last = model.blocks[-1].residual_out_bottleneck
     with torch.no_grad():
         x = model.tok_emb(idx) * model.embed_scale
         x = x + model.pos_emb(torch.arange(idx.shape[1]))[None]
-        code0 = entry.gate(entry.in_proj(x))
-        expect = model.lm_head(model.norm_f(entry.decode(code0))) * model.logit_mult
+        # block 0 contributes nothing, so c_1 = TopK(E_0 x_0); every later gate
+        # is the identity on it and the last decoder reads it out
+        code1 = first.gate(first.in_proj(x))
+        expect = model.lm_head(model.norm_f(last.decode(code1))) * model.logit_mult
         got, _ = model(idx)
     assert torch.allclose(got, expect, atol=1e-5)
 
@@ -308,24 +379,24 @@ def test_gathered_shift_matches_the_dense_formulation(mode, dtype):
 
 
 def test_unshared_code_residual_gives_every_block_its_own_pair():
-    """Without share_projections block l reads through its own decoder and
-    writes through its own encoder; the entry adds one more pair (E_in for c_0,
-    D_out for the final readout)."""
+    """Without share_projections block l writes through its own encoder and
+    block l+1 reads through block l's decoder; no extra pair is added."""
     model, ctl = code_model(n_layers=3, share=False)
     mods = [m for _, m in ctl.layers]
-    assert len({id(m.in_proj.weight) for m in mods}) == len(mods) == 4
-    assert len({id(m.out_proj.weight) for m in mods}) == 4
+    assert len({id(m.in_proj.weight) for m in mods}) == len(mods) == 3
+    assert len({id(m.out_proj.weight) for m in mods}) == 3
     plain = build_model(ModelConfig(vocab_size=97, max_seq_len=32, n_layers=3,
                                     d_model=32, n_heads=4))
     pair = 2 * 32 * 128  # biasless in_proj + out_proj
-    assert model.num_parameters() - plain.num_parameters() == 4 * pair
-    # each block really reads through its own decoder: perturbing block 1's
-    # decoder changes the output, and so does perturbing the entry's (readout)
+    assert model.num_parameters() - plain.num_parameters() == 3 * pair
+    # every decoder is read: perturbing block 1's (what block 2 reads) changes
+    # the output, and so does perturbing the last one's (the readout)
     idx = torch.randint(0, 97, (2, 8))
     model.eval()
     with torch.no_grad():
         base = model(idx)[0].clone()
-        for mod in (model.blocks[1].residual_out_bottleneck, model.code_entry):
+        for mod in (model.blocks[1].residual_out_bottleneck,
+                    model.blocks[2].residual_out_bottleneck):
             w = mod.out_proj.weight
             saved = w.clone()
             w.add_(0.1 * torch.randn_like(w))
@@ -680,15 +751,15 @@ def test_first_order_is_the_sum_of_single_gate_relaxations():
 
     def relaxed(only):
         m = model("pool")
-        gates = [m.code_entry.gate] + [b.residual_out_bottleneck.gate for b in m.blocks]
+        gates = [b.residual_out_bottleneck.gate for b in m.blocks]
         for i, gate in enumerate(gates):
             gate.rblapsum_support_scale = 1.0 if i == only else 0.0
         m(idx, idx)[1].backward()
         return grads(m)
 
     g_hard = relaxed(-1)
-    expected = g_hard + sum(relaxed(i) - g_hard for i in range(4))
-    # float64; the reference sums 4 relaxed gradients minus 3 hard ones, so allow round-off
+    expected = g_hard + sum(relaxed(i) - g_hard for i in range(3))
+    # float64; the reference sums 3 relaxed gradients minus 2 hard ones, so allow round-off
     assert torch.allclose(g_fo, expected, rtol=1e-6, atol=1e-9)
     # and it is not the ordinary backward
     pool = model("pool")

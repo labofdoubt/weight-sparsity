@@ -2,8 +2,8 @@
 
 For a ``code_residual`` model (``c_{l+1} = gate_l(c_l + alpha E Delta_l)``) at
 initialization or from a checkpoint, one forward and one backward on a
-validation batch (train mode, grad enabled), recording for every gate l (the
-entry gate first, then the blocks):
+validation batch (train mode, grad enabled), recording for every gate l (one
+per block; gate 0 sees ``E_0 (x_0 + Delta_0)`` with no carry):
 
   code_grad_rms    RMS of dL/dc_{l+1} at the gate's output (the carried code)
   in_grad_rms      RMS of dL/du_l at the gate's input u_l = c_l + alpha E Delta_l
@@ -105,12 +105,12 @@ def main():
     cfg, model, bn = build(tree, dev, payload)
     cfg.data.data_dir = args.data_dir
     model.train()
-    assert getattr(model, "code_entry", None) is not None, "needs a code_residual model"
+    assert getattr(model, "code_residual", False), "needs a code_residual model"
     ab = cfg.activation_bottleneck
     k, t = int(ab.k), float(ab.temperature)
     rel_t = bool(getattr(ab, "rblapsum_relative_temperature", False))
 
-    gates = [model.code_entry.gate] + [b.residual_out_bottleneck.gate for b in model.blocks]
+    gates = [b.residual_out_bottleneck.gate for b in model.blocks]
     cap, hooks = {}, []
     for gi, gate in enumerate(gates):
         def pre(mod_, inp, gi=gi):

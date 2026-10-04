@@ -141,7 +141,7 @@ class ActivationBottleneckController:
                 label = f"blocks.{i}" if len(placements) == 1 else f"blocks.{i}.{name}"
                 self.layers.append((label, bottleneck))
         if getattr(cfg, "code_residual", False):
-            self._install_code_residual(indices, len(blocks), d_model, norm_eps, source)
+            self._install_code_residual(indices, len(blocks))
         self._restore_decoder_scale(d_model)
 
     def _restore_decoder_scale(self, d_model: int) -> None:
@@ -163,28 +163,23 @@ class ActivationBottleneckController:
             layer.decoder_scale = math.sqrt(
                 d_model / effective_backward_support(layer.gate))
 
-    def _install_code_residual(self, indices, n_blocks: int, d_model: int,
-                               norm_eps: float, source) -> None:
-        """The entry module that makes ``c_0``, and the model-side switch.
+    def _install_code_residual(self, indices, n_blocks: int) -> None:
+        """The model-side switch for the code-residual forward.
 
-        The code-residual forward (TransformerLM._code_residual_stack) needs a
-        gate for the embedding's code before block 0 and a decoder for the final
-        readout.  Under share_projections the entry adopts the one shared pair
-        (no parameters, only its own usage buffers); otherwise it has its own
-        encoder and decoder.  Registered on the model (``model.code_entry``), so
-        it is part of the state_dict and of ``model.modules()``, which is how
-        md_init_ finds it.
+        TransformerLM._code_residual_stack carries the code between the
+        installed residual_out bottlenecks, so every block must have one.  No
+        module is added: the first bottleneck encodes block 0's whole output
+        and the last one's decoder is the readout, as in the stream-carried
+        stack.  Plain attributes (like ``embed_scale``), so the state_dict and
+        the parameter count are the stream-carried model's.
         """
         cfg = self.cfg
         if list(indices) != list(range(n_blocks)):
             raise ValueError(
                 "code_residual carries the code through EVERY block: "
                 f"layers must be 'all', got {cfg.layers!r}")
-        entry = SparseTopKBottleneck(d_model, cfg, bias=cfg.bias, post_norm=False,
-                                     norm_eps=norm_eps, share_from=source)
-        self.model.code_entry = entry
+        self.model.code_residual = True
         self.model.code_residual_scale = float(cfg.code_residual_scale)
-        self.layers.insert(0, ("entry", entry))
 
 
     def parameters(self) -> List[nn.Parameter]:

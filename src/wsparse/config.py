@@ -609,20 +609,28 @@ class ActivationBottleneckConfig:
     value_shift: str = "none"  # none | fixed | energy
     value_shift_lambda: Optional[float] = None
     # code_residual: carry the K-sparse CODE between blocks instead of
-    # re-encoding the decoded stream,
-    #     c_0 = TopK(E x_emb),  x_l = g_D D_l c_l,
+    # re-encoding the decoded stream.  Block 0 is the ordinary stream
+    # bottleneck,
+    #     c_1 = TopK(E_0 (x_0 + Delta_0(x_0))),    x_0 the embedding,
+    # and from block 1 on
+    #     x_l = D_{l-1} c_l,
     #     c_{l+1} = TopK(c_l + code_residual_scale * E_l Delta_l(x_l)),
-    # where Delta_l is block l's attention + MLP contribution.  TopK is the
-    # Euclidean projection onto K-sparse vectors, so a block that contributes
-    # nothing leaves the code unchanged and the carry's Jacobian is the support
-    # mask: the stack is a residual network in code space, and every stream
-    # between blocks is still exactly a K-sparse code.  With share_projections
-    # (the tested default) that code lives in one dictionary; without it block
-    # l reads through its own decoder D_l and writes through its own encoder
-    # E_l, and an entry module adds E_in (for c_0) and D_out (the final
-    # readout) -- the same carry, one more projection pair.  Requires
-    # placement=residual_out, layers=all and post_norm=false; adds one entry
-    # gate for c_0 (no parameters when shared).
+    # where Delta_l is block l's attention + MLP contribution; the readout is
+    # D_{L-1} c_L.  TopK is the Euclidean projection onto K-sparse vectors, so
+    # a block that contributes nothing leaves the code unchanged and the
+    # carry's Jacobian is the support mask: the stack is a residual network in
+    # code space, and every stream between blocks is still exactly a K-sparse
+    # code.  With share_projections that code lives in one dictionary; without
+    # it block l reads through the previous block's decoder and writes through
+    # its own encoder.  No module is added either way: parameters and
+    # state_dict are the stream-carried model's, and the two models coincide
+    # through c_1.  post_norm, when set, normalizes the decoded stream x_l a
+    # block reads, as it normalizes the stream a block reads in the
+    # stream-carried model; the carried code itself is never normalized.
+    # Requires placement=residual_out and layers=all.
+    # Until 2026-10-04 an entry gate made c_0 = TopK(E x_0) before block 0 and
+    # block 0 read D c_0 and encoded only Delta_0; checkpoints from then carry
+    # `code_entry.*` keys and do not load into the current model.
     code_residual: bool = False
     code_residual_scale: float = 1.0
 
@@ -777,10 +785,6 @@ class ActivationBottleneckConfig:
                     "code_residual carries the code between blocks, so the "
                     "bottleneck must be the stream itself at every block's tail: "
                     f"placement='residual_out' only, got {self.placement!r}")
-            if self.post_norm:
-                raise ValueError(
-                    "code_residual carries the code values themselves; a post-norm "
-                    "on the decoded stream has no place in it (post_norm=false)")
             if self.selection_mode == "gated_topk":
                 raise ValueError("code_residual ranks the carried code itself; "
                                  "gated_topk is not supported")

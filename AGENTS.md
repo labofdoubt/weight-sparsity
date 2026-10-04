@@ -152,6 +152,10 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
 - **Deep stream bottlenecks** (beyond ~8 layers) need `code_residual` or
   `value_shift` with `post_norm=false`; no scale, init or post-norm fixes them (§9).
   Resume with the run's own `config.yaml`: those options are not in the state_dict.
+- **`code_residual` changed on 2026-10-04:** block 0 is the plain stream bottleneck
+  (no entry gate), the carry starts at block 1, `post_norm` is allowed. Checkpoints
+  from before (`code_entry.*` keys: the `li_*` depth and surrogate runs) do not
+  load into the current model; rebuild from `e41eefe` (§9).
 - **RBLapSum with `code_residual`** needs `rblapsum_surrogate_scope=first_order` or a
   support scale <= 0.3; the default backward multiplies the support terms along the carry and collapses (§9).
 - **`rblapsum_sf` logs two losses:** `val/ce` is the hard Top-K forward,
@@ -201,5 +205,12 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
 - Research notes (`docs/*.tex`) follow `docs/rblapsum-kappa-stability-neutral.tex`:
   neutral tone, terms defined before use, measurements kept apart from
   interpretation, negative results stated plainly.
+- Answers to the user use the same register as the notes: neutral technical
+  language, no metaphors, terms defined before use. LaTeX formulas are always
+  welcome, and illustrating a statement with a formula is always a good idea.
+  Put them in the chat, not in a separate PDF. The chat renders display math
+  between `$$` lines of their own or in a ```math fence, and inline math as
+  `$...$` (only after a space or at line start: `Top-$K$` fails, `Top-\(K\)`
+  works) or `\(...\)`; one-line `$$...$$` and `\[...\]` do not render.
 - Record new lessons about boxes or setup here or in the guide, not only in an
   agent's private memory.

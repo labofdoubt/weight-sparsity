@@ -1,0 +1,205 @@
+# ma_cr_hard_k128_pnorm: the K+J campaign cell ca_rout_hard_k128_kj_pnorm_md
+# (gdrive:weight-sparsity/runs_california/ca_rout_hard_k128_kj_pnorm_md, docs/kj-vs-hard-topk.tex)
+# with activation_bottleneck.code_residual: true as the ONLY functional change.
+#
+# Written by scripts/make_cr_kj_configs.py: the archived config.json migrated
+# through wsparse.config.config_from_dict onto the current schema.  Every
+# field the cleanup kept has the archived value; the fields it dropped were
+# inert in that run (removed subsystems, docs/vastai-agent-guide.md 9d):
+#   activation_bottleneck.boundary_mode = 'outside_only'
+#   activation_bottleneck.calibrate_output = False
+#   activation_bottleneck.calibration_batches = 4
+#   activation_bottleneck.calibration_iters = 3
+#   activation_bottleneck.differentiate_temperature = False
+#   activation_bottleneck.effective_count_metric = 'ess'
+#   activation_bottleneck.fixed_temperature = 1.0
+#   activation_bottleneck.inactive_grad_scale = 1.0
+#   activation_bottleneck.jumprelu_count_coef = 0.0
+#   activation_bottleneck.jumprelu_count_one_sided = False
+#   activation_bottleneck.jumprelu_kernel_width = 0.5
+#   activation_bottleneck.jumprelu_theta_init = None
+#   activation_bottleneck.n_eff = 32.0
+#   activation_bottleneck.one_sided_weight_mode = 'score_softmax'
+#   activation_bottleneck.project_scale_gradient = False
+#   activation_bottleneck.rblapsum_chi_target = 45.0
+#   activation_bottleneck.rblapsum_kernel = 'exponential'
+#   activation_bottleneck.rblapsum_servo_rate = 0.02
+#   activation_bottleneck.rblapsum_t_max = 8.0
+#   activation_bottleneck.rblapsum_t_min = 0.25
+#   activation_bottleneck.rblapsum_temperature_mode = 'fixed'
+#   activation_bottleneck.rblapsum_window_floor = 16.0
+#   activation_bottleneck.reconstruction_coef = 0.0
+#   activation_bottleneck.reconstruction_normalize = True
+#   activation_bottleneck.reinforce_baseline = 'batch_loo'
+#   activation_bottleneck.reinforce_baseline_ema_decay = 0.99
+#   activation_bottleneck.reinforce_coef = 1.0
+#   activation_bottleneck.reinforce_distribution = 'gumbel_pl'
+#   activation_bottleneck.reinforce_stochastic_eval = False
+#   activation_bottleneck.reinforce_temperature = 1.0
+#   activation_bottleneck.surrogate_grad_scale = 1.0
+#   activation_bottleneck.swap_lambda = 'default'
+#   activation_bottleneck.temperature_anneal_steps = None
+#   activation_bottleneck.temperature_end = 0.02
+#   activation_bottleneck.temperature_power = 2.0
+#   activation_bottleneck.temperature_scale_mode = 'relative'
+#   activation_bottleneck.temperature_schedule = 'exponential'
+#   activation_bottleneck.temperature_solver_max_iters = 12
+#   activation_bottleneck.temperature_solver_tol = 1e-05
+#   activation_bottleneck.temperature_start = 0.5
+#   activation_bottleneck.temperature_warmup_steps = 0
+#   sparsity.beta_anneal_steps = None
+#   sparsity.beta_end = 1000000.0
+#   sparsity.beta_power = 2.0
+#   sparsity.beta_schedule = 'exponential'
+#   sparsity.beta_start = 1000.0
+#   sparsity.beta_warmup_steps = 0
+#   sparsity.enabled = False
+#   sparsity.eval_hard_mask = True
+#   sparsity.grad_through_mask = True
+#   sparsity.inverse_temperature = None
+#   sparsity.inverse_temperature_schedule = None
+#   sparsity.j = 0.0
+#   sparsity.k = None
+#   sparsity.l0_coef = 0.0
+#   sparsity.l0_normalize = True
+#   sparsity.mask_grad_clip = None
+#   sparsity.mask_lr = 0.01
+#   sparsity.mask_lr_mult = None
+#   sparsity.method = 'ltp'
+#   sparsity.s_init = 0.05
+#   sparsity.s_init_mode = 'constant'
+#   sparsity.soft_l0_enabled = False
+#   sparsity.soft_l0_lambda_explore = 0.0
+#   sparsity.soft_l0_lambda_topk = 0.0
+#   sparsity.target_density = None
+#   sparsity.target_density_coef = 0.0
+#   sparsity.targets = ['mlp']
+#   sparsity.threshold_init = 0.0
+#   sparsity.topk_block_size = 4
+#   sparsity.topk_groups = 'tensor'
+#   sparsity.topk_track_turnover = True
+#   sparsity.w_grad_support = 'topk_j'
+# renamed:
+#   activation_bottleneck.rblapsum_temperature -> activation_bottleneck.temperature = 1.0
+# fields added since, at their defaults (code_residual is the change):
+#   activation_bottleneck.code_residual = True
+#   activation_bottleneck.code_residual_scale = 1.0
+#   activation_bottleneck.rblapsum_center_tokens = False
+#   activation_bottleneck.rblapsum_relative_temperature = False
+#   activation_bottleneck.rblapsum_rho_random_perm_prob_grad = 0.0
+#   activation_bottleneck.rblapsum_sf_value_grad = 'pool'
+#   activation_bottleneck.rblapsum_surrogate_scope = 'pool'
+#   activation_bottleneck.share_projections = False
+#   activation_bottleneck.value_shift = 'none'
+#   activation_bottleneck.value_shift_lambda = None
+#   model.bottleneck_decoder_scale = 'none'
+#   model.bottleneck_init = 'standard'
+#   train.final_val_batches = 0
+#
+# Self-contained on purpose: it pins what the archived run used, not today's
+# defaults (init_mode default under decouple, weight_decay ignored under
+# decouple, j inert under surrogate_mode hard).
+model:
+  vocab_size: 50257
+  max_seq_len: 512
+  n_layers: 8
+  d_model: 768
+  n_heads: 12
+  mlp_ratio: 4.0
+  mlp_activation: gelu
+  dropout: 0.0
+  attn_dropout: 0.0
+  bias: false
+  norm_eps: 1.0e-06
+  tie_embeddings: true
+  pos_encoding: rope
+  rope_theta: 10000.0
+  decouple: true
+  decouple_gains: row_col
+  bottleneck_init: standard
+  bottleneck_decoder_scale: none
+  md_init: false
+  init_scheme: fixed_std
+  init_std: 0.02
+  init_gain: 1.0
+  init_std_embedding: null
+  init_std_pos: null
+  init_std_unembedding: null
+  init_scale_residual: true
+  logit_scale: none
+data:
+  dataset: roneneldan/TinyStories
+  data_dir: /workspace/data/tinystories
+  seq_len: 512
+  tokenizer: gpt_neo
+  tokenizer_path: data/tinystories/tokenizer
+  bpe_vocab_size: 8192
+  bpe_train_docs: 200000
+  num_proc: 8
+  val_fraction: 0.0
+train:
+  optimizer: adamw
+  lr: 0.0006
+  betas:
+  - 0.9
+  - 0.95
+  eps: 1.0e-08
+  weight_decay: 0.1
+  grad_clip: 1.0
+  lr_schedule: cosine
+  warmup_steps: 500
+  min_lr_ratio: 0.1
+  batch_size: 96
+  final_val_batches: 0
+  micro_batch_size: 24
+  max_steps: 20000
+  log_every_steps: 20
+  validate_every_steps: 500
+  val_batches: 40
+  checkpoint_every_steps: 2000
+  keep_last_checkpoints: 3
+  sample_every_steps: 2000
+  sample_prompt: Once upon a time
+  sample_tokens: 96
+  sample_count: 4
+  seed: 1337
+  device: auto
+  dtype: bfloat16
+  compile: false
+  out_dir: /workspace/runs
+  run_name: ma_cr_hard_k128_pnorm
+  resume: ''
+  wandb_project: ''
+  wandb_entity: ''
+  tensorboard: true
+activation_bottleneck:
+  enabled: true
+  layers: all
+  placement: residual_out
+  n_features: 1536
+  k: 128
+  j: 64
+  selection_mode: abs_topk
+  surrogate_mode: hard
+  temperature: 1.0
+  rblapsum_boundary_grad_mode: detach
+  rblapsum_support_scale: 1.0
+  rblapsum_rho_random_perm_prob_grad: 0.0
+  rblapsum_surrogate_scope: pool
+  rblapsum_relative_temperature: false
+  rblapsum_center_tokens: false
+  rblapsum_sf_value_grad: pool
+  post_norm: true
+  rblapsum_boundary_floor: 0.0
+  init_mode: default
+  tie_encoder_decoder: false
+  share_projections: false
+  value_shift: none
+  value_shift_lambda: null
+  code_residual: true
+  code_residual_scale: 1.0
+  barrier_solver_tol: 1.0e-06
+  solver_dtype: float32
+  log_diagnostics: true
+  bias: false
+  hard_inference: true
