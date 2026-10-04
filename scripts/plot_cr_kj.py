@@ -31,6 +31,11 @@ and post-norm, rows K, columns K', bottom row hard Top-K'), the per-cell
 difference code-carried minus stream-carried, and the run behind every cell
 are printed.
 
+The supplementary first-order runs (code residual with
+rblapsum_surrogate_scope=first_order, run for the cells whose pool-scope run
+diverged) form a third family, "cr_fo": dotted blue in every figure that shows
+their cell, and a table of their own.
+
 Usage: python scripts/plot_cr_kj.py OUTDIR curves_old.json curves_new.json
 """
 import json
@@ -58,8 +63,9 @@ B_RANGE, R_RANGE = (0.35, 0.95), (0.35, 0.92)
 def classify(name, rec):
     """-> (family, kind, K, J, variant) or None.
 
-    family: "cr" | "stream"; kind: "hard" | "kappa"; variant: "pnorm" | "t2"
-    (hard baselines are the post-norm ones, variant "pnorm").
+    family: "cr" | "stream" | "cr_fo"; kind: "hard" | "kappa"; variant:
+    "pnorm" | "t2" (hard baselines are the post-norm ones, variant "pnorm").
+    "cr_fo" is the code residual with the first-order surrogate scope.
     """
     fam = "cr" if rec.get("code_residual") else "stream"
     if rec.get("surrogate") == "hard":
@@ -68,6 +74,11 @@ def classify(name, rec):
         return (fam, "hard", rec["k"], None, "pnorm")
     if rec.get("surrogate") != "rblapsum" or rec.get("grad_mode") != "through_rank_kappa":
         return None
+    scope = rec.get("scope", "pool")
+    if scope != "pool":
+        if fam != "cr" or not str(scope).startswith("first_order"):
+            return None
+        fam = "cr_fo"
     if float(rec.get("b0") or 0.0) != 0.0:
         return None
     if rec.get("post_norm"):
@@ -168,11 +179,17 @@ for Kp in KS:
             e = get("cr", "kappa", Kp - j, j, var)
             if e:
                 curve(ax, e[1], col[j], "-", 2.1, ylim)
+            fo = get("cr_fo", "kappa", Kp - j, j, var)
+            if fo:
+                curve(ax, fo[1], col[j], ":", 2.4, ylim)
         finish(ax, ylim, "validation CE (nats)" if c == 0 else None)
         ax.set_title("$T=2$" if var == "t2" else "post-norm", fontsize=12)
     hd = [Line2D([0], [0], color="0.15", ls="--", lw=1.9,
                  label=f"hard Top-$K'$, $K'={Kp}$ (post-norm)")]
     hd += [Line2D([0], [0], color=col[j], lw=2.2, label=f"$K={Kp - j}$, $J={j}$") for j in js]
+    fo_js = [j for j in js if any(get("cr_fo", "kappa", Kp - j, j, v) for v in ("t2", "pnorm"))]
+    hd += [Line2D([0], [0], color=col[j], ls=":", lw=2.4,
+                  label=f"$K={Kp - j}$, $J={j}$, first-order scope") for j in fo_js]
     axes[1].legend(handles=hd, fontsize=9, loc="upper right", framealpha=0.93)
     fig.suptitle(f"Code residual, candidate pool $K+J=K'={Kp}$: RBLapSum kappa vs hard Top-$K'$",
                  fontsize=14, y=0.995)
@@ -198,9 +215,15 @@ for K in KS:
             e = get("cr", "kappa", K, j, var)
             if e:
                 curve(ax, e[1], col[j], "-", 2.1, ylim)
+            fo = get("cr_fo", "kappa", K, j, var)
+            if fo:
+                curve(ax, fo[1], col[j], ":", 2.4, ylim)
         finish(ax, ylim, "validation CE (nats)" if c == 0 else None)
         ax.set_title("$T=2$" if var == "t2" else "post-norm", fontsize=12)
     hd = [Line2D([0], [0], color=col[j], lw=2.2, label=f"$K={K}$, $J={j}$") for j in js]
+    fo_js = [j for j in js if any(get("cr_fo", "kappa", K, j, v) for v in ("t2", "pnorm"))]
+    hd += [Line2D([0], [0], color=col[j], ls=":", lw=2.4,
+                  label=f"$K={K}$, $J={j}$, first-order scope") for j in fo_js]
     hd += [Line2D([0], [0], color=hcol[kp], ls="--", lw=1.7, label=f"hard Top-${kp}$")
            for kp in cr_hard_ks]
     axes[1].legend(handles=hd, fontsize=9, loc="upper right", framealpha=0.93, ncol=2)
@@ -238,7 +261,7 @@ if hard_ks:
           for k in hard_ks]
     hd += [Line2D([0], [0], color=ccol[k], lw=2.0, label=f"code residual, hard Top-${k}$")
            for k in hard_ks]
-    axes[1].legend(handles=hd, fontsize=8.5, loc="upper right", framealpha=0.93, ncol=2)
+    axes[1].legend(handles=hd, fontsize=8.5, loc="lower left", framealpha=0.93, ncol=2)
     fig.suptitle("Hard Top-$K'$ with the post-norm: stream carried (dashed, red) "
                  "vs code carried (solid, blue)", fontsize=14, y=0.995)
     save(fig, "cr_vs_stream_hard.png")
@@ -249,22 +272,29 @@ for K in KS:
     if not js:
         continue
     scol, ccol = shades(js, REDS, R_RANGE), shades(js, BLUES, B_RANGE)
-    recs = [get(f, "kappa", K, j, v) for j in js for v in ("t2", "pnorm") for f in ("stream", "cr")]
+    recs = [get(f, "kappa", K, j, v) for j in js for v in ("t2", "pnorm")
+            for f in ("stream", "cr", "cr_fo")]
     ylim = ylim_for([r[1] if r else None for r in recs])
     fig, axes = plt.subplots(1, 2, figsize=(13.0, 4.8), sharey=True)
     for c, var in enumerate(("t2", "pnorm")):
         ax = axes[c]
         for j in js:
             s, r = get("stream", "kappa", K, j, var), get("cr", "kappa", K, j, var)
+            fo = get("cr_fo", "kappa", K, j, var)
             if s:
                 curve(ax, s[1], scol[j], "--", 1.8, ylim)
             if r:
                 curve(ax, r[1], ccol[j], "-", 2.0, ylim)
+            if fo:
+                curve(ax, fo[1], ccol[j], ":", 2.4, ylim)
         finish(ax, ylim, "validation CE (nats)" if c == 0 else None)
         ax.set_title("$T=2$" if var == "t2" else "post-norm", fontsize=12)
     hd = [Line2D([0], [0], color=scol[j], ls="--", lw=1.8, label=f"stream, $J={j}$") for j in js]
     hd += [Line2D([0], [0], color=ccol[j], lw=2.0, label=f"code residual, $J={j}$") for j in js]
-    axes[1].legend(handles=hd, fontsize=9, loc="upper right", framealpha=0.93, ncol=2)
+    fo_js = [j for j in js if any(get("cr_fo", "kappa", K, j, v) for v in ("t2", "pnorm"))]
+    hd += [Line2D([0], [0], color=ccol[j], ls=":", lw=2.4,
+                  label=f"code residual, first-order scope, $J={j}$") for j in fo_js]
+    axes[1].legend(handles=hd, fontsize=9, loc="lower left", framealpha=0.93, ncol=2)
     fig.suptitle(f"RBLapSum kappa, $K={K}$: stream carried (dashed, red) vs "
                  f"code carried (solid, blue)", fontsize=14, y=0.995)
     save(fig, f"cr_vs_stream_rbk_k{K}.png")
@@ -321,6 +351,16 @@ for var, lab in (("t2", "T=2"), ("pnorm", "post-norm")):
 print("   hard Top-32: %s" % delta(get("cr", "hard", 32, None, "pnorm"),
                                    get("stream", "hard", 32, None, "pnorm")))
 
+fo_cells = sorted((k, j, v) for (fam, kind, k, j, v) in cells if fam == "cr_fo")
+if fo_cells:
+    print("\n=== supplementary: code residual with the first-order scope ===")
+    print("%-5s %-5s %-6s %10s %12s %10s %12s" % ("K", "J", "var", "first-ord", "pool (cr)",
+                                                 "stream", "hard cr K'"))
+    for k, j, v in fo_cells:
+        print("%-5d %-5d %-6s %10s %12s %10s %12s" % (
+            k, j, v, cell(get("cr_fo", "kappa", k, j, v)), cell(get("cr", "kappa", k, j, v)),
+            cell(get("stream", "kappa", k, j, v)), cell(get("cr", "hard", k + j, None, "pnorm"))))
+
 
 # ---- LaTeX table bodies for the note ---------------------------------------- #
 def tex_val(entry, bold=False):
@@ -369,3 +409,11 @@ print("hard Top-$\\Kp$ & %s \\\\" % " & ".join(tex_delta(get("cr", "hard", kp, N
                                             for kp in KS[1:]))
 print("%% hard Top-32: %s" % tex_delta(get("cr", "hard", 32, None, "pnorm"),
                                       get("stream", "hard", 32, None, "pnorm")))
+if fo_cells:
+    print("\n%% ===== LaTeX: supplementary first-order rows: K & J & variant & first-order "
+          "& pool & stream & hard cr K' =====")
+    for k, j, v in fo_cells:
+        print("$%d$ & $%d$ & %s & %s & %s & %s & %s \\\\" % (
+            k, j, "post-norm" if v == "pnorm" else "$T=2$",
+            tex_val(get("cr_fo", "kappa", k, j, v)), tex_val(get("cr", "kappa", k, j, v)),
+            tex_val(get("stream", "kappa", k, j, v)), tex_val(get("cr", "hard", k + j, None, "pnorm"))))
