@@ -12,6 +12,8 @@ subfolder (create one for a new campaign), never into this root.
 - `init-pi/` — init-Pi heatmap grids (init-pi-grid*.pdf)
 - `kappa-ablation/` — kappa ablation: mass, gradient, encoder-row measurements (rblapsum-kappa-ablation.tex)
 - `kj/` — Top-(K+J) vs hard Top-K' (kj-vs-hard-topk.tex)
+- `kj-cr/` — the same grid with the code residual (kj-vs-hard-topk-code-residual.tex,
+  `scripts/plot_cr_kj.py`; `data/` holds the curve JSONs from `scripts/extract_val_curves.py`)
 - `kstab/` — kappa stability campaign + divergence forensics (rblapsum-kappa-stability*.tex)
 - `mdinit/` — MD-init vs decoupling campaign (docs/md-init-vs-decoupling.tex)
 - `rho/` — signal-permutation ablation (rblapsum-signal-permutation.tex)
