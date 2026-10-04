@@ -186,14 +186,14 @@ $K, \Kp \in \{32, 64, 128, 256, 512\}$ with $J = \Kp - K > 0$, ten $(K, \Kp)$
 pairs, each in both variants, and a hard Top-$\Kp$ baseline with the
 post-norm for every $\Kp$:
 
-\begin{center}\small
+\begin{center}\footnotesize
 \begin{tabular}{llll}
 \toprule
-arm & kernel / normalization & active features & runs \\
+arm & kernel / normalization & active & runs \\
 \midrule
-$T=2$          & $T=2$, no output norm                        & $K$   & \code{ma\_cr\_rbk\_k<K>\_j<J>\_t2} \\
-post-norm      & $T=1$, RMSNorm per bottleneck output          & $K$   & \code{ma\_cr\_rbk\_k<K>\_j<J>\_pnorm} \\
-hard Top-$\Kp$ & no surrogate, RMSNorm per bottleneck output   & $\Kp$ & \code{ma\_cr\_hard\_k<K'>\_pnorm} \\
+$T=2$          & $T=2$, no output norm                  & $K$   & \code{ma\_cr\_rbk\_k<K>\_j<J>\_t2} \\
+post-norm      & $T=1$, RMSNorm on each output          & $K$   & \code{ma\_cr\_rbk\_k<K>\_j<J>\_pnorm} \\
+hard Top-$\Kp$ & no surrogate, RMSNorm on each output   & $\Kp$ & \code{ma\_cr\_hard\_k<K'>\_pnorm} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -206,22 +206,25 @@ later additions to the schema, so the migration drops fields of removed
 subsystems (all inert in these runs: the weight-sparsity block with
 \code{enabled: false}, the adaptive-temperature and servo fields, the
 reconstruction and calibration knobs) and adds fields at the defaults that
-reproduce the old behaviour (\code{share\_projections: false},
-\code{rblapsum\_surrogate\_scope: pool}, \code{bottleneck\_decoder\_scale: none},
-\code{bottleneck\_init: standard}). \code{scripts/make\_cr\_kj\_configs.py}
-performs the migration, checks field by field that nothing else moved, and
-writes the diff into every file's header; the files are
-\code{configs/cr\_kj/}.
+reproduce the old behaviour: \code{share\_projections: false},
+\code{rblapsum\_surrogate\_scope: pool}, \code{bottleneck\_init: standard},
+\code{bottleneck\_decoder\_scale: none}. The script
+\code{scripts/make\_cr\_kj\_configs.py} performs the migration, checks field
+by field that nothing else moved, and writes the diff into every file's
+header; the files are in \code{configs/cr\_kj/}.
 
 \paragraph{The original runs.}
 The 25 stream-carried cells are the runs the K+J note's tables rest on, read
 back from Drive (\code{runs\_california}, \code{runs\_korea}) and checked
-against those tables cell by cell: the kappa cells
-\code{ca\_rout\_rblapsum\_kappa\_k<K>\_j<J>\_\{stab,kj\}\_\{t2,pnorm\}\_md\_abs}
-(\code{stab} for $(32,32)$, $(32,480)$, $(64,64)$, $(64,448)$, $(128,128)$,
-$(128,384)$; \code{kj} for $(32,96)$, $(32,224)$, $(64,192)$, $(256,256)$),
-and the hard baselines \code{ko\_rout\_hard\_k32\_pnorm\_md},
-\code{ca\_rout\_hard\_k\{64,128,256\}\_kj\_pnorm\_md} and
+against those tables cell by cell. The kappa cells are
+\begin{center}\small
+\code{ca\_rout\_rblapsum\_kappa\_k<K>\_j<J>\_<campaign>\_<variant>\_md\_abs},
+\end{center}
+with \code{<campaign>} = \code{stab} for $(32,32)$, $(32,480)$, $(64,64)$,
+$(64,448)$, $(128,128)$, $(128,384)$ and \code{kj} for $(32,96)$, $(32,224)$,
+$(64,192)$, $(256,256)$, and \code{<variant>} = \code{t2} or \code{pnorm};
+the hard baselines are \code{ko\_rout\_hard\_k32\_pnorm\_md},
+\code{ca\_rout\_hard\_k<K'>\_kj\_pnorm\_md} for $\Kp = 64, 128, 256$, and
 \code{ko\_rout\_hard\_k512\_pnorm\_md}. \code{scripts/plot\_cr\_kj.py} prints
 the run behind every cell of every table below.
 
