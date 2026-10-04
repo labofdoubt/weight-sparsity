@@ -53,10 +53,32 @@ change, for the hard baselines and for the surrogate cells.
 The main conclusions are:
 
 \begin{itemize}[leftmargin=1.4em]
-\item \PH{summary 1}
-\item \PH{summary 2}
-\item \PH{summary 3}
-\item \PH{summary 4}
+\item \textbf{Carrying the code lowers the loss of every hard Top-$\Kp$
+baseline by $0.061$--$0.075$ nats}, at all five $\Kp$: a code-carried
+Top-$\Kp$ lands at or below the stream-carried Top-$2\Kp$. The best model of
+either grid is code-carried hard Top-512 at $1.3622$, against $1.4146$ for the
+best stream-carried model (the $(256,256)$ post-norm surrogate cell).
+
+\item \textbf{For the surrogate the carry is nearly neutral.} In the $T=2$
+arm the ten cells move by $-0.030$ to $+0.013$ nats (mean $-0.012$): small
+gains on the diagonal $J=K$, none at the wide windows of $K=32$. The ordering
+in $J$ is unchanged, and widening $J$ still helps monotonically at every $K$.
+
+\item \textbf{The post-norm arm becomes unstable.} Every post-norm cell with
+$K \le 128$ shows recurrent gradient-norm spikes, and five of the ten cells
+collapse to the unigram level -- $J=K$ at $K = 32, 64, 128$, and $(64,192)$,
+$(64,448)$; the five that finish end within $0.04$ nats of their
+stream-carried twins. No $T=2$ or hard cell spiked beyond recovery.
+
+\item \textbf{The candidate window no longer substitutes for active
+features.} At a fixed pool no code-carried surrogate cell beats hard
+Top-$\Kp$: on the diagonal $J=K$, where the stream-carried surrogate won by
+$0.009$--$0.014$, it now trails by $0.055$--$0.065$. At a matched active count
+the surrogate's margin over hard Top-$K$ shrinks from $0.107 / 0.087 / 0.064
+/ 0.041$ (stream carried, $K = 32$ to $256$) to $0.047 / 0.010$ at $K = 32,
+64$ and reverses to $-0.021 / -0.032$ at $K = 128, 256$.
+
+\item \PH{summary: the K=32, T=2 sweep}
 \end{itemize}
 
 % ============================================================
@@ -226,33 +248,81 @@ column.
 \toprule
 $K$ & $\Kp{=}64$ & $\Kp{=}128$ & $\Kp{=}256$ & $\Kp{=}512$ \\
 \midrule
-$32$   & \PH{} & \PH{} & \PH{} & \PH{} \\
-$64$   & ---    & \PH{} & \PH{} & \PH{} \\
-$128$  & ---    & ---    & \PH{} & \PH{} \\
-$256$  & ---    & ---    & ---    & \PH{} \\
+$32$   & 1.5297 & 1.5153 & 1.4976 & 1.4927 \\
+$64$   & ---    & 1.4840 & 1.4773 & 1.4641 \\
+$128$  & ---    & ---    & 1.4507 & 1.4436 \\
+$256$  & ---    & ---    & ---    & 1.4244 \\
 \midrule
-hard Top-$\Kp$ & \PH{} & \PH{} & \PH{} & \PH{} \\
+hard Top-$\Kp$ & 1.4745 & 1.4187 & 1.3907 & 1.3622 \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 \begin{center}\small
-\textbf{post-norm, code carried}\\[2pt]
+\textbf{post-norm, code carried} (``div'': collapsed, with the step at which the run was stopped)\\[2pt]
 \begin{tabular}{lcccc}
 \toprule
 $K$ & $\Kp{=}64$ & $\Kp{=}128$ & $\Kp{=}256$ & $\Kp{=}512$ \\
 \midrule
-$32$   & \PH{} & \PH{} & \PH{} & \PH{} \\
-$64$   & ---    & \PH{} & \PH{} & \PH{} \\
-$128$  & ---    & ---    & \PH{} & \PH{} \\
-$256$  & ---    & ---    & ---    & \PH{} \\
+$32$   & div 9160 & 1.5151   & 1.5103   & 1.4994 \\
+$64$   & ---      & div 8020 & div 5840 & div 7860 \\
+$128$  & ---      & ---      & div 7960 & 1.4398 \\
+$256$  & ---      & ---      & ---      & 1.4222 \\
 \midrule
-hard Top-$\Kp$ & \PH{} & \PH{} & \PH{} & \PH{} \\
+hard Top-$\Kp$ & 1.4745 & 1.4187 & 1.3907 & 1.3622 \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\PH{reading of the tables}
+No cell is bold: no code-carried surrogate cell beats the hard baseline of
+its column. On the diagonal $J = K$, which won every column in the
+stream-carried post-norm grid, the $T=2$ cells trail hard Top-$\Kp$ by
+$0.055$ ($\Kp=64$), $0.065$ ($128$), $0.060$ ($256$) and $0.062$ ($512$), and
+the one surviving post-norm diagonal cell, $(256,256)$, by $0.060$. Within a
+column the ordering by $K$ is the stream grid's: at $\Kp = 512$,
+$1.4244 < 1.4436 < 1.4641 < 1.4927$ for $K = 256, 128, 64, 32$ at $T=2$. The
+hard Top-32 baseline ends at $1.5400$ (stream carried: $1.6022$).
+
+\paragraph{At a matched active count.}
+Against the hard baseline with the same active count, taking each $K$'s best
+surrogate cell in either variant:
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+$K$ & best code-carried cell & hard Top-$K$, code carried & difference & stream-carried difference \\
+\midrule
+$32$  & 1.4927 ($T{=}2$, $J{=}480$)      & 1.5400 & $-0.0473$ & $-0.1073$ \\
+$64$  & 1.4641 ($T{=}2$, $J{=}448$)      & 1.4745 & $-0.0104$ & $-0.0870$ \\
+$128$ & 1.4398 (post-norm, $J{=}384$)    & 1.4187 & $+0.0211$ & $-0.0644$ \\
+$256$ & 1.4222 (post-norm, $J{=}256$)    & 1.3907 & $+0.0315$ & $-0.0414$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The last column is the K+J note's margin. Under the carry the surrogate is
+worth $0.047$ nats at $K=32$ and $0.010$ at $K=64$, and at $K = 128$ and
+$256$ the hard model with the same active count is the better one.
+
+\paragraph{The effect of widening $J$.}
+At fixed $K$ every increase in $J$ still lowers the loss: at $T=2$,
+$1.5297 \to 1.5153 \to 1.4976 \to 1.4927$ for $K=32$ ($J = 32, 96, 224,
+480$), $1.4840 \to 1.4773 \to 1.4641$ for $K=64$, $1.4507 \to 1.4436$ for
+$K=128$; under the post-norm $1.5151 \to 1.5103 \to 1.4994$ for $K=32$
+($J = 96, 224, 480$). The stream-carried reversal at $(32, 480)$ post-norm
+($1.5370$ after $1.4949$ at $J=224$) does not occur: the code-carried cell
+ends at $1.4994$, the best of its row. The total gain from the narrowest to
+the widest window is $0.037$ at $K=32$, $0.020$ at $K=64$ and $0.007$ at
+$K=128$, against $0.036$, $0.030$ and $0.013$ in the stream-carried post-norm
+grid.
+
+\paragraph{$T=2$ against the post-norm.}
+Where both variants finished they are close: $1.5153$ vs.\ $1.5151$ at
+$(32,96)$, $1.4976$ vs.\ $1.5103$ at $(32,224)$, $1.4927$ vs.\ $1.4994$ at
+$(32,480)$, $1.4436$ vs.\ $1.4398$ at $(128,384)$ and $1.4244$ vs.\ $1.4222$
+at $(256,256)$ -- $T=2$ ahead by up to $0.013$ at $K=32$, the post-norm by up
+to $0.004$ at $K \ge 128$. The difference between the variants is their
+stability, not their final loss.
 
 \paragraph{Stability.}
 Every hard run and every $T=2$ run finished. Five of the ten post-norm cells
@@ -272,7 +342,7 @@ post-norm cell has none, the $T=2$ cells have between 0 and 9 (largest norm
 44, each followed by recovery within a few hundred steps), and the hard cells
 none. The three small-$K$ post-norm cells that finished, $(32,96)$, $(32,224)$
 and $(32,480)$, carry their spikes to the end (largest norms $3.7 \times
-10^3$, $54$ and $8$) and still reach $1.5151$, $\PH{k32j224}$ and $1.4994$.
+10^3$, $54$ and $8$) and still reach $1.5151$, $1.5103$ and $1.4994$.
 In the stream-carried grid the same twenty cells showed no divergence.
 
 \subsection*{Per candidate pool}
@@ -284,22 +354,38 @@ runs are code-carried.
 
 \begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj-cr/cr_pool_k64.png}
-\caption{$\Kp = 64$, code carried. \PH{}}
+\caption{$\Kp = 64$, code carried. The single surrogate cell $(32,32)$ ends
+$0.055$ above hard Top-64 at $T=2$ (in the stream grid it ended $0.010$
+below); the post-norm cell is the one that collapsed from step 4900 and was
+stopped at 9160 (the cross marks the stop).}
 \end{figure}
 
 \begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj-cr/cr_pool_k128.png}
-\caption{$\Kp = 128$, code carried. \PH{}}
+\caption{$\Kp = 128$, code carried. At $T=2$ both cells sit above hard
+Top-128 throughout, $(64,64)$ by $0.065$ and $(32,96)$ by $0.097$ at the
+end, with the ordering by $K$ of the stream grid; the $(32,96)$ curve shows a
+recovered spike at step 7500. Under the post-norm $(64,64)$ collapsed at
+step 8020 and $(32,96)$ finished at $1.5151$ with recovered spikes at steps
+4500, 9000 and 11000.}
 \end{figure}
 
 \begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj-cr/cr_pool_k256.png}
-\caption{$\Kp = 256$, code carried. \PH{}}
+\caption{$\Kp = 256$, code carried. At $T=2$ the three cells order by $K$
+-- $1.4507$, $1.4773$, $1.4976$ for $K = 128, 64, 32$ -- and all lie above
+hard Top-256 ($1.3907$) from the first validation point on. Under the
+post-norm $(128,128)$ and $(64,192)$ collapsed (stopped at 7960 and 5840)
+and $(32,224)$ finished at $1.5103$ after a spike at step 10000.}
 \end{figure}
 
 \begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj-cr/cr_pool_k512.png}
-\caption{$\Kp = 512$, code carried. \PH{}}
+\caption{$\Kp = 512$, code carried. The ordering is monotone in $K$ in both
+variants and every cell lies above hard Top-512 ($1.3622$): at $T=2$ by
+$0.062$ ($K=256$), $0.081$ ($128$), $0.102$ ($64$) and $0.131$ ($32$). Under
+the post-norm $(64,448)$ collapsed at step 7860; the other three finished,
+and $(32,480)$ is no longer a reversal.}
 \end{figure}
 
 \subsection*{Per active count}
@@ -311,22 +397,37 @@ All runs are code-carried.
 
 \begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj-cr/cr_active_k32.png}
-\caption{$K = 32$, code carried. \PH{}}
+\caption{$K = 32$, code carried. Widening the window lowers the loss
+monotonically in both variants, but the hard ladder has moved down with the
+carry: the widest window ends between hard Top-32 ($1.5400$) and hard Top-64
+($1.4745$), where the stream-carried $J=224$ cell had passed hard Top-128.
+The post-norm $(32,32)$ cell collapsed; the other three post-norm cells track
+the $T=2$ ones to within $0.013$.}
 \end{figure}
 
 \begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj-cr/cr_active_k64.png}
-\caption{$K = 64$, code carried. \PH{}}
+\caption{$K = 64$, code carried. At $T=2$ only the widest window,
+$J=448$, ends below hard Top-64, by $0.010$; $J = 64$ and $192$ end above it.
+All three post-norm cells collapsed between steps 5840 and 8020.}
 \end{figure}
 
 \begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj-cr/cr_active_k128.png}
-\caption{$K = 128$, code carried. \PH{}}
+\caption{$K = 128$, code carried. Both $T=2$ cells and the surviving
+post-norm cell end above hard Top-128 ($1.4187$), by $0.032$ ($J=128$),
+$0.025$ and $0.021$ ($J=384$, $T=2$ and post-norm); in the stream grid both
+windows beat hard Top-256. The post-norm $(128,128)$ cell collapsed at step
+7960.}
 \end{figure}
 
 \begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj-cr/cr_active_k256.png}
-\caption{$K = 256$, code carried. \PH{}}
+\caption{$K = 256$, code carried. The single cell ends at $1.4244$
+($T=2$) and $1.4222$ (post-norm), above hard Top-256 ($1.3907$) by $0.034$
+and $0.032$ and above hard Top-512 by $0.06$. The stream-carried version of
+this cell, $1.4146$, was the best model of the K+J note; code-carried hard
+Top-256 and Top-512 are both below it.}
 \end{figure}
 
 % ============================================================
@@ -342,24 +443,29 @@ block 1 on. Final validation CE, code carried minus stream carried
 \toprule
 $T=2$: $K$ & $\Kp{=}64$ & $\Kp{=}128$ & $\Kp{=}256$ & $\Kp{=}512$ \\
 \midrule
-$32$   & \PH{} & \PH{} & \PH{} & \PH{} \\
-$64$   & ---    & \PH{} & \PH{} & \PH{} \\
-$128$  & ---    & ---    & \PH{} & \PH{} \\
-$256$  & ---    & ---    & ---    & \PH{} \\
+$32$   & $-0.0196$ & $+0.0007$ & $+0.0134$ & $-0.0016$ \\
+$64$   & ---       & $-0.0301$ & $-0.0148$ & $-0.0086$ \\
+$128$  & ---       & ---       & $-0.0295$ & $-0.0162$ \\
+$256$  & ---       & ---       & ---       & $-0.0181$ \\
 \midrule
 post-norm: $K$ & & & & \\
 \midrule
-$32$   & \PH{} & \PH{} & \PH{} & \PH{} \\
-$64$   & ---    & \PH{} & \PH{} & \PH{} \\
-$128$  & ---    & ---    & \PH{} & \PH{} \\
-$256$  & ---    & ---    & ---    & \PH{} \\
+$32$   & div       & $+0.0035$ & $+0.0154$ & $-0.0376$ \\
+$64$   & ---       & div       & div       & div \\
+$128$  & ---       & ---       & div       & $+0.0104$ \\
+$256$  & ---       & ---       & ---       & $+0.0076$ \\
 \midrule
-hard Top-$\Kp$ & \PH{} & \PH{} & \PH{} & \PH{} \\
+hard Top-$\Kp$ & $-0.0664$ & $-0.0751$ & $-0.0653$ & $-0.0609$ \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\PH{hard Top-32 difference and reading}
+Hard Top-32 moves by $-0.0621$. The two families differ by one operation
+from block 1 on, and that operation is worth $0.06$--$0.075$ nats to a hard
+bottleneck and $-0.030$ to $+0.015$ to the surrogate ($T=2$ mean $-0.012$;
+the surviving post-norm cells $-0.038$ to $+0.015$). The surrogate's
+diagonal cells gain the most ($-0.020$ to $-0.030$ at $J = K \le 128$),
+the wide windows of $K=32$ nothing.
 
 \subsection*{Hard Top-$\Kp$}
 
@@ -396,22 +502,36 @@ carried (solid, blue ramp); left panel $T=2$, right panel post-norm.
 
 \begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj-cr/cr_vs_stream_rbk_k32.png}
-\caption{$K = 32$, $J \in \{32, 96, 224, 480\}$. \PH{}}
+\caption{$K = 32$, $J \in \{32, 96, 224, 480\}$. At $T=2$ each
+code-carried curve runs within $0.02$ of its stream-carried twin, below it
+for $J=32$ and above for $J=224$; the carried $J=32$ cell shows recovered
+spikes at steps 4500 and 11500. Under the post-norm the carried $(32,32)$
+cell collapsed, $J = 96$ and $224$ end within $0.016$ of their twins, and
+$J=480$ ends $0.038$ below its twin, the stream grid's reversal.}
 \end{figure}
 
 \begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj-cr/cr_vs_stream_rbk_k64.png}
-\caption{$K = 64$, $J \in \{64, 192, 448\}$. \PH{}}
+\caption{$K = 64$, $J \in \{64, 192, 448\}$. At $T=2$ all three
+code-carried cells lie below their twins from about step 2500 on and end
+$0.030$, $0.015$ and $0.009$ lower; the gap narrows as training proceeds.
+Under the post-norm all three code-carried cells collapsed (stopped at 8020,
+5840 and 7860) while the stream-carried ones trained smoothly.}
 \end{figure}
 
 \begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj-cr/cr_vs_stream_rbk_k128.png}
-\caption{$K = 128$, $J \in \{128, 384\}$. \PH{}}
+\caption{$K = 128$, $J \in \{128, 384\}$. At $T=2$ the code-carried
+cells end $0.030$ and $0.016$ below their twins, separating from about step
+5000. Under the post-norm $(128,128)$ collapsed at step 7960 and the
+$(128,384)$ curves are indistinguishable ($+0.010$ at the end).}
 \end{figure}
 
 \begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj-cr/cr_vs_stream_rbk_k256.png}
-\caption{$K = 256$, $J = 256$. \PH{}}
+\caption{$K = 256$, $J = 256$. $T=2$: the code-carried cell leads
+throughout and ends $0.018$ lower; post-norm: the two curves coincide to
+within $0.008$ at every point.}
 \end{figure}
 
 % ============================================================
@@ -458,19 +578,68 @@ $\gamma = 1$. \PH{}}
 \section{Interpretation}
 % ============================================================
 
-\PH{interpretation}
+Three regularities organize the grid.
+
+First, \textbf{the carry is worth about one doubling of the active count to
+a hard bottleneck, and almost nothing to the surrogate.} The hard baselines
+move by $0.061$--$0.075$ nats at every $\Kp$, the ten $T=2$ surrogate cells
+by $-0.012$ on average, and the margins of the K+J note shrink by the
+difference: at a matched active count the surrogate's advantage over hard
+Top-$K$ falls by $0.060$, $0.077$, $0.085$ and $0.073$ at $K = 32, 64, 128,
+256$, which is the hard gain at that $K$ ($0.062$, $0.066$, $0.075$,
+$0.065$) to within $-0.002$ to $+0.010$. The simplest reading is
+that the two mechanisms supply the same thing. In the stream-carried stack
+block $l{+}1$ recomputes its support from the decoded stream, and since
+$E_{l+1} D_l \ne I$ a feature kept by block $l$ can be dropped at block
+$l{+}1$ with $\Delta_{l+1} = 0$; gradient to the $J$ candidates lets the
+encoders learn supports that survive this re-selection. The carry makes the
+support persistent by construction, so the hard model receives directly what
+the surrogate had to learn, and the surrogate has little left to add. The
+exchange rate matches: the stream-carried surrogate bought one doubling of
+$K$ (a pool of $2K$ beat hard Top-$2K$), and the code-carried hard model
+lands at the stream-carried Top-$2\Kp$.
+
+Second, \textbf{the surrogate's backward along the carry is the unstable
+part.} The carry is the identity on each code coordinate, so the support
+term of every gate a boundary coordinate passes multiplies its gradient by
+about $1 + |u|\kappa$, with $\kappa \propto 1/T$. At $T=1$ (the post-norm
+arm) this produced recurrent spikes in every cell with $K \le 128$ and five
+collapses; at $T=2$ the spikes are rare and recover. The same mechanism
+collapsed the 24-layer code-residual stack at $T=1$, and the $T=2$ arm here
+shows that eight blocks and a kernel twice as wide keep it below the
+threshold. Whether the surviving $T=2$ cells still pay for it in their final
+loss is what the $K=32$ sweep of Section~6 measures: a smaller support scale
+$\gamma$ or the first-order scope removes the compounding while keeping the
+window.
+
+Third, \textbf{a change that adds no parameters and no compute moved the
+hard model further than the surrogate had.} The best model of the
+K+J note, the $(256,256)$ post-norm surrogate at $1.4146$, is beaten by
+code-carried hard Top-256 ($1.3907$) with the same active count and by
+code-carried hard Top-512 ($1.3622$). For a stream bottleneck at this depth
+the carry is the larger lever, and the practical default from the K+J note
+-- a pool of $2K$ with the output norm -- does not transfer: under the carry
+the post-norm variant is the unstable one, and the pool no longer pays for
+itself against the correspondingly larger hard model.
+
+\PH{interpretation: the sweep}
 
 % ============================================================
 \section{Scope}
 % ============================================================
 
 All cells are single runs at one seed, and the two families were trained on
-different GPUs; a seed-matched pair of the same config on the two machines
-would calibrate how much of a small cell-to-cell difference is hardware.
-Only the default surrogate scope was run in the code-carried family; the
-first-order scope that the 24-layer study found necessary there was not
-part of this grid, because the grid's premise was a single flag. The depth
-is eight blocks throughout, $K + J \le 512$ well inside $N = 1536$, and the
-hard baselines all carry the post-norm.
+different GPUs; the hard-baseline differences ($0.06$--$0.075$) and the
+diverged cells are far outside run-to-run variation, the surrogate
+differences ($|{\Delta}| \le 0.03$) are not all so, and a seed-matched pair
+of one config on the two machines would calibrate the hardware part. Five
+post-norm cells did not finish, so the post-norm half of the grid has holes;
+four were stopped by the divergence guard's rule (training CE more than
+$2.5$ above its best for 800 steps) and one by hand after its validation CE
+had reached the unigram level. The grid itself keeps the default surrogate
+scope and support scale, as the single-flag premise requires; Section~6
+varies both at $K=32$, $T=2$ only. The depth is eight blocks throughout,
+$K + J \le 512$ well inside $N = 1536$, and the hard baselines all carry the
+post-norm.
 
 \end{document}

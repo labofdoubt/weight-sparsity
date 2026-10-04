@@ -202,7 +202,7 @@ for Kp in KS:
 cr_hard_ks = sorted(k for (fam, kind, k, j, var) in cells if fam == "cr" and kind == "hard")
 hcol = shades(cr_hard_ks, REDS, R_RANGE) if cr_hard_ks else {}
 for K in KS:
-    js = sorted(j for (fam, kind, k, j, var) in cells if fam == "cr" and kind == "kappa" and k == K)
+    js = sorted({j for (fam, kind, k, j, var) in cells if fam == "cr" and kind == "kappa" and k == K})
     if not js:
         continue
     col = shades(js, BLUES, B_RANGE)
