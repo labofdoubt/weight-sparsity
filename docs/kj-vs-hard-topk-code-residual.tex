@@ -538,7 +538,7 @@ within $0.008$ at every point.}
 \end{figure}
 
 % ============================================================
-\section{The support scale and the first-order scope at $K=32$, $T=2$}
+\section{The support scale and the first-order scope at $T=2$}
 % ============================================================
 
 The surrogate's backward adds to the hard gradient a support term over the
@@ -546,12 +546,14 @@ Top-$(K{+}J)$ pool; \code{rblapsum\_support\_scale} $= \gamma$ multiplies that
 term ($\gamma = 1$ the unmodified surrogate, $\gamma = 0$ the hard backward),
 and the first-order scope evaluates every gate's term on the gradient that
 reached it along hard paths, so that no gradient carries more than one
-support term (Section~2). Sixteen further runs take the four code-carried
-$T=2$ cells at $K = 32$ -- $J = 32, 96, 224, 480$, no output norm -- and
-change one thing each: $\gamma = 0.8$, $0.6$, $0.4$, or the first-order scope
-at $\gamma = 1$ (\code{configs/cr\_kj/ma\_cr\_rbk\_k32\_j<J>\_t2\_\{ss08,ss06,ss04,fo\}}).
-Each is compared with the stream-carried $T=2$ cell of the same $J$, the
-family of the K+J note.
+support term (Section~2). Forty further runs take the ten code-carried $T=2$
+cells -- every $(K, J)$ of the grid, no output norm -- and change one thing
+each: $\gamma = 0.8$, $0.6$, $0.4$, or the first-order scope at $\gamma = 1$
+(\code{configs/cr\_kj/ma\_cr\_rbk\_k<K>\_j<J>\_t2\_\{ss08,ss06,ss04,fo\}}).
+Each is compared with the stream-carried $T=2$ cell of the same $(K, J)$, the
+family of the K+J note. One figure and one table per $K$.
+
+\subsection*{$K = 32$}
 
 \begin{center}\small
 \begin{tabular}{lcccccc}
@@ -576,6 +578,13 @@ code-carried family (solid, blue ramp light to dark with $J = 32, 96, 224,
 support scale $\gamma = 0.8$, $0.6$, $0.4$, and the first-order scope at
 $\gamma = 1$. \PH{}}
 \end{figure}
+
+%% K=64, K=128, K=256 blocks are appended here as each K's sweep finishes
+%%SWEEP-K64%%
+
+%%SWEEP-K128%%
+
+%%SWEEP-K256%%
 
 % ============================================================
 \section{Interpretation}

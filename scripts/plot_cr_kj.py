@@ -31,10 +31,10 @@ and post-norm, rows K, columns K', bottom row hard Top-K'), the per-cell
 difference code-carried minus stream-carried, and the run behind every cell
 are printed.
 
-  cr_k32_sweep.png       the K=32, T=2 sweep: four panels, each comparing one
+  cr_k<K>_sweep.png      the T=2 sweep at one K: four panels, each comparing one
                          further code-carried family -- support scale 0.8,
                          0.6, 0.4, and the first-order scope at scale 1 -- with
-                         the stream-carried T=2 cells at K=32 (dashed, reds
+                         the stream-carried T=2 cells at that K (dashed, reds
                          light-to-dark with J; the new family solid, blues).
 
 Families: "stream" and "cr" are the one-flag grid (support scale 1, pool
@@ -291,22 +291,22 @@ for K in KS:
     save(fig, f"cr_vs_stream_rbk_k{K}.png")
 
 
-# ---- E: the K=32, T=2 sweep ------------------------------------------------ #
+# ---- E: the T=2 sweep, one figure per K ------------------------------------ #
 SWEEP = [("cr_ss0.8", "support scale $\\gamma = 0.8$"), ("cr_ss0.6", "support scale $\\gamma = 0.6$"),
          ("cr_ss0.4", "support scale $\\gamma = 0.4$"), ("cr_fo", "first-order scope, $\\gamma = 1$")]
-sw_js = sorted({j for (fam, kind, k, j, v) in cells
-                if kind == "kappa" and k == 32 and v == "t2" and fam in dict(SWEEP)})
-if sw_js:
-    js = sorted({j for (fam, kind, k, j, v) in cells if kind == "kappa" and k == 32 and v == "t2"})
+SWEEP_KS = sorted({k for (fam, kind, k, j, v) in cells
+                   if kind == "kappa" and v == "t2" and fam in dict(SWEEP)})
+for K in SWEEP_KS:
+    js = sorted({j for (fam, kind, k, j, v) in cells if kind == "kappa" and k == K and v == "t2"})
     scol, ccol = shades(js, REDS, R_RANGE), shades(js, BLUES, B_RANGE)
-    recs = [get(f, "kappa", 32, j, "t2") for j in js for f in ["stream"] + [f for f, _ in SWEEP]]
+    recs = [get(f, "kappa", K, j, "t2") for j in js for f in ["stream"] + [f for f, _ in SWEEP]]
     ylim = ylim_for([r[1] if r else None for r in recs])
     fig, axes = plt.subplots(2, 2, figsize=(13.0, 9.2), sharex=True, sharey=True)
     for ax, (fam, label) in zip(axes.ravel(), SWEEP):
         for j in js:
-            s, r = get("stream", "kappa", 32, j, "t2"), get(fam, "kappa", 32, j, "t2")
-            if s:
-                curve(ax, s[1], scol[j], "--", 1.8, ylim)
+            st, r = get("stream", "kappa", K, j, "t2"), get(fam, "kappa", K, j, "t2")
+            if st:
+                curve(ax, st[1], scol[j], "--", 1.8, ylim)
             if r:
                 curve(ax, r[1], ccol[j], "-", 2.0, ylim)
         finish(ax, ylim, "validation CE (nats)")
@@ -317,9 +317,9 @@ if sw_js:
     axes[0, 1].legend(handles=hd + [Line2D([0], [0], color=ccol[j], lw=2.0,
                                           label=f"code residual, $J={j}$") for j in js],
                       fontsize=8.5, loc="lower left", framealpha=0.93, ncol=2)
-    fig.suptitle("$K = 32$, $T = 2$: the surrogate's support scale and the first-order scope "
+    fig.suptitle(f"$K = {K}$, $T = 2$: the surrogate's support scale and the first-order scope "
                  "under the code residual, against the stream-carried cells", fontsize=14, y=0.995)
-    save(fig, "cr_k32_sweep.png")
+    save(fig, f"cr_k{K}_sweep.png")
 
 
 # ---- tables --------------------------------------------------------------- #
@@ -375,11 +375,12 @@ print("   hard Top-32: %s" % delta(get("cr", "hard", 32, None, "pnorm"),
 
 SW_COLS = [("stream", "stream"), ("cr", "cr g=1"), ("cr_ss0.8", "g=0.8"), ("cr_ss0.6", "g=0.6"),
            ("cr_ss0.4", "g=0.4"), ("cr_fo", "first-ord")]
-if sw_js:
-    print("\n=== K=32, T=2 sweep: final val CE by J (stream vs code residual variants) ===")
+for K in SWEEP_KS:
+    js = sorted({j for (fam, kind, k, j, v) in cells if kind == "kappa" and k == K and v == "t2"})
+    print("\n=== K=%d, T=2 sweep: final val CE by J (stream vs code residual variants) ===" % K)
     print("%-6s %s" % ("J", "".join("%11s" % lab for _, lab in SW_COLS)))
     for j in js:
-        print("%-6d %s" % (j, "".join("%11s" % cell(get(f, "kappa", 32, j, "t2")) for f, _ in SW_COLS)))
+        print("%-6d %s" % (j, "".join("%11s" % cell(get(f, "kappa", K, j, "t2")) for f, _ in SW_COLS)))
 
 
 # ---- LaTeX table bodies for the note ---------------------------------------- #
@@ -429,7 +430,8 @@ print("hard Top-$\\Kp$ & %s \\\\" % " & ".join(tex_delta(get("cr", "hard", kp, N
                                             for kp in KS[1:]))
 print("%% hard Top-32: %s" % tex_delta(get("cr", "hard", 32, None, "pnorm"),
                                       get("stream", "hard", 32, None, "pnorm")))
-if sw_js:
-    print("\n%% ===== LaTeX: K=32, T=2 sweep rows: J & stream & cr g=1 & 0.8 & 0.6 & 0.4 & first-order =====")
+for K in SWEEP_KS:
+    js = sorted({j for (fam, kind, k, j, v) in cells if kind == "kappa" and k == K and v == "t2"})
+    print("\n%% ===== LaTeX: K=%d, T=2 sweep rows: J & stream & cr g=1 & 0.8 & 0.6 & 0.4 & first-order =====" % K)
     for j in js:
-        print("$%d$ & %s \\\\" % (j, " & ".join(tex_val(get(f, "kappa", 32, j, "t2")) for f, _ in SW_COLS)))
+        print("$%d$ & %s \\\\" % (j, " & ".join(tex_val(get(f, "kappa", K, j, "t2")) for f, _ in SW_COLS)))
