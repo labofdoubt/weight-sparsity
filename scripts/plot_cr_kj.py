@@ -320,3 +320,52 @@ for var, lab in (("t2", "T=2"), ("pnorm", "post-norm")):
                                        for kp in KS[1:])))
 print("   hard Top-32: %s" % delta(get("cr", "hard", 32, None, "pnorm"),
                                    get("stream", "hard", 32, None, "pnorm")))
+
+
+# ---- LaTeX table bodies for the note ---------------------------------------- #
+def tex_val(entry, bold=False):
+    v = final(entry)
+    if v is None:
+        return "---"
+    if isinstance(v, str):
+        return "\\textit{%s}" % v
+    s = "%.4f" % v
+    return "\\bst{%s}" % s if bold else s
+
+
+def tex_delta(a, b):
+    d = delta(a, b)
+    return "---" if d == "--" else "$%s$" % d
+
+
+print("\n%% ===== LaTeX: code-carried family, final val CE (bold = beats hard in its column) =====")
+for var, lab in (("t2", "T=2"), ("pnorm", "post-norm")):
+    print("%% %s" % lab)
+    for K in KS[:-1]:
+        row = []
+        for kp in KS[1:]:
+            if kp <= K:
+                row.append("---")
+                continue
+            e, h = get("cr", "kappa", K, kp - K, var), get("cr", "hard", kp, None, "pnorm")
+            fe, fh = final(e), final(h)
+            bold = isinstance(fe, float) and isinstance(fh, float) and fe < fh
+            row.append(tex_val(e, bold))
+        print("$%d$ & %s \\\\" % (K, " & ".join(row)))
+    print("hard Top-$\\Kp$ & %s \\\\" % " & ".join(tex_val(get("cr", "hard", kp, None, "pnorm"))
+                                                   for kp in KS[1:]))
+print("%% hard Top-32 (cr): %s   (stream): %s" % (tex_val(get("cr", "hard", 32, None, "pnorm")),
+                                                   tex_val(get("stream", "hard", 32, None, "pnorm"))))
+print("\n%% ===== LaTeX: code carried minus stream carried =====")
+for var, lab in (("t2", "T=2"), ("pnorm", "post-norm")):
+    print("%% %s" % lab)
+    for K in KS[:-1]:
+        row = ["---" if kp <= K else tex_delta(get("cr", "kappa", K, kp - K, var),
+                                               get("stream", "kappa", K, kp - K, var))
+               for kp in KS[1:]]
+        print("$%d$ & %s \\\\" % (K, " & ".join(row)))
+print("hard Top-$\\Kp$ & %s \\\\" % " & ".join(tex_delta(get("cr", "hard", kp, None, "pnorm"),
+                                                      get("stream", "hard", kp, None, "pnorm"))
+                                            for kp in KS[1:]))
+print("%% hard Top-32: %s" % tex_delta(get("cr", "hard", 32, None, "pnorm"),
+                                      get("stream", "hard", 32, None, "pnorm")))

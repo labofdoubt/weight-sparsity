@@ -1,0 +1,398 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{caption}
+
+\emergencystretch=1.5em
+\captionsetup{font=small,labelfont=bf,width=.92\textwidth}
+\setlength{\parskip}{4pt plus 1pt}
+\setlength{\parindent}{0pt}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\bst}[1]{\textbf{#1}}
+\newcommand{\Kp}{K'}
+\newcommand{\TopK}{\operatorname{TopK}}
+\newcommand{\PH}[1]{\textcolor{red}{[#1]}}
+
+\title{Top-$(K{+}J)$ with the RBLapSum surrogate versus hard Top-$\Kp$,\\
+with the code carried between blocks\\[2pt]
+\large Research note: the K+J grid under \code{code\_residual}}
+\author{}
+\date{2026-10-04.}
+
+\begin{document}
+\maketitle
+\vspace{-2em}
+
+% ============================================================
+\section{Purpose and summary of conclusions}
+% ============================================================
+
+The K+J note (\code{docs/kj-vs-hard-topk.tex}) compared, on an 8-layer
+TinyStories model with an abs-TopK bottleneck on the residual stream after
+every block, the RBLapSum \code{through\_rank\_kappa} surrogate -- $K$ active
+features, gradient to a pool of $K+J$ -- with hard Top-$\Kp$ at $\Kp = K+J$.
+Its 25 cells were all \emph{stream-carried}: each block re-encodes the
+decoded stream it receives. This note repeats the same 25 cells with one
+flag changed, \code{activation\_bottleneck.code\_residual = true}: the
+$K$-sparse code itself is carried from block to block, and each block adds
+its encoded contribution to it instead of re-encoding the stream.
+
+Two questions are asked of the new family, the same two as before -- does
+the surrogate with $K$ active features reach hard Top-$\Kp$ at a fixed pool
+$\Kp = K+J$, and how much does widening $J$ help at fixed $K$ -- and a third
+one across the two families: cell by cell, what does carrying the code
+change, for the hard baselines and for the surrogate cells.
+
+The main conclusions are:
+
+\begin{itemize}[leftmargin=1.4em]
+\item \PH{summary 1}
+\item \PH{summary 2}
+\item \PH{summary 3}
+\item \PH{summary 4}
+\end{itemize}
+
+% ============================================================
+\section{The code residual}
+% ============================================================
+
+\paragraph{Notation.}
+The model has $L = 8$ blocks of width $d = 768$. Block $l$ contributes
+$\Delta_l(x) \in \mathbb{R}^d$ to a stream $x$: the attention output plus the
+MLP output, each computed from its pre-norm as in the plain transformer.
+Bottleneck $l$ has an encoder $E_l \in \mathbb{R}^{N \times d}$ and a decoder
+$D_l \in \mathbb{R}^{d \times N}$ with $N = 1536$, and $\TopK$ denotes the
+abs-TopK operation that keeps the $K$ coordinates of largest magnitude and
+zeroes the rest. $\mathrm{N}_l$ is the optional RMSNorm on the bottleneck's
+output (``post-norm''), or the identity; the last bottleneck never has one,
+since the final norm follows it. $x_0$ is the token embedding.
+
+\paragraph{Stream carried (the K+J note).}
+With the \code{residual\_out} placement at every block,
+\begin{equation}
+x_{l+1} \;=\; \mathrm{N}_l\!\Big(D_l \,\TopK\big(E_l\,(x_l + \Delta_l(x_l))\big)\Big),
+\qquad l = 0, \dots, L-1,
+\label{eq:stream}
+\end{equation}
+and $x_L$ goes to the final norm and the unembedding. Every stream between
+blocks is a decoded $K$-sparse code, but block $l+1$ computes its code from
+the decoded stream again: with $c_{l+1} = \TopK(E_l(x_l + \Delta_l))$ the
+next code is $\TopK\big(E_{l+1}(\mathrm{N}_l(D_l c_{l+1}) + \Delta_{l+1})\big)$,
+and since $E_{l+1} D_l$ is not the identity, a coordinate kept by block $l$
+can be dropped by block $l+1$ even when $\Delta_{l+1} = 0$.
+
+\paragraph{Code carried (\code{code\_residual = true}, the definition used here).}
+\begin{align}
+c_1 &= \TopK\big(E_0\,(x_0 + \Delta_0(x_0))\big), \label{eq:cr0}\\
+x_l &= \mathrm{N}_{l-1}(D_{l-1}\, c_l), \qquad
+c_{l+1} = \TopK\big(c_l + E_l\,\Delta_l(x_l)\big), \qquad l = 1, \dots, L-1,
+\label{eq:cr}
+\end{align}
+and the final hidden state is $D_{L-1} c_L$. Four properties fix what the
+flag does and does not change.
+
+\begin{itemize}[leftmargin=1.4em]
+\item \emph{Block 0 is the stream-carried block 0.} Equation~\eqref{eq:cr0}
+is \eqref{eq:stream} at $l = 0$ up to the decoder: the first bottleneck
+encodes the first block's whole output, so two models with the same weights
+produce the same $c_1$ and the same $x_1$ (checked bit for bit in
+\code{tests/test\_depth\_fixes.py}). The two stacks differ from block 1 on.
+\item \emph{From block 1 on, the code is the carrier.} Block $l$ reads the
+decoded code $x_l$, and what it adds, $E_l \Delta_l(x_l)$, is added to the
+code $c_l$ before the next $\TopK$. $\TopK$ is the Euclidean projection onto
+the $K$-sparse vectors, so a block with $\Delta_l = 0$ leaves the code
+unchanged, and at a fixed support the Jacobian of the carry is the support
+mask: the stack is a residual network in code space, and every stream between
+blocks is still exactly a decoded $K$-sparse code. The operation removed is
+the re-encoding $E_l D_{l-1} c_l$ of \eqref{eq:stream}; nothing is added.
+\item \emph{Parameters and cost are unchanged.} Each block keeps its own
+$E_l$, $D_l$ and gate (the grid does not share projections, as the originals
+did not); the state dict is the stream-carried model's, and the per-block
+operations are the same encoder, gate and decoder applied once each.
+\item \emph{Post-norm normalizes what the block reads.} In both stacks
+$\mathrm{N}_l$ is applied to the decoded output of bottleneck $l$, which is
+what block $l+1$ reads. In the stream stack that normalized stream is also
+what bottleneck $l+1$ re-encodes; in the code stack there is no re-encoding,
+so the post-norm changes only the input of block $l+1$'s branches and never
+touches the carried code.
+\end{itemize}
+
+The surrogate's backward pass is where the two stacks differ most. In the
+stream stack, the support term that gate $l$ adds to the gradient of a
+pool member reaches gate $l-1$ only through $E_l$ and $D_{l-1}$, which mix
+it over all coordinates. In the code stack the carry is the identity on each
+coordinate, so a coordinate near the rank boundary at several gates
+receives a support term at each of them, and the terms multiply along the
+carry: for a coordinate at the boundary the factor per gate is
+$1 + |u|\kappa$, with $u$ the task gradient and $\kappa$ the kernel weight,
+and the 24-layer study measured about $1.67$ per block at $K = 32$, $J = 224$,
+$T = 1$ (\code{docs/rblapsum-code-residual.tex}), where the default
+\code{pool} scope collapsed. This grid keeps the default scope: the premise
+of the comparison is a single flag, and with $L = 8$ there are seven carries
+rather than twenty-three. Whether the compounding matters at this depth is
+one of the things the grid measures.
+
+\paragraph{The earlier definition.}
+Until 2026-10-04 \code{code\_residual} installed an entry gate
+$c_0 = \TopK(E\, x_0)$ before block 0; block 0 read $D c_0$ and encoded only
+its own $\Delta_0$. The depth study and the surrogate study
+(\code{docs/stream-bottleneck-depth.tex}, \code{docs/rblapsum-code-residual.tex})
+used that definition, and their checkpoints carry the entry gate's keys.
+With it a code-carried model differed from the stream-carried one already at
+the embedding, which was bottlenecked before block 0, and the first block
+read a decoded code instead of the embedding. The present definition was
+adopted so that the flag changes exactly one thing, the carry from block 1
+on, and the two families can be compared cell by cell.
+
+% ============================================================
+\section{Setup}
+% ============================================================
+
+The 25 cells of the K+J note, each with \code{code\_residual = true} and
+nothing else changed: 8$\times$768, \code{abs\_topk} over $N = 1536$ features,
+\code{residual\_out} placement at every block, full magnitude--direction
+decoupling, batch $96 \times 512$ tokens, 20k steps with the cosine schedule
+and 500 warm-up steps, $b_0 = 0$, seed 1337. The grid is
+$K, \Kp \in \{32, 64, 128, 256, 512\}$ with $J = \Kp - K > 0$, ten $(K, \Kp)$
+pairs, each in both variants, and a hard Top-$\Kp$ baseline with the
+post-norm for every $\Kp$:
+
+\begin{center}\small
+\begin{tabular}{llll}
+\toprule
+arm & kernel / normalization & active features & runs \\
+\midrule
+$T=2$          & $T=2$, no output norm                        & $K$   & \code{ma\_cr\_rbk\_k<K>\_j<J>\_t2} \\
+post-norm      & $T=1$, RMSNorm per bottleneck output          & $K$   & \code{ma\_cr\_rbk\_k<K>\_j<J>\_pnorm} \\
+hard Top-$\Kp$ & no surrogate, RMSNorm per bottleneck output   & $\Kp$ & \code{ma\_cr\_hard\_k<K'>\_pnorm} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Configs.}
+Each new config is the archived \code{config.json} of its cell's original
+run, migrated onto the current schema and changed in \code{code\_residual}
+and the run name only. The originals predate the 2026-09-28 cleanup and the
+later additions to the schema, so the migration drops fields of removed
+subsystems (all inert in these runs: the weight-sparsity block with
+\code{enabled: false}, the adaptive-temperature and servo fields, the
+reconstruction and calibration knobs) and adds fields at the defaults that
+reproduce the old behaviour (\code{share\_projections: false},
+\code{rblapsum\_surrogate\_scope: pool}, \code{bottleneck\_decoder\_scale: none},
+\code{bottleneck\_init: standard}). \code{scripts/make\_cr\_kj\_configs.py}
+performs the migration, checks field by field that nothing else moved, and
+writes the diff into every file's header; the files are
+\code{configs/cr\_kj/}.
+
+\paragraph{The original runs.}
+The 25 stream-carried cells are the runs the K+J note's tables rest on, read
+back from Drive (\code{runs\_california}, \code{runs\_korea}) and checked
+against those tables cell by cell: the kappa cells
+\code{ca\_rout\_rblapsum\_kappa\_k<K>\_j<J>\_\{stab,kj\}\_\{t2,pnorm\}\_md\_abs}
+(\code{stab} for $(32,32)$, $(32,480)$, $(64,64)$, $(64,448)$, $(128,128)$,
+$(128,384)$; \code{kj} for $(32,96)$, $(32,224)$, $(64,192)$, $(256,256)$),
+and the hard baselines \code{ko\_rout\_hard\_k32\_pnorm\_md},
+\code{ca\_rout\_hard\_k\{64,128,256\}\_kj\_pnorm\_md} and
+\code{ko\_rout\_hard\_k512\_pnorm\_md}. \code{scripts/plot\_cr\_kj.py} prints
+the run behind every cell of every table below.
+
+\paragraph{Hardware.}
+The new runs were trained on one RTX 5090 each (eight in parallel), the
+originals on the california and korea boxes. The seed is the same, but bf16
+matrix products are not bit-reproducible across GPU generations, so a
+seed-matched pair of curves tracks rather than coincides; differences of a
+few thousandths of a nat at the end of training are within what the same
+config produces on two machines.
+
+% ============================================================
+\section{Results: the code-carried grid}
+% ============================================================
+
+Final validation CE after 20k steps. Rows are the active count $K$, columns
+the candidate pool $\Kp = K+J$, the last row hard Top-$\Kp$ with the
+post-norm. Bold marks the cells that beat the hard baseline in their own
+column.
+
+\begin{center}\small
+\textbf{$T=2$, code carried}\\[2pt]
+\begin{tabular}{lcccc}
+\toprule
+$K$ & $\Kp{=}64$ & $\Kp{=}128$ & $\Kp{=}256$ & $\Kp{=}512$ \\
+\midrule
+$32$   & \PH{} & \PH{} & \PH{} & \PH{} \\
+$64$   & ---    & \PH{} & \PH{} & \PH{} \\
+$128$  & ---    & ---    & \PH{} & \PH{} \\
+$256$  & ---    & ---    & ---    & \PH{} \\
+\midrule
+hard Top-$\Kp$ & \PH{} & \PH{} & \PH{} & \PH{} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{center}\small
+\textbf{post-norm, code carried}\\[2pt]
+\begin{tabular}{lcccc}
+\toprule
+$K$ & $\Kp{=}64$ & $\Kp{=}128$ & $\Kp{=}256$ & $\Kp{=}512$ \\
+\midrule
+$32$   & \PH{} & \PH{} & \PH{} & \PH{} \\
+$64$   & ---    & \PH{} & \PH{} & \PH{} \\
+$128$  & ---    & ---    & \PH{} & \PH{} \\
+$256$  & ---    & ---    & ---    & \PH{} \\
+\midrule
+hard Top-$\Kp$ & \PH{} & \PH{} & \PH{} & \PH{} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\PH{reading of the tables}
+
+\subsection*{Per candidate pool}
+
+Each figure fixes the pool $\Kp = K+J$ and compares hard Top-$\Kp$ (dashed,
+black) with every surrogate cell sharing that pool (solid, a blue ramp light
+to dark with increasing $J$); left panel $T=2$, right panel post-norm. All
+runs are code-carried.
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_pool_k64.png}
+\caption{$\Kp = 64$, code carried. \PH{}}
+\end{figure}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_pool_k128.png}
+\caption{$\Kp = 128$, code carried. \PH{}}
+\end{figure}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_pool_k256.png}
+\caption{$\Kp = 256$, code carried. \PH{}}
+\end{figure}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_pool_k512.png}
+\caption{$\Kp = 512$, code carried. \PH{}}
+\end{figure}
+
+\subsection*{Per active count}
+
+Each figure fixes $K$ and shows every candidate window trained at that $K$
+(solid, blue ramp light to dark with increasing $J$) against all five hard
+Top-$\Kp$ baselines (dashed, red ramp light to dark with increasing $\Kp$).
+All runs are code-carried.
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_active_k32.png}
+\caption{$K = 32$, code carried. \PH{}}
+\end{figure}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_active_k64.png}
+\caption{$K = 64$, code carried. \PH{}}
+\end{figure}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_active_k128.png}
+\caption{$K = 128$, code carried. \PH{}}
+\end{figure}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_active_k256.png}
+\caption{$K = 256$, code carried. \PH{}}
+\end{figure}
+
+% ============================================================
+\section{Stream carried versus code carried}
+% ============================================================
+
+The same cell in the two families, the difference being the carry from
+block 1 on. Final validation CE, code carried minus stream carried
+(negative: the code residual is better):
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+$T=2$: $K$ & $\Kp{=}64$ & $\Kp{=}128$ & $\Kp{=}256$ & $\Kp{=}512$ \\
+\midrule
+$32$   & \PH{} & \PH{} & \PH{} & \PH{} \\
+$64$   & ---    & \PH{} & \PH{} & \PH{} \\
+$128$  & ---    & ---    & \PH{} & \PH{} \\
+$256$  & ---    & ---    & ---    & \PH{} \\
+\midrule
+post-norm: $K$ & & & & \\
+\midrule
+$32$   & \PH{} & \PH{} & \PH{} & \PH{} \\
+$64$   & ---    & \PH{} & \PH{} & \PH{} \\
+$128$  & ---    & ---    & \PH{} & \PH{} \\
+$256$  & ---    & ---    & ---    & \PH{} \\
+\midrule
+hard Top-$\Kp$ & \PH{} & \PH{} & \PH{} & \PH{} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\PH{hard Top-32 difference and reading}
+
+\subsection*{Hard Top-$\Kp$}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_vs_stream_hard.png}
+\caption{Hard Top-$\Kp$ with the post-norm, $\Kp = 32$ to $512$: stream
+carried (dashed, red ramp light to dark with $\Kp$) and code carried (solid,
+blue ramp). Left the whole run, right the last 12k steps on a tight scale.
+\PH{}}
+\end{figure}
+
+\subsection*{RBLapSum, per active count}
+
+Each figure fixes $K$ and shows every $J$ trained at that $K$ in both
+families: stream carried (dashed, red ramp light to dark with $J$) and code
+carried (solid, blue ramp); left panel $T=2$, right panel post-norm.
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_vs_stream_rbk_k32.png}
+\caption{$K = 32$, $J \in \{32, 96, 224, 480\}$. \PH{}}
+\end{figure}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_vs_stream_rbk_k64.png}
+\caption{$K = 64$, $J \in \{64, 192, 448\}$. \PH{}}
+\end{figure}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_vs_stream_rbk_k128.png}
+\caption{$K = 128$, $J \in \{128, 384\}$. \PH{}}
+\end{figure}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_vs_stream_rbk_k256.png}
+\caption{$K = 256$, $J = 256$. \PH{}}
+\end{figure}
+
+% ============================================================
+\section{Interpretation}
+% ============================================================
+
+\PH{interpretation}
+
+% ============================================================
+\section{Scope}
+% ============================================================
+
+All cells are single runs at one seed, and the two families were trained on
+different GPUs; a seed-matched pair of the same config on the two machines
+would calibrate how much of a small cell-to-cell difference is hardware.
+Only the default surrogate scope was run in the code-carried family; the
+first-order scope that the 24-layer study found necessary there was not
+part of this grid, because the grid's premise was a single flag. The depth
+is eight blocks throughout, $K + J \le 512$ well inside $N = 1536$, and the
+hard baselines all carry the post-norm.
+
+\end{document}
