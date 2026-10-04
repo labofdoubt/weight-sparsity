@@ -177,9 +177,11 @@ if __name__ == "__main__" and "--sweep" not in sys.argv:
 
 
 # --------------------------------------------------------------------------- #
-# The K=32, T=2 support-scale / first-order sweep (requested 2026-10-04)
+# The T=2 support-scale / first-order sweep (requested 2026-10-04: K=32, then
+# K=64, 128, 256 with the grid's J values)
 # --------------------------------------------------------------------------- #
-SWEEP_HEADER = """# {name}: the K=32, T=2 sweep of the code-residual K+J grid.
+SWEEP_CELLS = {32: (32, 96, 224, 480), 64: (64, 192, 448), 128: (128, 384), 256: (256,)}
+SWEEP_HEADER = """# {name}: the T=2 sweep of the code-residual K+J grid.
 # {base}.yaml (code_residual: true, T=2, no output norm) with one more change:
 #   {change}
 # rblapsum_support_scale multiplies the RBLapSum support term in the backward
@@ -190,10 +192,11 @@ SWEEP_HEADER = """# {name}: the K=32, T=2 sweep of the code-residual K+J grid.
 """
 
 
-def write_sweep(out_dir):
+def write_sweep(out_dir, ks=(32, 64, 128, 256)):
     import yaml
-    for j in (32, 96, 224, 480):
-        base = f"ma_cr_rbk_k32_j{j}_t2"
+    for k in ks:
+      for j in SWEEP_CELLS[k]:
+        base = f"ma_cr_rbk_k{k}_j{j}_t2"
         tree0 = yaml.safe_load(open(os.path.join(out_dir, base + ".yaml")))
         assert tree0["activation_bottleneck"]["code_residual"] is True
         assert tree0["activation_bottleneck"]["temperature"] == 2.0
@@ -219,5 +222,7 @@ def write_sweep(out_dir):
 
 
 if __name__ == "__main__" and "--sweep" in sys.argv:
-    # python scripts/make_cr_kj_configs.py --sweep configs/cr_kj
-    write_sweep(sys.argv[sys.argv.index("--sweep") + 1])
+    # python scripts/make_cr_kj_configs.py --sweep configs/cr_kj [K ...]
+    i = sys.argv.index("--sweep")
+    ks = tuple(int(a) for a in sys.argv[i + 2:]) or (32, 64, 128, 256)
+    write_sweep(sys.argv[i + 1], ks)

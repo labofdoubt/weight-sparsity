@@ -1,0 +1,112 @@
+# ma_cr_rbk_k64_j192_t2_ss06: the T=2 sweep of the code-residual K+J grid.
+# ma_cr_rbk_k64_j192_t2.yaml (code_residual: true, T=2, no output norm) with one more change:
+#   rblapsum_support_scale: 0.6
+# rblapsum_support_scale multiplies the RBLapSum support term in the backward
+# (1.0 = the unmodified surrogate, 0.0 = the hard-TopK backward);
+# rblapsum_surrogate_scope=first_order evaluates every gate's support term on
+# the hard-path upstream gradient (two backward passes per micro-batch, single
+# process).  Written by scripts/make_cr_kj_configs.py --sweep.
+model:
+  vocab_size: 50257
+  max_seq_len: 512
+  n_layers: 8
+  d_model: 768
+  n_heads: 12
+  mlp_ratio: 4.0
+  mlp_activation: gelu
+  dropout: 0.0
+  attn_dropout: 0.0
+  bias: false
+  norm_eps: 1.0e-06
+  tie_embeddings: true
+  pos_encoding: rope
+  rope_theta: 10000.0
+  decouple: true
+  decouple_gains: row_col
+  bottleneck_init: standard
+  bottleneck_decoder_scale: none
+  md_init: false
+  init_scheme: fixed_std
+  init_std: 0.02
+  init_gain: 1.0
+  init_std_embedding: null
+  init_std_pos: null
+  init_std_unembedding: null
+  init_scale_residual: true
+  logit_scale: none
+data:
+  dataset: roneneldan/TinyStories
+  data_dir: /workspace/data/tinystories
+  seq_len: 512
+  tokenizer: gpt_neo
+  tokenizer_path: data/tinystories/tokenizer
+  bpe_vocab_size: 8192
+  bpe_train_docs: 200000
+  num_proc: 8
+  val_fraction: 0.0
+train:
+  optimizer: adamw
+  lr: 0.0006
+  betas:
+  - 0.9
+  - 0.95
+  eps: 1.0e-08
+  weight_decay: 0.1
+  grad_clip: 1.0
+  lr_schedule: cosine
+  warmup_steps: 500
+  min_lr_ratio: 0.1
+  batch_size: 96
+  final_val_batches: 0
+  micro_batch_size: 24
+  max_steps: 20000
+  log_every_steps: 20
+  validate_every_steps: 500
+  val_batches: 40
+  checkpoint_every_steps: 2000
+  keep_last_checkpoints: 3
+  sample_every_steps: 2000
+  sample_prompt: Once upon a time
+  sample_tokens: 96
+  sample_count: 4
+  seed: 1337
+  device: auto
+  dtype: bfloat16
+  compile: false
+  out_dir: /workspace/runs
+  run_name: ma_cr_rbk_k64_j192_t2_ss06
+  resume: ''
+  wandb_project: ''
+  wandb_entity: ''
+  tensorboard: true
+activation_bottleneck:
+  enabled: true
+  layers: all
+  placement: residual_out
+  n_features: 1536
+  k: 64
+  j: 192
+  selection_mode: abs_topk
+  surrogate_mode: rblapsum
+  temperature: 2.0
+  rblapsum_boundary_grad_mode: through_rank_kappa
+  rblapsum_support_scale: 0.6
+  rblapsum_rho_random_perm_prob_grad: 0.0
+  rblapsum_surrogate_scope: pool
+  rblapsum_relative_temperature: false
+  rblapsum_center_tokens: false
+  rblapsum_sf_value_grad: pool
+  post_norm: false
+  rblapsum_boundary_floor: 0.0
+  init_mode: default
+  tie_encoder_decoder: false
+  share_projections: false
+  value_shift: none
+  value_shift_lambda: null
+  code_residual: true
+  code_residual_scale: 1.0
+  barrier_solver_tol: 1.0e-06
+  solver_dtype: float32
+  log_diagnostics: true
+  bias: false
+  hard_inference: true
