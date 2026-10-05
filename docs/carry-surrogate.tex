@@ -77,8 +77,7 @@ per-coordinate sums along the backward.  The drivers are the first-order loss ch
 gate \(\ell\) (\(c_{\ell+1,i}\) changes by \(\pm u_{\ell,i}\); block \(\ell{+}1\) reads it, later blocks while the
 coordinate stays in the code) under three models of what follows.  \emph{Local}: the next read only -- the stream
 stack's logic, exactly the gradient of a model whose decoder reads a relaxed gate while the carry is hard.
-\emph{Hard}: the actual downstream masks (an evicted feature's remaining run; for an inactive candidate almost always
-nothing).  \emph{Persistent}: an entering coordinate survives each further gate with probability \(\rho\).
+\emph{Hard}: the actual downstream masks (nothing, for most inactive candidates).  \emph{Persistent}: an entering coordinate survives each further gate with probability \(\rho\).
 \emph{Mixed}: hard for the active members, persistent for the inactive ones.
 
 \begin{figure}[b]
@@ -95,8 +94,8 @@ in the support \(d\) gates later); share of the support gate \(\ell\) receives t
 
 \section{Measurements}
 
-\textbf{Setup.}  The code-carried \(T=2\) arm of the K+J grid (no output norm, batch \(96\times512\), the 20k-step
-cosine schedule, seed 1337).  Baselines are the grid's runs read at matching steps; each new scope trains the grid's config with one field changed, stopped at step 3000
+\textbf{Setup.}  The code-carried \(T=2\) arm of the K+J grid (no output norm, its 20k-step schedule and seed).
+Baselines are the grid's runs read at matching steps; each new scope trains the grid's config with one field changed, stopped at step 3000
 with the schedules untouched, two cells continued to 10k.  At step 3000 the grid's surrogate margins are largest and already of their final sign
 (\code{pool}: \(-0.061\to-0.042\) from 3k to 20k at \(K=32\), \(+0.048\to+0.034\) at \(K=256\)).
 
@@ -151,8 +150,8 @@ hard Top-\((K{+}J)\); \textbf{c}, \textbf{d} the mixed scope continued to 10k ag
 \textbf{The conflict is the placement, not the kernel.}  RBLapSum relaxes a gate whose output, in the code-carried
 stack, is also a skip connection, and the relaxation is multiplied along it, \(1+b/2T\) per gate.  Putting the
 probabilities where they were in the stream-carried stack -- on what the decoder reads -- and leaving the carry's
-backward the mask removes the product exactly, in one pass; trained, the local scope keeps the unmodified
-surrogate's whole gain at \(K=32\) (first order keeps half) and removes four fifths of its loss at \(K=256\).
+backward the mask removes the product exactly, in one pass; the local scope keeps the unmodified surrogate's whole
+gain at \(K=32\) (first order keeps half) and removes four fifths of its loss at \(K=256\).
 
 \textbf{The carry gives the surrogate what the stream stack could not: a downstream for the entry term.}  In the
 code stack an entering feature is carried, so the first-order value of admitting it is the sum of the reads it would
