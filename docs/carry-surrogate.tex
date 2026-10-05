@@ -89,65 +89,50 @@ stream stack.  (\code{rblapsum\_surrogate\_scope=carry\_local|carry\_hard|carry\
 
 \section{Measurements}
 
-\textbf{Setup.}  Everything is the code-carried \(T=2\) arm of the K+J grid: 8\(\times\)768, \(N=1536\),
-\code{residual\_out} at every block, no output norm, batch \(96\times512\), the 20k-step cosine schedule, seed 1337.
-The baselines are the grid's own runs (\code{runs\_madrid}: hard Top-\(K'\) with the post-norm, RBLapSum \code{pool},
-and the \code{first\_order} sweep cells).  Each new scope is trained with \code{train\_guard.py --stop-step 3000} on
-the grid's config with one field changed, so a step-matched comparison with the 20k runs is exact up to the GPU
-(one RTX 5090 here, eight on madrid; same generation).  Three thousand steps is where the grid's surrogate margins
-are largest and already of the sign they keep: at \(K=32\) the \code{pool} cell is \(-0.061\) below hard Top-32 at
-step 3000 and \(-0.042\) at 20k, at \(K=256\) it is \(+0.048\) above hard Top-256 at 3000 and \(+0.034\) at 20k.
+\textbf{Setup.}  The code-carried \(T=2\) arm of the K+J grid: 8\(\times\)768, \(N=1536\), \code{residual\_out} at
+every block, no output norm, batch \(96\times512\), the 20k-step cosine schedule, seed 1337.  Baselines are the grid's
+runs (hard Top-\(K'\) with the post-norm, RBLapSum \code{pool}, the \code{first\_order} sweep) read at matching steps;
+each new scope trains the grid's config with one field changed, stopped at step 3000 by \code{train\_guard.py
+--stop-step} (schedules untouched).  Step 3000 is where the grid's surrogate margins are largest and already of their
+final sign (\code{pool}: \(-0.061\to-0.042\) from 3k to 20k at \(K=32\), \(+0.048\to+0.034\) at \(K=256\)); two cells
+are continued to 10k steps.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\textwidth]{figures/carry/fig_init.png}
-\caption{\textbf{The backward along the carried code at initialization} (\code{analysis/surrogate\_probe.py}, 4 validation
-sequences, train mode).  RMS of \(\partial\mathcal L/\partial c_{\ell+1}\) at each gate's output, relative to the hard
-backward of the same weights.  \textbf{a}, \textbf{b} The \code{pool} scope grows by \(\times1.5\) (\(K{=}32\)) and
-\(\times1.4\) (\(K{=}256\)) per gate toward the input, \(22\times\) and \(12\times\) the hard gradient at gate 0; every
-carry scope and the first-order estimator grow additively (one term per gate) and the local scope stays within
-\(2.1\times\) at every gate.  \textbf{c} At \(T=1\) the product reaches \(46\times\) under \code{pool}; the carry scopes
-move by less than a factor 1.5.}
+\includegraphics[width=.72\textwidth]{figures/carry/fig_init.png}
+\caption{\textbf{Backward along the carried code at initialization}: RMS \(\partial\mathcal L/\partial c_{\ell+1}\)
+at each gate's output relative to the hard backward of the same weights (\code{analysis/surrogate\_probe.py}, 4
+validation sequences).  Under \code{pool} the gradient grows \(\times1.5\) (\(K{=}32\)) and \(\times1.4\) (\(K{=}256\))
+per gate toward the input, \(22\times\) and \(12\times\) hard at gate 0 (\(46\times\) at \(T{=}1\), dotted); every carry
+scope and the first-order estimator grow additively, one term per gate, the local scope staying within \(2.1\times\).}
 \label{fig:init}
 \end{figure}
 
-\textbf{The backward at initialization} (Fig.~\ref{fig:init}).  With the weights at initialization and one validation
-batch, the RMS gradient reaching the carried code under the \code{pool} scope grows by \(\times1.5\) per gate toward
-the input at \(K=32\) and \(\times1.4\) at \(K=256\): \(22\times\) and \(12\times\) the hard backward at gate 0
-(\(46\times\) at \(T=1\)).  Under every carry scope the profile is a sum, not a product: \code{carry\_local} stays at
-\(1.7\)--\(2.1\times\) at every gate, \code{carry\_hard} reaches \(6.2\times\), \code{carry\_mixed} \(7.2\times\) and
-\code{carry\_persistent} \(8.4\times\) at gate 0 (\(K=32\)), the first-order estimator \(4.4\times\) -- each gate's
-term added once and carried down through the masks.  The surrogate's share of the gradient energy at the gates,
+\textbf{At initialization} (Fig.~\ref{fig:init}) the surrogate's share of the gradient energy at the gates,
 \(\sigma=\lVert S^\top\hat g\rVert^2/\lVert m\odot g\rVert^2\) averaged over gates, is \(0.70\) for \code{pool},
 \(0.74\) for \code{carry\_mixed}, \(0.31\) for \code{carry\_local} and \(0.24\) for first order at \(K=32\)
 (\(0.30\), \(0.20\), \(0.09\), \(0.09\) at \(K=256\)): the mixed scope injects as much support signal as the unmodified
-backward, additively.
-
+backward, as a sum instead of a product.
 
 \textbf{Runs of the carried code} (Fig.~\ref{fig:runs}; \code{analysis/code\_runs.py}, 16 validation sequences, hard
 forward).\label{sec:runs}  The carry is persistent for a subset of the code, not for the code.  In the trained hard
-Top-32 model every gate from block 1 on evicts \(30\)--\(54\%\) of the support it receives and fills the slots with
-new entries; a feature that enters is still in the support one gate later with probability \(0.51\), two gates later
-\(0.34\), and \(12\%\) of the final code was carried from gate 0 while \(54\%\) entered at the last gate (hard
-Top-256: \(0.57\), \(0.41\), \(17\%\), \(34\%\)).  Summing the survival curve, an entry at gate 0 is read by
-\(2.7\) (\(K{=}32\)) to \(3.1\) (\(K{=}256\)) blocks on average, against 8 under the persistent model and 1 under the
-local one.  The \code{pool} surrogate trains the model \emph{out of} the carry: at \((32,224)\) its turnover is
-\(55\%\) per gate at step 2000 and \(70\%\) at 20k, survival one gate later \(0.27\to0.16\), and \(77\%\) of its final
-code enters at the last gate -- the re-selection at every block of the stream-carried stack, reproduced by a model
-that has a carry.  This is why the carry was ``nearly neutral'' for the surrogate in the grid: the surrogate-trained
-model hardly uses it.
+Top-32 model every gate evicts \(30\)--\(54\%\) of the support it receives; a feature that enters is still there one
+gate later with probability \(0.51\), two gates later \(0.34\); \(12\%\) of the final code was carried from gate 0 and
+\(54\%\) entered at the last gate (hard Top-256: \(0.57\), \(0.41\), \(17\%\), \(34\%\)).  An entry at gate 0 is read
+by \(2.7\)--\(3.1\) blocks on average, against 8 under the persistent model and 1 under the local one.  The \code{pool}
+surrogate trains the model \emph{out of} the carry: at \((32,224)\) turnover is \(63\%\) per gate at step 4000 and
+\(70\%\) at 20k, one-gate survival \(0.21\to0.16\), and \(77\%\) of the final code enters at the last gate -- the
+stream stack's re-selection at every block, reproduced by a model that has a carry.  This is why the carry was
+``nearly neutral'' for the surrogate in the grid.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\textwidth]{figures/carry/fig_runs.png}
+\includegraphics[width=.72\textwidth]{figures/carry/fig_runs.png}
 \caption{\textbf{Runs of the carried code.}  \textbf{a} Probability that a feature which entered the support is
-still in it \(d\) gates later (entries at every gate pooled).  \textbf{b} Share of the support gate \(\ell\) receives
-from gate \(\ell{-}1\) that it evicts.  \textbf{c} The last gate's support by the gate at which its features entered.
-Hard baselines of the code-carried grid at steps 2000 and 20000, the \code{pool} surrogate at \((32,224)\), \PH{and
-the carry scopes at step 3000}.}
+still in it \(d\) gates later.  \textbf{b} Share of the support gate \(\ell\) receives from gate \(\ell{-}1\) that it
+evicts.  Hard baselines at steps 4000 and 20000, the \code{pool} and first-order cells, and the carry scopes at step 3000.}
 \label{fig:runs}
 \end{figure}
-
 
 \textbf{Training} (Fig.~\ref{fig:screens}, Table~\ref{tab:screens}).  At \(K=32\), \(J=224\) the \emph{local} scope ends
 step 3000 at \(-0.058\) below hard Top-32, where the unmodified surrogate is at \(-0.061\) and the first-order

@@ -124,10 +124,12 @@ def table_init():
 # --------------------------------------------------------------------------- #
 # Figure 2: the screens, against the hard baselines of the code-carried grid
 # --------------------------------------------------------------------------- #
-CELLS = {32: (224, "ma_cr_hard_k32_pnorm", "ma_cr_hard_k256_pnorm"),
-         64: (448, "ma_cr_hard_k64_pnorm", "ma_cr_hard_k512_pnorm"),
-         128: (384, "ma_cr_hard_k128_pnorm", "ma_cr_hard_k512_pnorm"),
-         256: (256, "ma_cr_hard_k256_pnorm", "ma_cr_hard_k512_pnorm")}
+CELLS = {(32, 224): ("ma_cr_hard_k32_pnorm", "ma_cr_hard_k256_pnorm"),
+         (64, 64): ("ma_cr_hard_k64_pnorm", "ma_cr_hard_k128_pnorm"),
+         (64, 448): ("ma_cr_hard_k64_pnorm", "ma_cr_hard_k512_pnorm"),
+         (128, 128): ("ma_cr_hard_k128_pnorm", "ma_cr_hard_k256_pnorm"),
+         (128, 384): ("ma_cr_hard_k128_pnorm", "ma_cr_hard_k512_pnorm"),
+         (256, 256): ("ma_cr_hard_k256_pnorm", "ma_cr_hard_k512_pnorm")}
 
 
 def curves():
@@ -136,8 +138,8 @@ def curves():
     return {**base, **new}
 
 
-def run_of(K, key):
-    J = CELLS[K][0]
+def run_of(cell, key):
+    K, J = cell
     if key == "pool":
         return f"ma_cr_rbk_k{K}_j{J}_t2"
     if key == "fo":
@@ -150,11 +152,12 @@ def series(cv, run):
     return {} if c is None else dict((int(s), v) for s, v in c["val"])
 
 
-def delta_panel(ax, cv, K, keys, max_step=3000, show_pool_ref=True):
-    J, hard_k, hard_kj = CELLS[K]
+def delta_panel(ax, cv, cell, keys, max_step=3000, show_pool_ref=True):
+    K, J = cell
+    hard_k, hard_kj = CELLS[cell]
     h = series(cv, hard_k)
     for key in keys:
-        d = series(cv, run_of(K, key))
+        d = series(cv, run_of(cell, key))
         pts = [(s, v - h[s]) for s, v in sorted(d.items()) if s in h and s <= max_step]
         if not pts:
             continue
@@ -173,19 +176,20 @@ def delta_panel(ax, cv, K, keys, max_step=3000, show_pool_ref=True):
 
 def fig_screens(max_step=3000):
     cv = curves()
-    Ks = [K for K in (32, 128, 256) if any(run_of(K, k) in cv for k in ("cl", "cm"))]
+    Ks = [cell for cell in ((32, 224), (64, 64), (128, 128), (256, 256))
+          if any(run_of(cell, k) in cv for k in ("cl", "cm"))]
     if not Ks:
         return
-    fig, axes = plt.subplots(1, len(Ks), figsize=(2.35 * len(Ks) + 0.2, 1.75),
-                             gridspec_kw={"wspace": 0.45}, squeeze=False)
+    fig, axes = plt.subplots(1, len(Ks), figsize=(1.9 * len(Ks) + 0.2, 1.7),
+                             gridspec_kw={"wspace": 0.5}, squeeze=False)
     keys = ("pool", "fo", "ch", "cp", "cm05", "cm", "cl")
-    for ax, K, letter in zip(axes[0], Ks, "abc"):
-        delta_panel(ax, cv, K, keys, max_step, show_pool_ref=True)
-        ax.set_title(rf"{letter}  $K{{=}}{K}$, $J{{=}}{CELLS[K][0]}$")
+    for ax, cell, letter in zip(axes[0], Ks, "abcd"):
+        delta_panel(ax, cv, cell, keys, max_step, show_pool_ref=True)
+        ax.set_title(rf"{letter}  $K{{=}}{cell[0]}$, $J{{=}}{cell[1]}$")
         ax.set_xlim(400, max_step + 50)
     # one legend, in the last panel, with proxies for every scope that appears anywhere
     from matplotlib.lines import Line2D
-    present = [k for k in keys if any(run_of(K, k) in cv for K in Ks)]
+    present = [k for k in keys if any(run_of(cell, k) in cv for cell in Ks)]
     handles = [Line2D([], [], color=STYLE[k][1], ls=STYLE[k][2], marker="o", ms=2.2, mfc="white",
                       mew=0.7, lw=1.3, label=STYLE[k][0]) for k in present]
     handles.append(Line2D([], [], color=INK, ls="--", lw=0.9, label=r"hard Top-$(K{+}J)$"))
@@ -195,18 +199,19 @@ def fig_screens(max_step=3000):
 
 def table_screens(steps=(1000, 2000, 3000)):
     cv = curves()
-    for K in (32, 64, 128, 256):
-        h = series(cv, CELLS[K][1])
-        hk = series(cv, CELLS[K][2])
+    for cell in sorted(CELLS):
+        K, J = cell
+        h = series(cv, CELLS[cell][0])
+        hk = series(cv, CELLS[cell][1])
         rows = []
-        for key in ("pool", "fo", "cl", "cm", "cp", "ch"):
-            d = series(cv, run_of(K, key))
+        for key in ("pool", "fo", "cl", "cm", "cm05", "cp", "ch"):
+            d = series(cv, run_of(cell, key))
             if not d:
                 continue
             rows.append((key, [round(d[s] - h[s], 4) if s in d and s in h else None for s in steps],
                          [round(d[s], 4) if s in d else None for s in steps]))
         if rows:
-            print(f"K={K}  hard Top-K at {steps}: {[round(h.get(s, float('nan')), 4) for s in steps]}"
+            print(f"K={K} J={J}  hard Top-K at {steps}: {[round(h.get(s, float('nan')), 4) for s in steps]}"
                   f"  hard Top-(K+J): {[round(hk.get(s, float('nan')) - h.get(s, float('nan')), 4) for s in steps]}")
             for key, dv, v in rows:
                 print(f"   {key:5s} delta {dv}  abs {v}")
@@ -277,14 +282,15 @@ def latex_table(step=3000):
     cv = curves()
     cols = ("pool", "fo", "cl", "cm", "cm05", "cp", "ch")
     print("% K & J & " + " & ".join(cols) + " & hard Top-(K+J) \\\\")
-    for K in (32, 64, 128, 256):
-        J, hard_k, hard_kj = CELLS[K]
+    for cell in sorted(CELLS):
+        K, J = cell
+        hard_k, hard_kj = CELLS[cell]
         h = series(cv, hard_k)
         if step not in h:
             continue
         cells = []
         for key in cols:
-            d = series(cv, run_of(K, key))
+            d = series(cv, run_of(cell, key))
             cells.append(f"{d[step] - h[step]:+.3f}" if step in d else "--")
         hk = series(cv, hard_kj)
         cells.append(f"{hk[step] - h[step]:+.3f}" if step in hk else "--")
