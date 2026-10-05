@@ -151,15 +151,20 @@ the carry scopes at step 3000}.}
 \end{figure}
 
 
-\textbf{Training} (Fig.~\ref{fig:screens}, Table~\ref{tab:screens}).  At \(K=32\), \(J=224\) the local scope ends
+\textbf{Training} (Fig.~\ref{fig:screens}, Table~\ref{tab:screens}).  At \(K=32\), \(J=224\) the \emph{local} scope ends
 step 3000 at \(-0.058\) below hard Top-32, where the unmodified surrogate is at \(-0.061\) and the first-order
-estimator at \(-0.033\); it leads \code{pool} by \(0.02\) at step 1000 (\(-0.060\) against \(-0.040\)) and the two
-coincide from step 2000.  \PH{mixed, cm05}  Its gradient norm never exceeded 1 (the \code{pool} cell spiked four
-times, to 3.3, over its run), its feature usage is the hard model's (usage entropy \(0.79\); hard \(0.73\), first order
-\(0.79\), \code{pool} \(0.59\)), and so is its use of the carry: one-gate survival \(0.52\) and \(35\%\) turnover at
-step 3000, against \(0.60\)/\(31\%\) for hard Top-32 at step 4000 and \(0.21\)/\(63\%\) for \code{pool}
-(Fig.~\ref{fig:runs}).  The gain of the unmodified surrogate at \(K=32\) is therefore not bought by the products
-along the carry: a backward that removes them keeps the gain and keeps the carry.  \PH{K=128, 256}
+estimator at \(-0.033\); it leads \code{pool} by \(0.02\) at step 1000 and the two coincide from step 2000.  The
+\emph{mixed} scope ends at \(-0.118\), twice the margin of the unmodified surrogate and the margin of hard Top-128
+over hard Top-32 at the same step (\(-0.124\)): with 32 active features it reaches the hard model that activates 128,
+\(1.782\) against \(1.776\), and is below hard Top-64 (\(1.835\)) from step 500 on.  Neither run's gradient norm
+exceeded 1 (the \code{pool} cell spiked four times, to 3.3); both have the hard model's feature usage (usage entropy
+\(0.79\); hard \(0.73\), first order \(0.79\), \code{pool} \(0.59\)) and the hard model's use of the carry
+(Fig.~\ref{fig:runs}: one-gate survival \(0.52\) and \(0.53\) at step 3000, turnover \(35\%\) and \(33\%\), against
+\(0.60\)/\(31\%\) for hard Top-32 and \(0.21\)/\(63\%\) for \code{pool}), concentrated differently along depth --
+\(13\)--\(25\%\) of the support replaced at gates 1--4 and \(67\)--\(79\%\) at the last two, where the hard model
+replaces \(25\)--\(50\%\) everywhere.  The gain of the unmodified surrogate at \(K=32\) is thus not bought by the
+products along the carry: a backward without them keeps the gain, keeps the carry, and with the downstream reads in
+the entry term doubles the gain.  \PH{K=128, 256; the 10k continuation}
 
 \begin{figure}[t]
 \centering
