@@ -49,6 +49,7 @@ plt.rcParams.update({
 # scope -> (label, color, linestyle)
 STYLE = {
     "hard": ("hard Top-$K$", INK, "-"),
+    "cm05": (r"carry, mixed, $\rho{=}0.5$", AQUA, ":"),
     "pool": ("RBLapSum, pool", ORANGE, "-"),
     "fo": ("first order", YELLOW, "-"),
     "cl": ("carry, local", BLUE, "-"),
@@ -280,6 +281,25 @@ def table_runs():
               f"final from gate0 {d['final_entry'][0]:.2f} last gate {d['final_entry'][-1]:.2f}  reentry {d['reentry_frac']:.2f}")
 
 
+def latex_table(step=3000):
+    """Rows of the note's table: val CE at `step` minus hard Top-K, per cell and scope."""
+    cv = curves()
+    cols = ("pool", "fo", "cl", "cm", "cm05", "cp", "ch")
+    print("% K & J & " + " & ".join(cols) + " & hard Top-(K+J) \\\\")
+    for K in (32, 64, 128, 256):
+        J, hard_k, hard_kj = CELLS[K]
+        h = series(cv, hard_k)
+        if step not in h:
+            continue
+        cells = []
+        for key in cols:
+            d = series(cv, run_of(K, key))
+            cells.append(f"{d[step] - h[step]:+.3f}" if step in d else "--")
+        hk = series(cv, hard_kj)
+        cells.append(f"{hk[step] - h[step]:+.3f}" if step in hk else "--")
+        print(f"{K} & {J} & " + " & ".join(cells) + f" \\\\   % hard Top-{K} = {h[step]:.4f}")
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     fig_init()
@@ -288,3 +308,4 @@ if __name__ == "__main__":
     table_screens()
     fig_runs()
     table_runs()
+    latex_table()
