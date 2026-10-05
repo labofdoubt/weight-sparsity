@@ -374,6 +374,71 @@ def fig_training():
     save(fig, "fig_training")
 
 
+def fig_mech():
+    """One row: the backward at initialization (a, b) and the runs of the code (c, d)."""
+    fig, axes = plt.subplots(1, 4, figsize=(7.2, 1.62), gridspec_kw={"wspace": 0.5})
+    # (a, b) initialization
+    for ax, (kj, title) in zip(axes[:2], [("k32_j224", r"a  step 0, $K{=}32$, $J{=}224$"),
+                                          ("k256_j256", r"b  step 0, $K{=}256$, $J{=}256$")]):
+        hard = load(DATA, "init", f"init_{kj}_hard.json")
+        h = [g["code_grad_rms"] for g in hard["gates"]]
+        for key in ("pool", "fo", "ch", "cp", "cm", "cl"):
+            for suffix, ls in (("", STYLE[key][2]), ("_t1", ":")):
+                if suffix and key not in ("pool", "cm", "cl"):
+                    continue
+                d = load(DATA, "init", f"init_{kj}_{key}{suffix}.json")
+                if d is None:
+                    continue
+                lab, color, _ = STYLE[key]
+                y = [g["code_grad_rms"] / hh for g, hh in zip(d["gates"], h)]
+                ax.plot(range(len(y)), y, ls, color=color,
+                        lw=1.4 if key in ("pool", "cl", "cm") and not suffix else 0.9,
+                        label=(lab if not suffix else None) if kj == "k32_j224" else None)
+        ax.axhline(1.0, color=INK, lw=0.8)
+        ax.set_yscale("log")
+        ax.set_xticks(range(0, 8, 1))
+        ax.set_xlabel(r"gate $\ell$ (0 = input side)")
+        ax.set_title(title)
+    axes[0].set_ylabel(r"RMS $\partial\mathcal{L}/\partial c_{\ell+1}$ / hard")
+    from matplotlib.lines import Line2D
+    handles, labels = axes[0].get_legend_handles_labels()
+    handles.append(Line2D([], [], color=MUTED, ls=":", lw=1.0)); labels.append(r"same, $T{=}1$")
+    axes[0].legend(handles, labels, loc="upper right", fontsize=4.3, ncol=1, handlelength=1.3)
+    # (c, d) runs
+    rows = [
+        ("ma_cr_hard_k32_pnorm_step20000", r"hard Top-32, 20k", INK, "-"),
+        ("ma_cr_hard_k256_pnorm_step20000", r"hard Top-256, 20k", MUTED, "-"),
+        ("ma_cr_rbk_k32_j224_t2_step20000", r"pool (32, 224), 20k", ORANGE, "-"),
+        ("ma_cr_rbk_k256_j256_t2_step4000", r"pool (256, 256), 4k", "#f2a37e", ":"),
+        ("ma_cr_rbk_k32_j224_t2_fo_step4000", r"first order (32, 224), 4k", YELLOW, ":"),
+        ("be_cr_rbk_k32_j224_t2_cl_step3000", r"carry, local (32, 224), 3k", BLUE, "-"),
+        ("be_cr_rbk_k32_j224_t2_cm_step3000", r"carry, mixed (32, 224), 3k", AQUA, "-"),
+        ("be_cr_rbk_k256_j256_t2_cl_step3000", r"carry, local (256, 256), 3k", BLUE, "--"),
+        ("be_cr_rbk_k256_j256_t2_cm_step3000", r"carry, mixed (256, 256), 3k", AQUA, "--"),
+    ]
+    for key, ax in (("survival", axes[2]), ("evict_frac", axes[3])):
+        for stem, lab, color, ls in rows:
+            d = load(DATA, "runs", stem + ".json")
+            if d is None:
+                continue
+            y = d[key]; x = list(range(len(y)))
+            if key == "evict_frac":
+                x, y = x[1:], y[1:]
+            ax.plot(x, y, ls, color=color, lw=1.1, marker="o", ms=1.8, mfc="white", mew=0.6,
+                    label=lab if key == "survival" else None)
+    axes[2].set_xlabel(r"gates after entry $d$")
+    axes[2].set_ylabel("P(still in the support)")
+    axes[2].set_ylim(0, 1.02)
+    axes[2].set_title("c  survival of an entry")
+    axes[2].legend(fontsize=3.9, loc="upper right", handlelength=1.3, labelspacing=0.25)
+    axes[3].set_xlabel(r"gate $\ell$")
+    axes[3].set_ylabel(r"share of support evicted")
+    axes[3].set_ylim(0, 0.85)
+    axes[3].set_xticks(range(1, 8))
+    axes[3].set_title("d  turnover per gate")
+    save(fig, "fig_mech")
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     fig_init()
@@ -385,3 +450,4 @@ if __name__ == "__main__":
     latex_table()
     fig_long()
     fig_training()
+    fig_mech()
