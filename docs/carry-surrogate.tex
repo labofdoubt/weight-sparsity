@@ -84,11 +84,11 @@ stack's logic, exactly the gradient of a model whose decoder reads a relaxed gat
 \centering
 \includegraphics[width=\textwidth]{figures/carry/fig_mech.png}
 \caption{\textbf{a}, \textbf{b} Backward along the carried code at initialization: RMS \(\partial\mathcal
-L/\partial c_{\ell+1}\) at each gate's output relative to the hard backward (\code{analysis/surrogate\_probe.py}).
+L/\partial c_{\ell+1}\) at each gate's output relative to the hard backward.
 Under \code{pool} it grows \(\times1.5\) (\(K{=}32\)) and \(\times1.4\) (\(K{=}256\)) per gate toward the input,
 \(22\times\) and \(12\times\) hard at gate 0 (\(46\times\) at \(T{=}1\), dotted); the carry scopes and first order grow
-additively.  \textbf{c}, \textbf{d} Runs of the code (\code{analysis/code\_runs.py}): P(an entered feature is still
-in the support \(d\) gates later); share of the support gate \(\ell\) receives that it evicts.}
+additively.  \textbf{c}, \textbf{d} Runs of the code: P(an entered feature is still in the support \(d\) gates
+later); share of the support gate \(\ell\) receives that it evicts.}
 \label{fig:mech}
 \end{figure}
 
@@ -97,7 +97,7 @@ in the support \(d\) gates later); share of the support gate \(\ell\) receives t
 \textbf{Setup.}  The code-carried \(T=2\) arm of the K+J grid (no output norm, its 20k-step schedule and seed).
 Baselines are the grid's runs read at matching steps; each new scope trains the grid's config with one field changed, stopped at step 3000
 with the schedules untouched, two cells continued to 10k.  At step 3000 the grid's surrogate margins are largest and already of their final sign
-(\code{pool}: \(-0.061\to-0.042\) from 3k to 20k at \(K=32\), \(+0.048\to+0.034\) at \(K=256\)).
+(\code{pool}, 3k\(\to\)20k: \(-0.061\to-0.042\) at \(K=32\), \(+0.048\to+0.034\) at \(K=256\)).
 
 \textbf{At initialization} (Fig.~\ref{fig:mech}a,b) the surrogate's share of the gradient energy at the gates,
 \(\sigma=\lVert S^\top\hat g\rVert^2/\lVert m\odot g\rVert^2\), is \(0.70\) for \code{pool}, \(0.74\) for mixed,
@@ -121,14 +121,12 @@ the hard model's code: survival \(0.52\)--\(0.61\), turnover \(30\)--\(40\%\) at
 at \(-0.058\) below hard Top-32, where \code{pool} is at \(-0.061\) and first order at \(-0.033\).  The mixed scope ends at \(-0.118\), twice the margin of the
 unmodified surrogate and the margin of hard Top-128 over hard Top-32 at that step (\(-0.124\)): 32 active features at
 the loss of the hard model that activates 128 (\(1.782\) against \(1.776\)).  Continued to 10k its margin decays as
-the grid's do, \(-0.109\) at 5k and \(-0.100\) at 10k, against hard Top-128 at \(-0.121\), \(-0.117\), hard Top-64 at
-\(-0.064\), \(-0.063\) and \code{pool} at \(-0.054\), \(-0.045\).  At \((256,256)\), the pathological cell (\code{pool} \(+0.047\) at 3000, its code turning
+the grid's do: \(-0.100\) at 10k, against hard Top-128 \(-0.117\), hard Top-64 \(-0.063\), \code{pool} \(-0.045\).  At \((256,256)\), the pathological cell (\code{pool} \(+0.047\) at 3000, its code turning
 over \(46\%\) per gate against the hard model's \(28\%\)), the local scope closes the gap to \(+0.009\) and the mixed
 scope is below hard Top-256 from step 2000, \(-0.0045\) at 3000 (\(1.736\) against \(1.741\)): a surrogate ahead of
 the hard model with the same active count, a first in the code-carried grid (hard Top-512 \(-0.037\); the hard
-baselines also have the post-norm, worth about \(0.007\) in the stream grid).  Continued to 10k the lead widens, \(-0.008\) at 5k and \(-0.014\) at 10k, with \code{pool} at \(+0.037\),
-\(+0.031\) and hard Top-512 at \(-0.034\), \(-0.029\).  On the diagonal \(J=K\), the stream grid's winning configuration, the mixed scope is below hard Top-\(K\)
-from step 500 on and ends at \(-0.047\) at \((64,64)\) (\code{pool} \(-0.005\), first order \(-0.003\); hard Top-128
+baselines also have the post-norm, worth about \(0.007\) in the stream grid).  Continued to 10k the lead widens to \(-0.014\) (\code{pool} \(+0.031\), hard Top-512 \(-0.029\)).  On the diagonal \(J=K\) (the stream grid's winning cells) the mixed scope is below hard Top-\(K\) from step
+500 on and ends at \(-0.047\) at \((64,64)\) (\code{pool} \(-0.005\), first order \(-0.003\); hard Top-128
 \(-0.059\)) and \(-0.006\) at \((128,128)\) (\code{pool} \(+0.025\), first order \(+0.026\); hard Top-256 \(-0.035\)).
 At \((128,384)\) mixed ends at \(-0.025\) (\code{pool} \(+0.016\), first order \(+0.021\)).  The drivers
 at \((256,256)\): persistent on both sides \(-0.013\), mixed \(-0.005\), local \(+0.009\), hard on both sides
@@ -167,7 +165,6 @@ a sum of single-flip terms instead of a product.  The unmodified backward was no
 \(46\)--\(70\%\) of their support at every gate and end with the stream stack's code, which is why
 the carry was worth nothing to them; every carry-scope model has the hard model's survival and turnover, so the
 support signal and the carry's persistence add instead of competing.  \textbf{Scope:} one seed, one family (8 layers, \(N=1536\), \(T=2\), no output norm), 3000-step screens and two 10k
-continuations against step-matched 20k baselines; untested: \(T=1\), the post-norm
-arm, more than eight blocks.
+continuations against step-matched 20k baselines; \(T=1\), the post-norm arm and deeper stacks untested.
 
 \end{document}
