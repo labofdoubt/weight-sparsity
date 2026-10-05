@@ -49,8 +49,7 @@ Gate \(\ell\) reads \(u_\ell=c_\ell+v_\ell\) (carried code plus the block's enco
   r_{\ell+1}=D_\ell^{\!\top}\frac{\partial\mathcal L}{\partial(D_\ell c_{\ell+1})}
   \label{eq:hard}
 \end{equation}
-(\(r\) is the unembedding's gradient at the last gate).  In the stream-carried stack the gate has only the second
-consumer: everything block \(\ell{+}1\) does, its own gate included, goes through \(D_\ell\).  RBLapSum relaxes the gate
+(\(r\) is the unembedding's at the last gate).  In the stream-carried stack the gate has only the second consumer: everything block \(\ell{+}1\) does, its own gate included, goes through \(D_\ell\).  RBLapSum relaxes the gate
 as a whole, \(M_\ell\to M_\ell+S_\ell\) (kernel \(\kappa_i=e^{-|s_i-b|/T}/2T\); \(S_{ii}=|u_i|\kappa_i\approx b/2T\) at
 the boundary).  In the stream stack \(S_\ell\) acts on \(r_{\ell+1}\) alone and
 reaches gate \(\ell{-}1\) through \(E_\ell\), the block and \(D_{\ell-1}\), which mix the coordinates.  In the code stack
@@ -104,10 +103,10 @@ with the schedules untouched, two cells continued to 10k.  At step 3000 the grid
 \textbf{At initialization} (Fig.~\ref{fig:mech}a,b) the surrogate's share of the gradient energy at the gates,
 \(\sigma=\lVert S^\top\hat g\rVert^2/\lVert m\odot g\rVert^2\), is \(0.70\) for \code{pool}, \(0.74\) for mixed,
 \(0.31\) for local and \(0.24\) for first order at \(K=32\) (\(0.30\), \(0.20\), \(0.09\), \(0.09\) at \(K=256\)): mixed
-injects as much support signal as the unmodified backward, as a sum instead of a product.
+injects as much support signal as the unmodified backward, as a sum.
 
-\textbf{Runs of the carried code} (Fig.~\ref{fig:mech}c,d; 16 validation sequences, hard forward).  The carry is
-persistent for a subset of the code, not for the code: in the trained hard Top-32 model every gate evicts
+\textbf{Runs of the carried code} (Fig.~\ref{fig:mech}c,d; 16 validation sequences, hard forward).  The carry
+persists for a subset of the code: in the trained hard Top-32 model every gate evicts
 \(30\)--\(54\%\) of the support it receives, an entered feature is still there one gate later with probability
 \(0.51\) and two later \(0.34\), \(12\%\) of the final code was carried from gate 0 and \(54\%\) entered at the last
 gate (hard Top-256: \(0.57\), \(0.41\), \(17\%\), \(34\%\)); an entry at gate 0 is read by \(2.7\)--\(3.1\) blocks on
@@ -127,8 +126,8 @@ the grid's do, \(-0.109\) at 5k and \(-0.100\) at 10k, against hard Top-128 at \
 \(-0.064\), \(-0.063\) and \code{pool} at \(-0.054\), \(-0.045\).  At \((256,256)\), the pathological cell (\code{pool} \(+0.047\) at 3000, its code turning
 over \(46\%\) per gate against the hard model's \(28\%\)), the local scope closes the gap to \(+0.009\) and the mixed
 scope is below hard Top-256 from step 2000, \(-0.0045\) at 3000 (\(1.736\) against \(1.741\)): a surrogate ahead of
-the hard model with the same active count, a first in the code-carried grid (hard Top-512: \(-0.037\); the hard
-baselines also carry a post-norm, worth about \(0.007\) to a hard model in the stream grid).  Continued to 10k the lead widens, \(-0.008\) at 5k and \(-0.014\) at 10k, with \code{pool} at \(+0.037\),
+the hard model with the same active count, a first in the code-carried grid (hard Top-512 \(-0.037\); the hard
+baselines also have the post-norm, worth about \(0.007\) in the stream grid).  Continued to 10k the lead widens, \(-0.008\) at 5k and \(-0.014\) at 10k, with \code{pool} at \(+0.037\),
 \(+0.031\) and hard Top-512 at \(-0.034\), \(-0.029\).  On the diagonal \(J=K\), the stream grid's winning configuration, the mixed scope is below hard Top-\(K\)
 from step 500 on and ends at \(-0.047\) at \((64,64)\) (\code{pool} \(-0.005\), first order \(-0.003\); hard Top-128
 \(-0.059\)) and \(-0.006\) at \((128,128)\) (\code{pool} \(+0.025\), first order \(+0.026\); hard Top-256 \(-0.035\)).
