@@ -67,9 +67,15 @@ SWAPS_DIR = os.environ.get("SWAPS_DIR", "/workspace/analysis/swaps")
 #   ckpt  -- one array per run, the 2k..20k checkpoint ladder
 #   probe -- three arrays per run (score + the two gradients), steps 0..1000
 GRAD_ARRAYS = ("g_ztilde", "g_z")
+# "surr" is not stored: it is dL/dz - M * dL/d~z computed per cell, the support
+# term alone (the gate's backward is M * g + S^T(.), so subtracting the hard
+# path leaves S^T(.): zero outside Top(K+J), the eviction term on TopK, the
+# entry term on the J band); valid for every rblapsum scope, since all of them
+# pass the total upstream through the mask and differ only in what drives S
 GRAD_LABEL = {"g_ztilde": "dL/d\u007ez  (gate output, before the decoder)",
-              "g_z": "dL/dz  (gate input, through the LapSum surrogate)"}
-GRAD_AXIS = {"g_ztilde": "dL/d\u007ez", "g_z": "dL/dz"}
+              "g_z": "dL/dz  (gate input, through the LapSum surrogate)",
+              "surr": "surrogate part of dL/dz  =  dL/dz \u2212 M\u00b7dL/d\u007ez  (the support term alone)"}
+GRAD_AXIS = {"g_ztilde": "dL/d\u007ez", "g_z": "dL/dz", "surr": "S\u1d40g"}
 
 # Categorical slots 1-3 of the reference palette, validated on the all-pairs
 # pairlist in both modes (worst CVD dE 9.2 light / 9.4 dark).  Aqua carries the
@@ -1537,8 +1543,16 @@ if grad_present:
             f"across probes and blocks). They differ only off the pool, where "
             f"dL/dz is zeroed and dL/d\u007ez is not."
         )
-    for gname in grad_present:
-        gv_full = np.asarray(arrays[gname][ci, li, bi, ti], dtype=np.float64)
+    panels = list(grad_present)
+    if "g_z" in arrays and "g_ztilde" in arrays and not hard_gate:
+        panels.append("surr")
+    for gname in panels:
+        if gname == "surr":
+            gv_full = (np.asarray(arrays["g_z"][ci, li, bi, ti], dtype=np.float64)
+                       - (rank < k) * np.asarray(arrays["g_ztilde"][ci, li, bi, ti],
+                                                 dtype=np.float64))
+        else:
+            gv_full = np.asarray(arrays[gname][ci, li, bi, ti], dtype=np.float64)
         pool = rank < (k + j if j else k)
         gsel = pool | grad_rest
         yv = gv_full if grad_signed == "signed" else np.abs(gv_full)
@@ -1608,9 +1622,20 @@ if grad_present:
                     f"|mean|/mean|.| **{abs(gp.mean()) / max(np.abs(gp).mean(), 1e-30):.3f}**"]
             if gj.size:
                 bits.append(f"TopK mean **{gk.mean():+.3g}** vs J mean **{gj.mean():+.3g}**")
+            if gname == "surr":
+                hard_part = (rank < k) * np.asarray(arrays["g_ztilde"][ci, li, bi, ti],
+                                                    dtype=np.float64)
+                e_h = float((hard_part ** 2).sum())
+                e_k = float((gv_full[rank < k] ** 2).sum())
+                e_j = float((gv_full[(rank >= k) & (rank < k + j)] ** 2).sum()) if j else 0.0
+                bits.append(f"energy vs the hard path **{(e_k + e_j) / max(e_h, 1e-300):.3g}** "
+                            f"(TopK side {e_k / max(e_h, 1e-300):.3g}, J side {e_j / max(e_h, 1e-300):.3g})")
             st.caption("  \u00b7  ".join(bits)
                        + ".  |mean|/mean|.| near 1 means the pool is pushed one way; "
-                         "near 0 means the contributions cancel.")
+                         "near 0 means the contributions cancel."
+                       + ("  The energy ratio is this cell's \u03c3 = \u2016S\u1d40g\u2016\u00b2/\u2016M\u00b7g\u2016\u00b2, "
+                          "split into the term on the active members (eviction) and on "
+                          "the J candidates (entry)." if gname == "surr" else ""))
 
 # ---- table view (relief for the light-mode contrast warning) -------------- #
 with st.expander(f"Table: the top {k + j if j else k} neurons in this cell"):
