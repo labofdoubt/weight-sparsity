@@ -128,11 +128,11 @@ about \(0.007\) in the stream grid).  Continued to 10k the lead widens to \(-0.0
 \(-0.059\)) and \(-0.006\) at \((128,128)\) (\code{pool} \(+0.025\), first order \(+0.026\); hard Top-256 \(-0.035\)).
 At \((128,384)\) mixed ends at \(-0.025\) (\code{pool} \(+0.016\), first order \(+0.021\)).  The drivers:
 at \((256,256)\) persistent on both sides \(-0.013\), mixed \(-0.005\), local \(+0.009\), hard on both sides
-\(+0.023\), mixed with \(\rho=0.5\) \(+0.021\); at \((32,224)\) mixed \(-0.118\), mixed with \(\rho=0.5\) \(-0.072\),
-persistent on both sides \(-0.060\), local \(-0.058\).  The entry term works best as if the candidate were carried
-to the end (\(\rho=1\)) at both \(K\); the eviction term wants the actual run at \(K=32\), where the persistent driver
-loses the whole doubling, and is slightly better persistent at \(K=256\) -- the \(K\)-dependence of the active-side
-term seen in the 24-layer study, now confined to \(0.008\).  No carry-scope run's gradient norm exceeded 1 (\code{pool} at
+\(+0.023\), mixed with \(\rho=0.5\) \(+0.021\); at \((128,128)\) persistent \(-0.022\), mixed \(-0.006\); at
+\((32,224)\) mixed \(-0.118\), mixed with \(\rho=0.5\) \(-0.072\), persistent \(-0.060\), local \(-0.058\).  The entry
+term works best as if the candidate were carried to the end (\(\rho=1\)) at every \(K\); the eviction term wants the
+actual run at \(K=32\), where the persistent driver loses the whole doubling, and the persistent sum at
+\(K\ge128\) (by \(0.016\) and \(0.008\)) -- the \(K\)-dependence of the active-side term seen in the 24-layer study.  No carry-scope run's gradient norm exceeded 1 (\code{pool} at
 \((32,224)\): four spikes, to 3.3), and their feature-usage entropy is the hard model's (\code{pool}'s is lower).
 
 \begin{figure}[t]
