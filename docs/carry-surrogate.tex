@@ -41,7 +41,7 @@ This note locates the conflict and removes it at no cost.
 \section{Where the probabilities act}
 
 Gate \(\ell\) reads \(u_\ell=c_\ell+v_\ell\) (carried code plus the block's encoded contribution) and outputs
-\(c_{\ell+1}=M_\ell u_\ell\), \(M_\ell\) the Top-\(K\) mask.  Its output has two consumers, the carry
+\(c_{\ell+1}=M_\ell u_\ell\), \(M_\ell\) the mask.  Its output has two consumers, the carry
 \(u_{\ell+1}=c_{\ell+1}+v_{\ell+1}\) (a skip path) and the read \(x_{\ell+1}=\mathrm N(D_\ell c_{\ell+1})\) (a branch):
 \begin{equation}
   \frac{\partial\mathcal L}{\partial u_\ell}=M_\ell\bigl(g^{\rm c}_{\ell+1}+r_{\ell+1}\bigr),\qquad
@@ -73,8 +73,8 @@ with \(H_\ell=M_\ell(r_{\ell+1}+H_{\ell+1})\) the downstream read gradients a co
 \(R_\ell=r_{\ell+1}+\rho R_{\ell+1}\) every downstream read with a survival factor \(\rho\) per gate, \(H=R=0\) above
 the last gate.  The support term is driven by read gradients only, so no kernel sees another gate's support term
 through the carry: the products are gone, the terms of the gates above still reach gate \(\ell\) added through
-\(M_\ell\), carry and update receive one gradient (R1 of \code{docs/rblapsum-code-residual.tex}), and the cost is two
-per-coordinate sums along the backward, no second pass.  The drivers are the first-order loss change of one flip at
+\(M_\ell\), carry and update receive one gradient (R1 of \code{docs/rblapsum-code-residual.tex}); the cost is two
+per-coordinate sums along the backward.  The drivers are the first-order loss change of one flip at
 gate \(\ell\) (\(c_{\ell+1,i}\) changes by \(\pm u_{\ell,i}\); block \(\ell{+}1\) reads it, later blocks while the
 coordinate stays in the code) under three models of what follows.  \emph{Local}: the next read only -- the stream
 stack's logic, exactly the gradient of a model whose decoder reads a relaxed gate while the carry is hard.
@@ -112,9 +112,9 @@ persistent for a subset of the code, not for the code: in the trained hard Top-3
 \(0.51\) and two later \(0.34\), \(12\%\) of the final code was carried from gate 0 and \(54\%\) entered at the last
 gate (hard Top-256: \(0.57\), \(0.41\), \(17\%\), \(34\%\)); an entry at gate 0 is read by \(2.7\)--\(3.1\) blocks on
 average, against 8 under the persistent model and 1 under the local one.  The \code{pool} surrogate trains the
-model \emph{out of} the carry -- at \((32,224)\) turnover \(63\%\) per gate at step 4000 and \(70\%\) at 20k, survival
-\(0.21\to0.16\), \(77\%\) of the final code entering at the last gate: the stream stack's re-selection at every block,
-in a model that has a carry.  Every carry-scope model keeps
+model \emph{out of} the carry: at \((32,224)\) turnover \(63\%\) per gate at step 4000 and \(70\%\) at 20k, survival
+\(0.21\to0.16\), \(77\%\) of the final code entering at the last gate -- the stream stack's re-selection at every
+block.  Every carry-scope model keeps
 the hard model's code: survival \(0.52\)--\(0.61\), turnover \(30\)--\(40\%\) at step 3000, and at 10k
 \(0.47\)/\(45\%\) and \(0.59\)/\(33\%\) for the mixed \((32,224)\) and \((256,256)\) models (hard at 20k: \(0.51\)/\(39\%\),
 \(0.57\)/\(32\%\)).
@@ -131,9 +131,11 @@ scope is below hard Top-256 from step 2000, \(-0.0045\) at 3000 (\(1.736\) again
 the hard model with the same active count, a first in the code-carried grid (hard Top-512: \(-0.037\); the hard
 baselines also carry a post-norm, worth about \(0.007\) to a hard model in the stream grid).  Continued to 10k the lead widens, \(-0.008\) at 5k and \(-0.014\) at 10k, with \code{pool} at \(+0.037\),
 \(+0.031\) and hard Top-512 at \(-0.034\), \(-0.029\).  On the diagonal \(J=K\), the stream grid's winning configuration, the mixed scope is below hard Top-\(K\)
-from step 500 on at \((128,128)\) and ends at \(-0.006\) (\code{pool} \(+0.025\); hard Top-256 \(-0.035\)), and
-\PH{} at \((64,64)\) (\code{pool} \(-0.005\); hard Top-128 \(-0.059\)); with the measured
-survival \(\rho=0.5\) in the persistent chain \PH{}.  No carry-scope run's gradient norm exceeded 1 (\code{pool} at
+from step 500 on and ends at \(-0.047\) at \((64,64)\) (\code{pool} \(-0.005\), first order \(-0.003\); hard Top-128
+\(-0.059\)) and \(-0.006\) at \((128,128)\) (\code{pool} \(+0.025\), first order \(+0.026\); hard Top-256 \(-0.035\)).
+With the measured survival \(\rho=0.5\) in the persistent chain the mixed scope gives \(-0.072\) at \((32,224)\) and
+\(+0.021\) at \((256,256)\), less than at \(\rho=1\) at both \(K\): the entry term works best evaluated as if the
+candidate were carried to the end.  No carry-scope run's gradient norm exceeded 1 (\code{pool} at
 \((32,224)\): four spikes, to 3.3); their feature-usage entropy is the hard model's (\(0.79\), \(0.94\); hard
 \(0.73\), \(0.93\); \code{pool} \(0.59\), \(0.89\)).
 
