@@ -1,0 +1,64 @@
+\documentclass[10pt,a4paper]{article}
+\usepackage[margin=1.5cm,top=1.25cm,bottom=1.3cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{caption}
+\usepackage{titlesec}
+\captionsetup{font=footnotesize,labelfont=bf,skip=2pt}
+\titleformat{\section}{\normalfont\bfseries}{\thesection}{0.6em}{}
+\titlespacing*{\section}{0pt}{5pt}{1pt}
+\setlength{\parskip}{1.5pt plus 1pt}
+\setlength{\parindent}{0pt}
+\setlength{\abovedisplayskip}{3pt}\setlength{\belowdisplayskip}{3pt}
+\setlength{\textfloatsep}{6pt plus 2pt}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\PH}[1]{\textcolor{red}{[#1]}}
+\begin{document}
+{\centering
+{\large\bfseries Support-aware training of hard Top-$K$ under the code residual without a surrogate backward}\\[1pt]
+{\small 8-layer TinyStories models of the K+J notes, \code{code\_residual}, abs-TopK over \(N=1536\); runs \code{ma\_alt\_*} (madrid), configs \code{configs/cr\_kj/alt/}.}\par}
+
+\section{Question}
+The K+J notes ask for a hard Top-\(K\) model whose training is aware of other supports: candidates just outside
+the support should receive a signal about whether they belong in it.  RBLapSum supplies that signal as a surrogate
+backward -- a relaxed Jacobian \(M+S\) of the gate, with \(S\) the kernel-weighted exchange term over the
+Top-\((K{+}J)\) pool -- and under the code residual, where the gate's output is also a skip connection, the relaxed
+Jacobians of successive gates multiply along the carry (\code{docs/carry-surrogate.tex}).  Fixing that by
+re-routing gradients is a repair of a surrogate that does not fit the architecture.  This note asks the question
+the other way round: which training rules give the candidates a signal \emph{without} a surrogate backward, so
+that nothing can compound because every backward is the exact gradient of some forward?
+
+\section{Three candidates}
+\textbf{A. Stochastic support width} (\code{stochastic\_width}).  Every forward is a hard Top-\(K'\) forward; per
+token, \(K'\) is drawn from a distribution on \(\{K,\dots,K{+}J\}\) in training and is \(K\) at evaluation.  The
+objective is \(\mathbb E_{K'}\,\mathcal L(K')\) and the gradient is exact; a candidate at rank \(K{+}m\) is active,
+and trained, with probability \(P(K'\ge K{+}m)\), so the distribution on \(K'\) \emph{is} the probability
+distribution on the pool, realized in the forward instead of in the backward.  Three distributions: uniform on
+\([K,K{+}J]\); two-point (\(K{+}J\) with probability \(\tfrac12\), else \(K\)); geometric excess with mean \(J/4\).
+This is the width sampling of universally slimmable networks (Yu \& Huang 2019) and the nested training of
+Matryoshka SAEs (Bussmann et al.\ 2025) applied to the support, with the smallest width as the deployed one.
+Under the code residual the carried code is hard at every width, so the carry is exact by construction.
+
+\textbf{B. Soft straight-through} (\code{surrogate\_mode=soft\_ste}).  Hard forward; backward Jacobian
+\(M+(1-M)\,p\) over the pool, \(p_i=F((|u_i|-b)/T)\) the kernel's CDF: a candidate receives the gradient it would
+receive if present, weighted by its probability of being present.  No exchange term.  Every per-coordinate gain
+is at most one, so the products along the carry are bounded by one; the price is that the candidates' values are
+trained on a counterfactual, as in any straight-through estimator (Bengio et al.\ 2013; JumpReLU SAEs,
+Rajamanoharan et al.\ 2024).
+
+\textbf{C. RBLapSum on the candidates only} (\code{rblapsum\_surrogate\_scope=inactive}).  The support term is
+applied to the \(J\) inactive members and the \(K\) active ones keep the exact gradient.  The argument: the active
+values already have a gradient, and if the loss wants one smaller it shrinks and leaves; only the entry decision is
+blind.  A candidate is not carried (its code value is zero), so the term is applied once per entry event and
+cannot compound along the identity.
+
+\section{Results}
+\PH{}
+
+\section{Reading}
+\PH{}
+
+\end{document}

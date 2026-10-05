@@ -49,6 +49,11 @@ plt.rcParams.update({
 # scope -> (label, color, linestyle)
 STYLE = {
     "hard": ("hard Top-$K$", INK, "-"),
+    "sw_uni": ("stochastic width, uniform", "#1f77b4", "-"),
+    "sw_two": ("stochastic width, two-point", "#17becf", "-"),
+    "sw_geo": ("stochastic width, geometric", "#9467bd", "-"),
+    "ste": ("soft straight-through", "#2ca02c", "-"),
+    "inact": ("RBLapSum, candidates only", "#d62728", "-"),
     "cm05": (r"carry, mixed, $\rho{=}0.5$", AQUA, ":"),
     "pool": ("RBLapSum, pool", ORANGE, "-"),
     "fo": ("first order", YELLOW, "-"),
@@ -439,6 +444,74 @@ def fig_mech():
     save(fig, "fig_mech")
 
 
+# --------------------------------------------------------------------------- #
+# Figure 5: alternatives to the surrogate (stochastic width, soft STE, candidates-only)
+# --------------------------------------------------------------------------- #
+ALT_KEYS = ("sw_uni", "sw_two", "sw_geo", "ste", "inact")
+
+
+def alt_run_of(cell, key):
+    K, J = cell
+    if key in ("sw_uni", "sw_two", "sw_geo"):
+        return f"ma_alt_{key}_k{K}_j{J}"
+    if key == "ste":
+        return f"ma_alt_ste_k{K}_j{J}_t2"
+    if key == "inact":
+        return f"ma_alt_inact_k{K}_j{J}_t2"
+    return run_of(cell, key)
+
+
+def fig_alt(max_step=3000):
+    cv = {**curves(), **(load(DATA, "curves_alt.json") or {})}
+    cells = [c for c in ((32, 224), (128, 128), (256, 256)) if any(alt_run_of(c, k) in cv for k in ALT_KEYS)]
+    if not cells:
+        return
+    fig, axes = plt.subplots(1, len(cells), figsize=(2.4 * len(cells) + 0.3, 1.8),
+                             gridspec_kw={"wspace": 0.5}, squeeze=False)
+    for ax, cell, letter in zip(axes[0], cells, "abc"):
+        K, J = cell
+        hard_k, hard_kj = CELLS[cell]
+        h = series(cv, hard_k)
+        for key in ("pool", "cm") + ALT_KEYS:
+            run = alt_run_of(cell, key) if key in ALT_KEYS else run_of(cell, key)
+            if key == "cm":
+                run = f"be_cr_rbk_k{K}_j{J}_t2_cm"
+            d = series(cv, run)
+            pts = [(s_, v - h[s_]) for s_, v in sorted(d.items()) if s_ in h and s_ <= max_step]
+            if not pts:
+                continue
+            lab, color, ls = STYLE[key]
+            ax.plot(*zip(*pts), ls, color=color, lw=1.5 if key in ("pool", "cm") else 1.2,
+                    marker="o", ms=2.0, mfc="white", mew=0.6, label=lab)
+        hk = series(cv, hard_kj)
+        pts = [(s_, v - h[s_]) for s_, v in sorted(hk.items()) if s_ in h and s_ <= max_step]
+        if pts:
+            ax.plot(*zip(*pts), "--", color=INK, lw=0.9, label=rf"hard Top-{K + J}")
+        ax.axhline(0, color=INK, lw=0.8)
+        ax.set_xlim(400, max_step + 50)
+        ax.set_xticks([1000, 2000, 3000]); ax.set_xticklabels(["1k", "2k", "3k"])
+        ax.set_xlabel("step")
+        ax.set_ylabel(rf"val CE $-$ hard Top-{K}")
+        ax.set_title(rf"{letter}  $K{{=}}{K}$, $J{{=}}{J}$")
+    axes[0][-1].legend(fontsize=4.6, loc="best")
+    save(fig, "fig_alt")
+
+
+def table_alt(step=3000):
+    cv = {**curves(), **(load(DATA, "curves_alt.json") or {})}
+    for cell in ((32, 224), (64, 64), (128, 128), (256, 256)):
+        K, J = cell
+        h = series(cv, CELLS[cell][0]); hk = series(cv, CELLS[cell][1])
+        if step not in h:
+            continue
+        row = []
+        for key in ("pool", "fo", "cm") + ALT_KEYS:
+            run = f"be_cr_rbk_k{K}_j{J}_t2_cm" if key == "cm" else (alt_run_of(cell, key) if key in ALT_KEYS else run_of(cell, key))
+            d = series(cv, run)
+            row.append(f"{key} {d[step] - h[step]:+.3f}" if step in d else f"{key} --")
+        print(f"K={K} J={J}: " + "  ".join(row) + f"  hard{K + J} {hk[step] - h[step]:+.3f}")
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     fig_init()
@@ -451,3 +524,5 @@ if __name__ == "__main__":
     fig_long()
     fig_training()
     fig_mech()
+    fig_alt()
+    table_alt()
