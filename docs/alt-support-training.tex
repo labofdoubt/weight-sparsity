@@ -58,10 +58,9 @@ cannot compound along the identity.
 \section{Results}
 
 \textbf{Setup.}  The code-carried cells of the K+J grid, 3000-step screens with the grid's 20k schedule untouched,
-eight RTX 5090 (the grid's own machine), step-matched against the grid's hard Top-\(K\) baselines (post-norm) and
-its RBLapSum \code{pool} cells; the carry-scope results of \code{docs/carry-surrogate.tex} are shown for reference.
-Candidate A trains the hard baseline's own config (post-norm) with a random width; B and C train the \code{pool}
-cell's config (no post-norm, \(T=2\)) with one field changed.
+step-matched against the grid's hard Top-\(K\) baselines (post-norm) and its RBLapSum \code{pool} cells, with the
+carry scopes of \code{docs/carry-surrogate.tex} for reference.  A trains the hard baseline's config (post-norm) with
+a random width; B and C train the \code{pool} cell's config (no post-norm, \(T=2\)) with one field changed.
 
 \begin{figure}[b]
 \centering
@@ -95,10 +94,9 @@ scope from \(-0.118\) to \(-0.100\); hard Top-64 is at \(-0.063\) (Fig.~\ref{fig
 \textbf{What a stochastic-width model is} (Fig.~\ref{fig:extra}c,d).  Evaluated across its training range, the model
 is not a slimmable ladder: its loss is lowest at an intermediate width and rises again toward \(K{+}J\), where it is
 far above the hard model trained there (\(1.736\) against \(1.703\) at \(K'=512\)).  At the narrow end it beats the hard
-models: the uniform model trained at \(K=32\) gives \(1.809\) at \(K'=64\) against \(1.835\) for hard Top-64, and both
-\(K=256\) models beat hard Top-256 at \(K'=256\).  The random width acts as a regularizer on the support -- the
-network cannot rely on any particular candidate being present -- rather than as a way of training several models
-at once.
+models (the uniform model trained at \(K=32\) gives \(1.809\) at \(K'=64\) against \(1.835\) for hard Top-64).  The
+random width acts as a regularizer on the support -- the network cannot rely on any particular candidate being
+present -- not as a way of training several models at once.
 
 \begin{table}[t]
 \centering\footnotesize
@@ -160,8 +158,7 @@ worth \(0.1\) nats, a distribution over widths does not reach what a gradient on
 margin does not decay with training where the surrogates' do (\(-0.036\) flat to 10k against \(-0.118\to-0.100\)
 and \(-0.061\to-0.045\)).
 
-\textbf{Scope.}  One seed, 3000-step screens (two 10k continuations), the \(T=2\) code-carried family of the K+J
-grid; the stochastic-width models carry the post-norm of the hard baselines, the surrogate cells do not (worth
-about \(0.007\) to a hard model in the stream grid).
+\textbf{Scope.}  One seed, 3000-step screens and two 10k continuations in the \(T=2\) code-carried family; the
+stochastic-width models carry the hard baselines' post-norm, the surrogate cells do not (about \(0.007\)).
 
 \end{document}
