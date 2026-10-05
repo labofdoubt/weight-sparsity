@@ -1073,6 +1073,13 @@ could move numerics in a surviving mode.
 * `torch.multinomial` raises a **device-side assert** on non-finite logits, so a
   collapsed model crashes in the *sampling* callback rather than in training.
   Read that as a symptom, not the cause.
+* **Two 8x768 trainings do not share one 32 GB card.** At micro-batch 24 each
+  process settles at 14-16 GB (the caching allocator keeps what it touched),
+  and the second one dies on a 2.3 GB allocation in its first backward --
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` does not change that.  On
+  a single RTX 5090 run `gpu_queue.sh --gpus 0` (one worker), and put the
+  CPU-only probes (`CUDA_VISIBLE_DEVICES=""`) beside it instead (bergen,
+  2026-10-05: three queued jobs burned through in 90 s this way).
 
 ---
 
