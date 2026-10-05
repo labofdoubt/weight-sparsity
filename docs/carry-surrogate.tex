@@ -26,8 +26,8 @@
 
 {\centering
 {\large\bfseries A surrogate for the carried code: RBLapSum on the branch, the carry left hard}\\[1pt]
-{\small 8-layer TinyStories models of the K+J notes, \code{code\_residual}, abs-TopK over \(N=1536\), \(T=2\), MD optimizer, one seed.
-Runs \code{be\_cr\_*} (box bergen), configs \code{configs/cr\_kj/carry/}, \code{rblapsum\_surrogate\_scope=carry\_*}.}\par}
+{\small 8-layer TinyStories models of the K+J notes, \code{code\_residual}, abs-TopK over \(N=1536\), \(T=2\), MD optimizer,
+one seed; runs \code{be\_cr\_*}, configs \code{configs/cr\_kj/carry/}, \code{rblapsum\_surrogate\_scope=carry\_*}.}\par}
 
 \section{The problem}
 
@@ -124,8 +124,7 @@ the grid's do: \(-0.100\) at 10k, against hard Top-128 \(-0.117\), hard Top-64 \
 hard model's \(28\%\)), the local scope closes the gap to \(+0.009\) and the mixed
 scope is below hard Top-256 from step 2000, \(-0.0045\) at 3000 (\(1.736\) against \(1.741\)): a surrogate ahead of
 the hard model with the same active count (hard Top-512 \(-0.037\); the hard baselines also have the post-norm, worth
-about \(0.007\) in the stream grid).  Continued to 10k the lead widens to \(-0.014\) (\code{pool} \(+0.031\), hard Top-512 \(-0.029\)).  On the diagonal \(J=K\) (the stream grid's winning cells) the mixed scope is below hard Top-\(K\) from step
-500 on and ends at \(-0.047\) at \((64,64)\) (\code{pool} \(-0.005\), first order \(-0.003\); hard Top-128
+about \(0.007\) in the stream grid).  Continued to 10k the lead widens to \(-0.014\) (\code{pool} \(+0.031\), hard Top-512 \(-0.029\)).  On the diagonal \(J=K\) the mixed scope is below hard Top-\(K\) from step 500 on and ends at \(-0.047\) at \((64,64)\) (\code{pool} \(-0.005\), first order \(-0.003\); hard Top-128
 \(-0.059\)) and \(-0.006\) at \((128,128)\) (\code{pool} \(+0.025\), first order \(+0.026\); hard Top-256 \(-0.035\)).
 At \((128,384)\) mixed ends at \(-0.025\) (\code{pool} \(+0.016\), first order \(+0.021\)).  The drivers:
 at \((256,256)\) persistent on both sides \(-0.013\), mixed \(-0.005\), local \(+0.009\), hard on both sides
@@ -134,8 +133,7 @@ persistent on both sides \(-0.060\), local \(-0.058\).  The entry term works bes
 to the end (\(\rho=1\)) at both \(K\); the eviction term wants the actual run at \(K=32\), where the persistent driver
 loses the whole doubling, and is slightly better persistent at \(K=256\) -- the \(K\)-dependence of the active-side
 term seen in the 24-layer study, now confined to \(0.008\).  No carry-scope run's gradient norm exceeded 1 (\code{pool} at
-\((32,224)\): four spikes, to 3.3); their feature-usage entropy is the hard model's (\(0.79\), \(0.94\); hard
-\(0.73\), \(0.93\); \code{pool} \(0.59\), \(0.89\)).
+\((32,224)\): four spikes, to 3.3), and their feature-usage entropy is the hard model's (\code{pool}'s is lower).
 
 \begin{figure}[t]
 \centering
@@ -159,7 +157,7 @@ code stack an entering feature is carried, so the first-order value of admitting
 reach -- a sum the stream stack, which re-encodes at every block, does not have.  The mixed scope evaluates inactive candidates on that sum and active members
 on the reads their run reaches: it doubles the gain at \(K=32\) and turns the loss at \(K=256\) into a gain that is
 still widening at 10k, with the unmodified backward's surrogate energy (\(\sigma=0.74\) against \(0.70\)) delivered as
-a sum of single-flip terms instead of a product.  The unmodified backward was not too strong; it was multiplying.
+a sum of single-flip terms instead of a product.
 
 \textbf{The model uses the carry only when the surrogate leaves it alone.}  \code{pool}-trained models re-select
 \(46\)--\(70\%\) of their support at every gate and end with the stream stack's code, which is why
