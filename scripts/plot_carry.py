@@ -335,7 +335,7 @@ def fig_long(max_step=10000):
 
 def fig_training():
     cv = curves()
-    fig, axes = plt.subplots(1, 4, figsize=(7.2, 1.55), gridspec_kw={"wspace": 0.55})
+    fig, axes = plt.subplots(1, 4, figsize=(7.2, 1.45), gridspec_kw={"wspace": 0.55})
     keys = ("pool", "fo", "ch", "cp", "cm05", "cm", "cl")
     for ax, cell, letter in zip(axes[:2], ((32, 224), (256, 256)), "ab"):
         delta_panel(ax, cv, cell, keys, 3000, show_pool_ref=True)
@@ -376,7 +376,7 @@ def fig_training():
 
 def fig_mech():
     """One row: the backward at initialization (a, b) and the runs of the code (c, d)."""
-    fig, axes = plt.subplots(1, 4, figsize=(7.2, 1.5), gridspec_kw={"wspace": 0.5})
+    fig, axes = plt.subplots(1, 4, figsize=(7.2, 1.42), gridspec_kw={"wspace": 0.5})
     # (a, b) initialization
     for ax, (kj, title) in zip(axes[:2], [("k32_j224", r"a  step 0, $K{=}32$, $J{=}224$"),
                                           ("k256_j256", r"b  step 0, $K{=}256$, $J{=}256$")]):
