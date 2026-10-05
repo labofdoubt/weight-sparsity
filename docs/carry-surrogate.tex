@@ -123,8 +123,8 @@ at \(-0.058\) below hard Top-32, where \code{pool} is at \(-0.061\) and first or
 by \(0.02\) at step 1000 and the two coincide from 2000.  The mixed scope ends at \(-0.118\), twice the margin of the
 unmodified surrogate and the margin of hard Top-128 over hard Top-32 at that step (\(-0.124\)): 32 active features at
 the loss of the hard model that activates 128 (\(1.782\) against \(1.776\)).  Continued to 10k its margin decays as
-the grid's do, \(-0.109\) at 5k and \PH{} at 10k, against hard Top-128 at \(-0.121\), \(-0.117\) and \code{pool} at
-\(-0.054\), \(-0.045\).  At \((256,256)\), the pathological cell (\code{pool} \(+0.047\) at 3000, its code turning
+the grid's do, \(-0.109\) at 5k and \(-0.100\) at 10k, against hard Top-128 at \(-0.121\), \(-0.117\), hard Top-64 at
+\(-0.064\), \(-0.063\) and \code{pool} at \(-0.054\), \(-0.045\).  At \((256,256)\), the pathological cell (\code{pool} \(+0.047\) at 3000, its code turning
 over \(46\%\) per gate against the hard model's \(28\%\)), the local scope closes the gap to \(+0.009\) and the mixed
 scope is below hard Top-256 from step 2000, \(-0.0045\) at 3000 (\(1.736\) against \(1.741\)): a surrogate ahead of
 the hard model with the same active count, which no code-carried cell of the grid achieved (hard Top-512: \(-0.037\);
