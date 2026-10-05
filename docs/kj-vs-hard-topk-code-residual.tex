@@ -87,8 +87,10 @@ The compounding of support terms along the carry is therefore not what
 limits the code-carried surrogate at $T=2$: the full term with the plain
 backward is its best variant at every $J$. At $K = 64$ the same ordering
 holds with penalties two to five times smaller ($0.001$--$0.019$), and the
-first-order scope is within $0.005$ of the full term. \PH{K=128, 256 to
-follow}
+first-order scope is within $0.005$ of the full term. At $K = 128$ the
+ordering reverses: $\gamma = 0.4$ gains $0.020$ at $J = 128$ and the
+first-order scope $0.005$--$0.008$, so the strength of the support term
+that the carry can use decreases with $K$. \PH{K=256 to follow}
 \end{itemize}
 
 % ============================================================
@@ -645,7 +647,41 @@ $\gamma = 0.6$ and $\gamma = 0.4$ panels the $J = 448$ curves cross late in
 training and the stream-carried cell ends below.}
 \end{figure}
 
-%%SWEEP-K128%%
+\subsection*{$K = 128$}
+
+\begin{center}\small
+\begin{tabular}{lcccccc}
+\toprule
+$J$ & stream & code, $\gamma{=}1$ & $\gamma{=}0.8$ & $\gamma{=}0.6$ & $\gamma{=}0.4$ & first-order \\
+\midrule
+$128$ & 1.4802 & 1.4507 & 1.4515 & 1.4461 & 1.4312 & 1.4423 \\
+$384$ & 1.4598 & 1.4436 & 1.4474 & 1.4435 & 1.4393 & 1.4385 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The ordering reverses. Relative to the full code-carried surrogate,
+$\gamma = 0.8$ is within $0.004$, $\gamma = 0.6$ gains $0.005$ at $J = 128$
+and nothing at $J = 384$, $\gamma = 0.4$ gains $0.020$ and $0.004$, and the
+first-order scope gains $0.008$ and $0.005$. The best variant is
+$\gamma = 0.4$ at $J = 128$ ($1.4312$) and the first-order scope at
+$J = 384$ ($1.4385$), and under $\gamma = 0.4$ the wider window is the worse
+one ($1.4393$ against $1.4312$), the only reversal in $J$ of the sweep.
+Every code-carried variant lies below the stream-carried cell of its $J$,
+by $0.013$--$0.049$. Across $K$ the penalty for weakening the term thus goes
+from $0.007$--$0.034$ at $K = 32$ through $0.001$--$0.019$ at $K = 64$ to a
+gain of up to $0.020$ at $K = 128$. The best $K = 128$ cell still lies
+$0.013$ above code-carried hard Top-128 ($1.4187$) and $0.041$ above hard
+Top-256.
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_k128_sweep.png}
+\caption{$K = 128$, $T = 2$, no output norm; panels and colours as in the
+$K = 32$ figure, $J = 128, 384$. Every solid curve lies below the dashed
+curve of its $J$ in all four panels, with the widest gaps in the
+$\gamma = 0.4$ and first-order panels; in the $\gamma = 0.4$ panel the
+$J = 128$ curve ends below the $J = 384$ one.}
+\end{figure}
 
 %%SWEEP-K256%%
 
@@ -709,7 +745,14 @@ on opposite sides of its threshold at this depth. At $K = 64$ the
 penalties for weakening the term shrink to $0.001$--$0.019$ and the
 first-order scope becomes nearly equivalent to the full backward, so the
 part of the surrogate's gradient that the carry compounds is itself small
-once the window holds 64 active features. \PH{sweep at K=128, 256}
+once the window holds 64 active features. At $K = 128$ the sign flips:
+damping the term to $\gamma = 0.4$ or removing its products gains up to
+$0.020$, which is the 24-layer study's finding at $K = 256$ -- the term on
+the active members crowds the rank boundary once many features are active
+-- now visible at eight blocks. Under the carry the best support scale
+therefore falls with $K$, from the full term at $K = 32$ to about $0.4$ at
+$K = 128$, and none of the variants closes the gap to the code-carried hard
+model at the same active count. \PH{sweep at K=256}
 
 % ============================================================
 \section{Scope}
