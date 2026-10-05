@@ -512,6 +512,36 @@ def table_alt(step=3000):
         print(f"K={K} J={J}: " + "  ".join(row) + f"  hard{K + J} {hk[step] - h[step]:+.3f}")
 
 
+def fig_widths():
+    """Validation CE of one checkpoint at several inference widths, against the hard ladder."""
+    import glob
+    cv = curves()
+    files = sorted(glob.glob(os.path.join(DATA, "alt", "widths_ma_alt_sw_*.json")))
+    if not files:
+        return
+    fig, axes = plt.subplots(1, 2, figsize=(5.0, 1.8), gridspec_kw={"wspace": 0.45})
+    ladder = {Kp: series(cv, f"ma_cr_hard_k{Kp}_pnorm").get(3000) for Kp in (32, 64, 128, 256, 512)}
+    for ax, K in zip(axes, (32, 256)):
+        xs = [Kp for Kp in sorted(ladder) if Kp >= K and ladder[Kp] is not None]
+        ax.plot(xs, [ladder[Kp] for Kp in xs], "--o", color=INK, ms=2.5, lw=0.9, label="hard Top-$K'$ trained at $K'$")
+        for f in files:
+            d = json.load(open(f))
+            if d["k_train"] != K:
+                continue
+            key = "sw_two" if "_two_" in f else ("sw_uni" if "_uni_" in f else "sw_geo")
+            w = sorted((int(a), b) for a, b in d["widths"].items())
+            lab, color, _ = STYLE[key]
+            ax.plot([a for a, _ in w], [b for _, b in w], "-o", color=color, ms=2.5, lw=1.2, label=lab + f", trained at $K{{=}}{K}$")
+        ax.set_xscale("log", base=2)
+        ticks = xs if K == 32 else [256, 320, 384, 448, 512]
+        ax.set_xticks(ticks); ax.set_xticklabels([str(x) for x in ticks]); ax.minorticks_off()
+        ax.set_xlabel(r"inference width $K'$")
+        ax.set_ylabel("val CE at step 3000")
+        ax.set_title(rf"{'ab'[K == 256]}  models trained at $K{{=}}{K}$")
+        ax.legend(fontsize=4.8, loc="best")
+    save(fig, "fig_widths")
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     fig_init()
@@ -526,3 +556,4 @@ if __name__ == "__main__":
     fig_mech()
     fig_alt()
     table_alt()
+    fig_widths()

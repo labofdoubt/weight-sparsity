@@ -56,7 +56,59 @@ blind.  A candidate is not carried (its code value is zero), so the term is appl
 cannot compound along the identity.
 
 \section{Results}
-\PH{}
+
+\textbf{Setup.}  The code-carried cells of the K+J grid, 3000-step screens with the grid's 20k schedule untouched,
+eight RTX 5090 (the grid's own machine), step-matched against the grid's hard Top-\(K\) baselines (post-norm) and
+its RBLapSum \code{pool} cells; the carry-scope results of \code{docs/carry-surrogate.tex} are shown for reference.
+Candidate A trains the hard baseline's own config (post-norm) with a random width; B and C train the \code{pool}
+cell's config (no post-norm, \(T=2\)) with one field changed.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=.74\textwidth]{figures/carry/fig_alt.png}
+\caption{Validation CE minus the code-carried hard Top-\(K\) baseline over the first 3000 steps; dashed, hard
+Top-\((K{+}J)\).  \textbf{a} \((32,224)\); \textbf{b} \((256,256)\).}
+\label{fig:alt}
+\end{figure}
+
+\textbf{At step 3000, minus hard Top-\(K\)} (Fig.~\ref{fig:alt}, Table~\ref{tab:alt}).  At \((256,256)\), the cell
+where the unmodified surrogate loses \(0.047\), both stochastic widths beat the hard model -- two-point \(-0.008\),
+uniform \(-0.006\) -- with no surrogate and no gradient modification, matching the best carry scope (\(-0.005\));
+candidates-only RBLapSum ends at \(+0.004\) and the soft straight-through at \(+0.030\).  At \((32,224)\) the two-point
+width gives \(-0.019\), the uniform width \(+0.014\) (the model is trained at a mean width of 144 and evaluated at
+32), candidates-only RBLapSum \(-0.032\), soft straight-through \(+0.018\); the unmodified surrogate is at \(-0.061\)
+and the mixed carry scope at \(-0.118\).  \PH{round 2: two-point p=0.25, geometric J/16, diagonal cells, 10k}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=.74\textwidth]{figures/carry/fig_widths.png}
+\caption{One checkpoint, several inference widths: validation CE at step 3000 of the stochastic-width models
+evaluated with hard Top-\(K'\) for \(K'\) in their training range, against the grid's hard models trained at each
+\(K'\) (\code{analysis/eval\_widths.py}).}
+\label{fig:widths}
+\end{figure}
+
+\textbf{What a stochastic-width model is} (Fig.~\ref{fig:widths}).  Evaluated across its training range, the model
+is not a slimmable ladder: its loss is lowest at an intermediate width and rises again toward \(K{+}J\), where it is
+far above the hard model trained there (\(1.736\) against \(1.703\) at \(K'=512\)).  At the narrow end it beats the hard
+models: the uniform model trained at \(K=32\) gives \(1.809\) at \(K'=64\) against \(1.835\) for hard Top-64, and both
+\(K=256\) models beat hard Top-256 at \(K'=256\).  The random width acts as a regularizer on the support -- the
+network cannot rely on any particular candidate being present -- rather than as a way of training several models
+at once.
+
+\begin{table}[t]
+\centering\footnotesize
+\begin{tabular}{llccccccc}
+\toprule
+\(K\) & \(J\) & pool & carry mixed & width, uniform & width, two-point & width, geometric & soft STE & cand.\ only \\
+\midrule
+32 & 224 & \(-0.061\) & \(-0.118\) & \(+0.014\) & \(-0.019\) & \PH{} & \(+0.018\) & \(-0.032\) \\
+256 & 256 & \(+0.047\) & \(-0.005\) & \(-0.006\) & \(-0.008\) & \PH{} & \(+0.030\) & \(+0.004\) \\
+\bottomrule
+\end{tabular}
+\caption{Validation CE at step 3000 minus hard Top-\(K\) of the row (\(1.899\), \(1.741\)).}
+\label{tab:alt}
+\end{table}
 
 \section{Reading}
 \PH{}
