@@ -84,7 +84,9 @@ and \(\tfrac14\), geometric \(J/16\) \(-0.025\), geometric \(J/4\) \(-0.034\); a
 straight-through \(+0.018\), the unmodified surrogate \(-0.061\), the mixed carry scope \(-0.118\).
 Continued to 10k at \((256,256)\) (Fig.~\ref{fig:extra}b), the two-point width holds its margin, \(-0.008\) at every
 point from 4k on, while the mixed carry scope's grows from \(-0.005\) to \(-0.014\) and overtakes it at 6k; hard
-Top-512 is at \(-0.029\).  At \((32,224)\) \PH{10k geometric}.
+Top-512 is at \(-0.029\).  At \((32,224)\) the geometric width holds \(-0.033\) to \(-0.041\) at every point to
+10k (\(-0.036\) at 10k), while the unmodified surrogate decays from \(-0.061\) to \(-0.045\) and the mixed carry
+scope from \(-0.118\) to \(-0.100\); hard Top-64 is at \(-0.063\) (Fig.~\ref{fig:extra}a).
 
 
 
@@ -154,9 +156,11 @@ measurements of \code{docs/carry-surrogate.tex} found decisive at \(K=32\), and 
 by a rule about where the kernel acts.  The stochastic width is the natural surrogate-free training of a hard
 Top-\(K\) under the code residual and matches them at large \(K\), where the hard model's own selection is already
 good and the surrogate's job is only to keep candidates alive; at small \(K\), where the selection itself is
-worth \(0.1\) nats, a distribution over widths does not reach what a gradient on the ranking does.  \PH{10k}
+worth \(0.1\) nats, a distribution over widths does not reach what a gradient on the ranking does, although its
+margin does not decay with training where the surrogates' do (\(-0.036\) flat to 10k against \(-0.118\to-0.100\)
+and \(-0.061\to-0.045\)).
 
-\textbf{Scope.}  One seed, 3000-step screens (one 10k continuation), the \(T=2\) code-carried family of the K+J
+\textbf{Scope.}  One seed, 3000-step screens (two 10k continuations), the \(T=2\) code-carried family of the K+J
 grid; the stochastic-width models carry the post-norm of the hard baselines, the surrogate cells do not (worth
 about \(0.007\) to a hard model in the stream grid).
 
