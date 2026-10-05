@@ -544,6 +544,27 @@ class ActivationBottleneckConfig:
     # consistently (an exact reparameterization) and |u| kappa = 1 / 2T at the
     # boundary at every scale.  False keeps the absolute temperature.
     rblapsum_relative_temperature: bool = False
+    # How the kernel width T is set per token (surrogate_mode="rblapsum"; named
+    # rblapsum_kernel_width because rblapsum_temperature_mode is a removed legacy
+    # field that the config migration drops):
+    #   "fixed"          T = temperature (absolute score units)
+    #   "relative_b"     T = temperature * b, b = s_(K+1) the rank boundary
+    #                    (what rblapsum_relative_temperature=true selects)
+    #   "relative_span"  T = temperature * (s_(K+1) - s_(K+J)), the score
+    #                    interval the J candidates occupy, so `temperature`
+    #                    is the fraction of the pool the kernel covers
+    # The two relative rules are proportional on a given cell (b / span is
+    # 1.6-2.8 for K = 32..256, constant over training) and differ in how the
+    # reach scales with K and J (2026-10-06).
+    rblapsum_kernel_width: str = "fixed"
+    # Hold the support term's strength at the boundary fixed: the per-token
+    # support scale becomes gamma = 2 s T / b, so that gamma * |u| kappa = s
+    # for a member sitting at the boundary (|u| = b, kappa = 1/2T), whatever T
+    # and b are.  None keeps the constant rblapsum_support_scale.  With a
+    # relative T the strength is then constant over training; with the fixed
+    # T it is not (b falls ~3x over 20k steps).  rblapsum (pool and inactive
+    # scopes) only.
+    rblapsum_support_strength: Optional[float] = None
 
     # Token-centered support term (surrogate_mode="rblapsum" only): per gate
     # and feature, the mean over the micro-batch's tokens of the support term
@@ -839,6 +860,27 @@ class ActivationBottleneckConfig:
             raise ValueError(
                 "rblapsum_center_tokens applies to the hard-forward "
                 f"surrogate_mode='rblapsum' only, got {self.surrogate_mode!r}")
+        if self.rblapsum_kernel_width not in ("fixed", "relative_b", "relative_span"):
+            raise ValueError(
+                f"unknown rblapsum_kernel_width: {self.rblapsum_kernel_width!r} "
+                "(fixed | relative_b | relative_span)")
+        if self.rblapsum_relative_temperature:
+            if self.rblapsum_kernel_width == "relative_span":
+                raise ValueError("rblapsum_relative_temperature=true is relative_b; "
+                                 "do not combine it with rblapsum_kernel_width='relative_span'")
+            self.rblapsum_kernel_width = "relative_b"
+        if self.rblapsum_kernel_width != "fixed" and self.surrogate_mode != "rblapsum":
+            raise ValueError(
+                "rblapsum_kernel_width applies to the hard-forward "
+                f"surrogate_mode='rblapsum' only, got {self.surrogate_mode!r}")
+        if self.rblapsum_support_strength is not None:
+            if self.surrogate_mode != "rblapsum":
+                raise ValueError("rblapsum_support_strength applies to surrogate_mode='rblapsum' only")
+            if not float(self.rblapsum_support_strength) >= 0:
+                raise ValueError("rblapsum_support_strength must be >= 0")
+            if self.rblapsum_surrogate_scope not in ("pool", "inactive"):
+                raise ValueError("rblapsum_support_strength is implemented for the pool and "
+                                 "inactive scopes only")
         if self.rblapsum_relative_temperature and self.surrogate_mode != "rblapsum":
             raise ValueError(
                 "rblapsum_relative_temperature applies to the hard-forward "

@@ -173,6 +173,8 @@ class SparseTopKBottleneck(nn.Module):
             rblapsum_surrogate_scope=getattr(cfg, "rblapsum_surrogate_scope", "pool"),
             rblapsum_relative_temperature=getattr(
                 cfg, "rblapsum_relative_temperature", False),
+            rblapsum_kernel_width=getattr(cfg, "rblapsum_kernel_width", "fixed"),
+            rblapsum_support_strength=getattr(cfg, "rblapsum_support_strength", None),
             rblapsum_center_tokens=getattr(cfg, "rblapsum_center_tokens", False),
             rblapsum_carry_decay=getattr(cfg, "rblapsum_carry_decay", 1.0),
             barrier_solver_tol=cfg.barrier_solver_tol,

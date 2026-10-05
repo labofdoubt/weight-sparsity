@@ -28,8 +28,8 @@ import torch.nn as nn
 
 from .lapsum import lapsum_barrier_sorted, lapsum_probs, laplace_cdf
 from .rblapsum import (GRAD_MODES, SURROGATE_SCOPES, VALUE_GRAD_MODES, carry_scope,
-                       rblapsum_carry_gate, rblapsum_gate, rblapsum_sf_gate,
-                       relative_kernel_width)
+                       kernel_width, rblapsum_carry_gate, rblapsum_gate, rblapsum_sf_gate,
+                       relative_kernel_width, strength_scale)
 
 _DTYPES = {"float32": torch.float32, "float64": torch.float64}
 
@@ -52,6 +52,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
         rblapsum_rho_random_perm_prob_grad: float = 0.0,
         rblapsum_surrogate_scope: str = "pool",
         rblapsum_relative_temperature: bool = False,
+        rblapsum_kernel_width: str = "fixed",
+        rblapsum_support_strength=None,
         rblapsum_center_tokens: bool = False,
         rblapsum_carry_decay: float = 1.0,
         barrier_solver_tol: float = 1e-6,
@@ -142,6 +144,18 @@ class AdaptiveLapSumTopKGate(nn.Module):
             raise ValueError(
                 "rblapsum_relative_temperature applies to surrogate_mode='rblapsum' only")
         self.rblapsum_relative_temperature = bool(rblapsum_relative_temperature)
+        # see ActivationBottleneckConfig.rblapsum_kernel_width / _support_strength
+        if rblapsum_kernel_width not in ("fixed", "relative_b", "relative_span"):
+            raise ValueError(f"unknown rblapsum_kernel_width: {rblapsum_kernel_width!r}")
+        if self.rblapsum_relative_temperature:
+            rblapsum_kernel_width = "relative_b"
+        self.rblapsum_kernel_width = rblapsum_kernel_width
+        self.rblapsum_support_strength = (None if rblapsum_support_strength is None
+                                          else float(rblapsum_support_strength))
+        if (self.rblapsum_kernel_width != "fixed" or self.rblapsum_support_strength is not None) \
+                and surrogate_mode != "rblapsum":
+            raise ValueError("rblapsum_kernel_width / rblapsum_support_strength apply to "
+                             "surrogate_mode='rblapsum' only")
         # see ActivationBottleneckConfig.rblapsum_center_tokens
         if rblapsum_center_tokens and surrogate_mode != "rblapsum":
             raise ValueError(
@@ -485,13 +499,20 @@ class AdaptiveLapSumTopKGate(nn.Module):
                                       self._carry_index, self.rblapsum_surrogate_scope,
                                       self.rblapsum_carry_decay)
         else:
-            y_c = rblapsum_gate(value_c, active_c, score_c, sign_c, b, t,
+            # per-row kernel width and support scale (temperature mode, strength);
+            # the legacy relative flag is handled here too, so relative_t is
+            # never set on the Function
+            t_row = kernel_width(self.rblapsum_kernel_width, t, score_c, b, self.k, self.j)
+            scale = float(self.rblapsum_support_scale)
+            if self.rblapsum_support_strength is not None:
+                scale = strength_scale(self.rblapsum_support_strength, t_row, b)
+            y_c = rblapsum_gate(value_c, active_c, score_c, sign_c, b, t_row,
                                 self.rblapsum_boundary_grad_mode, self.k, cap_active, sink,
-                                supp_scale=float(self.rblapsum_support_scale),
+                                supp_scale=scale,
                                 perm_rho=(self.rblapsum_rho_random_perm_prob_grad
                                           if self.training else 0.0),
                                 members=SURROGATE_SCOPES[self.rblapsum_surrogate_scope],
-                                relative_t=self.rblapsum_relative_temperature,
+                                relative_t=False,
                                 cand_idx=(cand_idx if self.rblapsum_center_tokens
                                           and self.training else None),
                                 n_features=self.n_features,
@@ -508,9 +529,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 self._record_usage(mask_full)
                 self._record_rblapsum(active_c, cap_active, b_rank, b,
                                       p_c if soft else None)
-                if self.rblapsum_relative_temperature:
+                if self.rblapsum_kernel_width != "fixed":
                     self._forward_diag["rb_temperature"] = (
-                        relative_kernel_width(t, b).mean().detach())
+                        kernel_width(self.rblapsum_kernel_width, t, score_c, b,
+                                     self.k, self.j).mean().detach())
         return y
 
     @torch.no_grad()

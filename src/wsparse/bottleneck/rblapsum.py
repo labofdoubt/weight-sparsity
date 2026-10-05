@@ -189,6 +189,34 @@ def relative_kernel_width(t: float, b: torch.Tensor) -> torch.Tensor:
     return (float(t) * b).clamp_min(1e-6)
 
 
+def kernel_width(mode: str, t: float, score_c: torch.Tensor, b: torch.Tensor, k: int,
+                 j: int):
+    """Per-row kernel width for rblapsum_kernel_width.
+
+    ``fixed``: the float ``t``.  ``relative_b``: ``t * b``.  ``relative_span``:
+    ``t * (s_(K+1) - s_(K+J))`` over the sorted pool ``score_c`` -- the score
+    interval the J candidates occupy, floored so a degenerate pool (ties, or
+    fewer than K+J nonzero scores) keeps a finite kernel.
+    """
+    if mode == "fixed":
+        return float(t)
+    if mode == "relative_b":
+        return relative_kernel_width(t, b)
+    if mode == "relative_span":
+        span = score_c[..., k:k + 1] - score_c[..., k + j - 1:k + j]
+        return (float(t) * span).clamp_min(1e-6)
+    raise ValueError(f"unknown rblapsum_kernel_width: {mode!r}")
+
+
+def strength_scale(s: float, t, b: torch.Tensor) -> torch.Tensor:
+    """Per-row support scale ``2 s T / b`` (rblapsum_support_strength).
+
+    Makes ``gamma * |u| kappa = s`` for a member at the boundary, where
+    ``|u| = b`` and ``kappa = 1 / 2T``.
+    """
+    return 2.0 * float(s) * t / b.clamp_min(1e-6)
+
+
 
 def support_term(g_up, value_c, active_c, score_c, sign_c, b, t, mode_id, k,
              cap_active, supp_scale, perm_rho, members, cand_idx, n_features,
@@ -249,7 +277,10 @@ def support_term(g_up, value_c, active_c, score_c, sign_c, b, t, mode_id, k,
             torch.finfo(kappa.dtype).tiny)
         a = torch.where(cap_active, a - q.to(a.dtype) * total, a)
 
-    g_s = a if supp_scale == 1.0 else a * supp_scale
+    if isinstance(supp_scale, torch.Tensor):
+        g_s = a * supp_scale.to(a.dtype)       # per-row scale (rblapsum_support_strength)
+    else:
+        g_s = a if supp_scale == 1.0 else a * supp_scale
     if cand_idx is not None:
         g_s = center_over_tokens(g_s, cand_idx, n_features)
 
@@ -258,6 +289,10 @@ def support_term(g_up, value_c, active_c, score_c, sign_c, b, t, mode_id, k,
             gs = g_s.reshape(-1, g_s.shape[-1])
             nrm = gs.norm(dim=-1)
             sink["rb_support_grad_norm"] = nrm.mean().detach()
+            if isinstance(supp_scale, torch.Tensor):
+                sink["rb_support_scale_eff"] = supp_scale.float().mean().detach()
+            if isinstance(t, torch.Tensor):
+                sink["rb_temperature_eff"] = t.float().mean().detach()
             eps = torch.finfo(gs.dtype).eps
             sink["rb_common_mode"] = (
                 gs.sum(-1).abs() / (nrm + eps)
@@ -299,11 +334,13 @@ class _RBLapSumGate(torch.autograd.Function):
         ctx.save_for_backward(value_c, active_c, score_c, sign_c, b, cap_active,
                               cand_idx)
         ctx.n_features = int(n_features)
-        ctx.t = float(t)
+        # t and supp_scale may be per-row tensors (rblapsum_kernel_width,
+        # rblapsum_support_strength); they are detached inputs either way
+        ctx.t = t if isinstance(t, torch.Tensor) else float(t)
         ctx.mode_id = int(mode_id)
         ctx.k = int(k)
         ctx.sink = sink
-        ctx.supp_scale = float(supp_scale)
+        ctx.supp_scale = supp_scale if isinstance(supp_scale, torch.Tensor) else float(supp_scale)
         ctx.perm_rho = float(perm_rho)
         ctx.members = int(members)
         ctx.relative_t = bool(relative_t)
@@ -493,8 +530,10 @@ def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
     """
     return _RBLapSumGate.apply(
         value_c, active_c, score_c.detach(), sign_c.detach(), b.detach(),
-        float(t), _MODE_ID[mode], int(k), cap_active.detach(), sink,
-        float(supp_scale), float(perm_rho), _MEMBERS_ID[members], bool(relative_t),
+        t.detach() if isinstance(t, torch.Tensor) else float(t),
+        _MODE_ID[mode], int(k), cap_active.detach(), sink,
+        supp_scale.detach() if isinstance(supp_scale, torch.Tensor) else float(supp_scale),
+        float(perm_rho), _MEMBERS_ID[members], bool(relative_t),
         None if cand_idx is None else cand_idx.detach(), int(n_features),
         bool(first_order),
     )
