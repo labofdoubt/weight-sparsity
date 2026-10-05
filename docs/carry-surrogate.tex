@@ -116,8 +116,9 @@ average, against 8 under the persistent model and 1 under the local one.  The \c
 model \emph{out of} the carry -- at \((32,224)\) turnover \(63\%\) per gate at step 4000 and \(70\%\) at 20k, survival
 \(0.21\to0.16\), \(77\%\) of the final code entering at the last gate: the stream stack's re-selection at every block,
 in a model that has a carry.  Every carry-scope model keeps
-the hard model's code: survival \(0.52\)--\(0.61\), turnover \(30\)--\(40\%\) at step 3000, and \(0.47\)/\(45\%\) for
-the mixed \((32,224)\) model at 10k (hard Top-32 at 20k: \(0.51\)/\(39\%\)).
+the hard model's code: survival \(0.52\)--\(0.61\), turnover \(30\)--\(40\%\) at step 3000, and at 10k
+\(0.47\)/\(45\%\) and \(0.59\)/\(33\%\) for the mixed \((32,224)\) and \((256,256)\) models (hard at 20k: \(0.51\)/\(39\%\),
+\(0.57\)/\(32\%\)).
 
 \textbf{Training} (Fig.~\ref{fig:training}).  At \((32,224)\) the local scope ends step 3000
 at \(-0.058\) below hard Top-32, where \code{pool} is at \(-0.061\) and first order at \(-0.033\); it leads \code{pool}
