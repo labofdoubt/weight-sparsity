@@ -224,13 +224,24 @@ def fig_runs():
     fig, axes = plt.subplots(1, 3, figsize=(7.1, 1.95), gridspec_kw={"wspace": 0.45})
     rows = [  # file stem, label, color, ls
         ("ma_cr_hard_k32_pnorm_step20000", r"hard Top-32, 20k", INK, "-"),
-        ("ma_cr_hard_k32_pnorm_step2000", r"hard Top-32, 2k", INK, ":"),
+        ("ma_cr_hard_k32_pnorm_step4000", r"hard Top-32, 4k", INK, ":"),
         ("ma_cr_hard_k256_pnorm_step20000", r"hard Top-256, 20k", MUTED, "-"),
-        ("ma_cr_hard_k256_pnorm_step2000", r"hard Top-256, 2k", MUTED, ":"),
+        ("ma_cr_hard_k256_pnorm_step4000", r"hard Top-256, 4k", MUTED, ":"),
         ("ma_cr_rbk_k32_j224_t2_step20000", r"pool (32, 224), 20k", ORANGE, "-"),
-        ("ma_cr_rbk_k32_j224_t2_step2000", r"pool (32, 224), 2k", ORANGE, ":"),
-        ("ma_cr_rbk_k256_j256_t2_step20000", r"pool (256, 256), 20k", "#f2a37e", "-"),
+        ("ma_cr_rbk_k32_j224_t2_step4000", r"pool (32, 224), 4k", ORANGE, ":"),
+        ("ma_cr_rbk_k256_j256_t2_step4000", r"pool (256, 256), 4k", "#f2a37e", ":"),
+        ("ma_cr_rbk_k32_j224_t2_fo_step4000", r"first order (32, 224), 4k", YELLOW, ":"),
     ]
+    # the carry scopes at step 3000, whichever have been measured
+    import glob
+    for f in sorted(glob.glob(os.path.join(DATA, "runs", "be_cr_rbk_*_step3000.json"))):
+        stem = os.path.basename(f)[:-5]
+        parts = stem.split("_")            # be cr rbk kK jJ t2 <suffix> stepN
+        K, J, suf = parts[3][1:], parts[4][1:], parts[6]
+        if suf not in STYLE:
+            continue
+        lab, color, _ = STYLE[suf]
+        rows.append((stem, rf"{lab} ({K}, {J}), 3k", color, "-" if K == "32" else "--"))
     for key, panel in (("survival", 0), ("evict_frac", 1), ("final_entry", 2)):
         ax = axes[panel]
         for stem, lab, color, ls in rows:
@@ -247,7 +258,7 @@ def fig_runs():
     axes[0].set_ylabel(r"P(still in the support)")
     axes[0].set_ylim(0, 1.02)
     axes[0].set_title("a  survival of an entered feature")
-    axes[0].legend(fontsize=5.0, loc="upper right")
+    axes[0].legend(fontsize=4.6, loc="upper right", ncol=1)
     axes[1].set_xlabel(r"gate $\ell$")
     axes[1].set_ylabel(r"share of gate $\ell{-}1$'s support evicted")
     axes[1].set_ylim(0, 0.8)

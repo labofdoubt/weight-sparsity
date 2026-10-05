@@ -78,7 +78,14 @@ the surrogate's margin over hard Top-$K$ shrinks from $0.107 / 0.087 / 0.064
 / 0.041$ (stream carried, $K = 32$ to $256$) to $0.047 / 0.010$ at $K = 32,
 64$ and reverses to $-0.021 / -0.032$ at $K = 128, 256$.
 
-\item \PH{summary: the K=32, T=2 sweep}
+\item \textbf{Weakening the surrogate's support term under the carry only
+hurts.} At $K=32$, $T=2$, scaling the support term by $\gamma = 0.8$, $0.6$,
+$0.4$ costs $0.007$--$0.034$ nats relative to the full code-carried
+surrogate, and the first-order scope, which removes the products of support
+terms along the carry, costs $0.007$--$0.024$; the penalty grows with $J$.
+The compounding of support terms along the carry is therefore not what
+limits the code-carried surrogate at $T=2$: the full term with the plain
+backward is its best variant at every $J$. \PH{K=64, 128, 256 to follow}
 \end{itemize}
 
 % ============================================================
@@ -560,15 +567,30 @@ family of the K+J note. One figure and one table per $K$.
 \toprule
 $J$ & stream & code, $\gamma{=}1$ & $\gamma{=}0.8$ & $\gamma{=}0.6$ & $\gamma{=}0.4$ & first-order \\
 \midrule
-$32$  & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} \\
-$96$  & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} \\
-$224$ & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} \\
-$480$ & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} \\
+$32$  & 1.5492 & 1.5297 & 1.5362 & 1.5412 & 1.5397 & 1.5369 \\
+$96$  & 1.5146 & 1.5153 & 1.5248 & 1.5371 & 1.5389 & 1.5291 \\
+$224$ & 1.4842 & 1.4976 & 1.5052 & 1.5189 & 1.5313 & 1.5145 \\
+$480$ & 1.4943 & 1.4927 & 1.4998 & 1.5095 & 1.5188 & 1.5167 \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\PH{reading of the sweep}
+Every weakening of the support term raises the final loss, and the more so
+the wider the window. Relative to the full code-carried surrogate
+($\gamma = 1$), $\gamma = 0.8$ costs $0.007$--$0.012$ nats, $\gamma = 0.6$
+$0.012$--$0.022$, $\gamma = 0.4$ $0.010$--$0.034$ and the first-order scope
+$0.007$--$0.024$. At $J = 32$ the four variants lie within $0.012$ of one
+another and of hard Top-32 ($1.5400$; the $\gamma = 0.4$ cell is at
+$1.5397$); at $J = 480$ they spread from $1.4998$ to $1.5188$ against
+$1.4927$ at $\gamma = 1$ and $1.5400$ for hard. The ordering in $J$ is
+preserved in every family (monotone, except that $\gamma = 0.4$ has
+$J = 32$ and $J = 96$ equal to within $0.001$). No weakened variant reaches
+the stream-carried cell of the same $J$ except at $J = 32$, where every
+code-carried variant lies below the stream's $1.5492$. The first-order
+scope keeps each gate's term at full strength and removes only the products
+of support terms along the carry; it lands between $\gamma = 0.8$ and
+$\gamma = 0.6$, so at $T = 2$ and eight blocks those products are worth
+about a third of the term, not a cost.
 
 \begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/kj-cr/cr_k32_sweep.png}
@@ -576,7 +598,11 @@ $480$ & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} & \PH{} \\
 code-carried family (solid, blue ramp light to dark with $J = 32, 96, 224,
 480$) with the stream-carried $T=2$ cells at $K=32$ (dashed, red ramp):
 support scale $\gamma = 0.8$, $0.6$, $0.4$, and the first-order scope at
-$\gamma = 1$. \PH{}}
+$\gamma = 1$. In every panel the solid curve of a given $J$ runs above the
+dashed one except for $J = 32$, and the gap widens from $\gamma = 0.8$ to
+$\gamma = 0.4$; the first-order panel resembles the $\gamma = 0.6$ one.
+Compare the $\gamma = 1$ cells in the $K = 32$ panel of the previous
+section, which lie within $0.02$ of the dashed curves.}
 \end{figure}
 
 %% K=64, K=128, K=256 blocks are appended here as each K's sweep finishes
@@ -634,7 +660,16 @@ the carry is the larger lever, and the practical default from the K+J note
 the post-norm variant is the unstable one, and the pool no longer pays for
 itself against the correspondingly larger hard model.
 
-\PH{interpretation: the sweep}
+The sweep decides between the two readings, at $T=2$: the compounding of
+support terms along the carry is not what limits the code-carried surrogate
+at $K=32$, since removing the products (first-order) or damping the term
+($\gamma < 1$) costs rather than gains, by amounts that grow with $J$. What
+the carry took from the surrogate's margin is therefore not recovered by
+changing the backward; it is the re-selection that the window no longer has
+to compensate, the first reading. The compounding does matter at $T = 1$,
+where it collapsed half of the post-norm arm, so the two kernel widths sit
+on opposite sides of its threshold at this depth. \PH{sweep at K=64, 128,
+256}
 
 % ============================================================
 \section{Scope}
