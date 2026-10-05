@@ -74,46 +74,34 @@ def save(fig, name):
 # Figure 1: the backward along the carried code at initialization
 # --------------------------------------------------------------------------- #
 def fig_init():
-    fig, axes = plt.subplots(1, 3, figsize=(7.1, 2.0), gridspec_kw={"wspace": 0.42})
-    for ax, (kj, title) in zip(axes[:2], [("k32_j224", r"a  $K{=}32$, $J{=}224$, $T{=}2$"),
-                                          ("k256_j256", r"b  $K{=}256$, $J{=}256$, $T{=}2$")]):
+    fig, axes = plt.subplots(1, 2, figsize=(5.0, 1.75), gridspec_kw={"wspace": 0.4})
+    for ax, (kj, title) in zip(axes, [("k32_j224", r"a  $K{=}32$, $J{=}224$"),
+                                      ("k256_j256", r"b  $K{=}256$, $J{=}256$")]):
         hard = load(DATA, "init", f"init_{kj}_hard.json")
         h = [g["code_grad_rms"] for g in hard["gates"]]
         for key in ("pool", "fo", "ch", "cp", "cm", "cl"):
-            d = load(DATA, "init", f"init_{kj}_{key}.json")
-            if d is None:
-                continue
-            lab, color, ls = STYLE[key]
-            y = [g["code_grad_rms"] / hh for g, hh in zip(d["gates"], h)]
-            ax.plot(range(len(y)), y, ls, color=color, lw=1.5 if key in ("pool", "cl", "cm") else 1.0,
-                    label=lab)
+            for suffix, ls in (("", STYLE[key][2]), ("_t1", ":")):
+                if suffix and key not in ("pool", "cm", "cl"):
+                    continue
+                d = load(DATA, "init", f"init_{kj}_{key}{suffix}.json")
+                if d is None:
+                    continue
+                lab, color, _ = STYLE[key]
+                y = [g["code_grad_rms"] / hh for g, hh in zip(d["gates"], h)]
+                ax.plot(range(len(y)), y, ls, color=color,
+                        lw=1.5 if key in ("pool", "cl", "cm") and not suffix else 1.0,
+                        label=(lab if not suffix else None) if kj == "k32_j224" else None)
         ax.axhline(1.0, color=INK, lw=0.8)
         ax.set_yscale("log")
         ax.set_xticks(range(8))
-        ax.set_xlabel(r"gate $\ell$ (0 = input side, 7 = last)")
-        ax.set_ylabel(r"RMS $\partial\mathcal{L}/\partial c_{\ell+1}$ / hard")
+        ax.set_xlabel(r"gate $\ell$ (0 = input side)")
         ax.set_title(title)
-        if kj == "k32_j224":
-            ax.legend(loc="upper right", fontsize=5.4)
-    # (c) the kernel width: T = 1 versus T = 2 at K = 32
-    ax = axes[2]
-    hard = load(DATA, "init", "init_k32_j224_hard.json")
-    h = [g["code_grad_rms"] for g in hard["gates"]]
-    for key, suffix, ls in (("pool", "", "-"), ("pool", "_t1", ":"), ("cm", "", "-"), ("cm", "_t1", ":"),
-                            ("cl", "", "-"), ("cl", "_t1", ":")):
-        d = load(DATA, "init", f"init_k32_j224_{key}{suffix}.json")
-        if d is None:
-            continue
-        lab, color, _ = STYLE[key]
-        y = [g["code_grad_rms"] / hh for g, hh in zip(d["gates"], h)]
-        ax.plot(range(len(y)), y, ls, color=color, lw=1.3,
-                label=lab + (r", $T{=}1$" if suffix else r", $T{=}2$"))
-    ax.axhline(1.0, color=INK, lw=0.8)
-    ax.set_yscale("log")
-    ax.set_xticks(range(8))
-    ax.set_xlabel(r"gate $\ell$")
-    ax.set_title(r"c  $K{=}32$: kernel width")
-    ax.legend(loc="upper right", fontsize=5.2)
+    axes[0].set_ylabel(r"RMS $\partial\mathcal{L}/\partial c_{\ell+1}$ / hard")
+    from matplotlib.lines import Line2D
+    handles, labels = axes[0].get_legend_handles_labels()
+    handles.append(Line2D([], [], color=MUTED, ls=":", lw=1.0))
+    labels.append(r"same, $T{=}1$")
+    axes[0].legend(handles, labels, loc="upper right", fontsize=4.9, ncol=1)
     save(fig, "fig_init")
 
 
@@ -188,14 +176,20 @@ def fig_screens(max_step=3000):
     Ks = [K for K in (32, 128, 256) if any(run_of(K, k) in cv for k in ("cl", "cm"))]
     if not Ks:
         return
-    fig, axes = plt.subplots(1, len(Ks), figsize=(2.4 * len(Ks) + 0.2, 2.0),
+    fig, axes = plt.subplots(1, len(Ks), figsize=(2.35 * len(Ks) + 0.2, 1.75),
                              gridspec_kw={"wspace": 0.45}, squeeze=False)
+    keys = ("pool", "fo", "ch", "cp", "cm05", "cm", "cl")
     for ax, K, letter in zip(axes[0], Ks, "abc"):
-        delta_panel(ax, cv, K, ("pool", "fo", "ch", "cp", "cm", "cl"), max_step)
+        delta_panel(ax, cv, K, keys, max_step, show_pool_ref=True)
         ax.set_title(rf"{letter}  $K{{=}}{K}$, $J{{=}}{CELLS[K][0]}$")
         ax.set_xlim(400, max_step + 50)
-        if K == Ks[0]:
-            ax.legend(loc="lower left", fontsize=5.0, ncol=2)
+    # one legend, in the last panel, with proxies for every scope that appears anywhere
+    from matplotlib.lines import Line2D
+    present = [k for k in keys if any(run_of(K, k) in cv for K in Ks)]
+    handles = [Line2D([], [], color=STYLE[k][1], ls=STYLE[k][2], marker="o", ms=2.2, mfc="white",
+                      mew=0.7, lw=1.3, label=STYLE[k][0]) for k in present]
+    handles.append(Line2D([], [], color=INK, ls="--", lw=0.9, label=r"hard Top-$(K{+}J)$"))
+    axes[0][-1].legend(handles=handles, loc="upper right", fontsize=5.0, ncol=1)
     save(fig, "fig_screens")
 
 
@@ -222,7 +216,7 @@ def table_screens(steps=(1000, 2000, 3000)):
 # Figure 3: runs of the carried code (analysis/code_runs.py)
 # --------------------------------------------------------------------------- #
 def fig_runs():
-    fig, axes = plt.subplots(1, 3, figsize=(7.1, 1.95), gridspec_kw={"wspace": 0.45})
+    fig, axes = plt.subplots(1, 2, figsize=(5.0, 1.75), gridspec_kw={"wspace": 0.4})
     rows = [  # file stem, label, color, ls
         ("ma_cr_hard_k32_pnorm_step20000", r"hard Top-32, 20k", INK, "-"),
         ("ma_cr_hard_k32_pnorm_step4000", r"hard Top-32, 4k", INK, ":"),
@@ -243,7 +237,7 @@ def fig_runs():
             continue
         lab, color, _ = STYLE[suf]
         rows.append((stem, rf"{lab} ({K}, {J}), 3k", color, "-" if K == "32" else "--"))
-    for key, panel in (("survival", 0), ("evict_frac", 1), ("final_entry", 2)):
+    for key, panel in (("survival", 0), ("evict_frac", 1)):
         ax = axes[panel]
         for stem, lab, color, ls in rows:
             d = load(DATA, "runs", stem + ".json")
@@ -259,14 +253,11 @@ def fig_runs():
     axes[0].set_ylabel(r"P(still in the support)")
     axes[0].set_ylim(0, 1.02)
     axes[0].set_title("a  survival of an entered feature")
-    axes[0].legend(fontsize=4.6, loc="upper right", ncol=1)
+    axes[0].legend(fontsize=4.3, loc="upper right", ncol=1)
     axes[1].set_xlabel(r"gate $\ell$")
     axes[1].set_ylabel(r"share of gate $\ell{-}1$'s support evicted")
     axes[1].set_ylim(0, 0.8)
     axes[1].set_title("b  turnover per gate")
-    axes[2].set_xlabel(r"gate of entry")
-    axes[2].set_ylabel("share of the final code")
-    axes[2].set_title("c  final code by gate of entry")
     save(fig, "fig_runs")
 
 

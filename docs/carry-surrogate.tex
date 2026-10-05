@@ -33,18 +33,17 @@ Runs \code{be\_cr\_*} (box bergen), configs \code{configs/cr\_kj/carry/}, scopes
 \section{The problem}
 
 With the code carried between blocks (\code{code\_residual}) hard Top-\(K'\) gains \(0.06\)--\(0.075\) nats at every
-\(K'\), while RBLapSum (\(K\) active, pool \(K{+}J\)) gains \(-0.03\) to \(+0.015\): at a matched active count it is
-worth \(0.047\) at \(K=32\) and loses \(0.02\)--\(0.03\) at \(K=128, 256\), no cell reaches hard Top-\((K{+}J)\), and its
-backward is the unstable part of the grid (\code{docs/kj-vs-hard-topk-code-residual.tex}).  The first-order scope
-removes the instability with a second backward pass and is \emph{worse} than the unmodified surrogate at every
-\(K=32\) cell (\(+0.007\) to \(+0.017\) at 20k).  This note locates the conflict between the surrogate and the carry
-and proposes the smallest change that removes it, at no cost.
+\(K'\) and RBLapSum (\(K\) active, pool \(K{+}J\)) gains \(-0.03\) to \(+0.015\): at a matched active count the
+surrogate is worth \(0.047\) at \(K=32\), loses \(0.02\)--\(0.03\) at \(K=128,256\), and its backward is the unstable
+part of the grid (\code{docs/kj-vs-hard-topk-code-residual.tex}).  The first-order scope removes the instability with
+a second backward pass and is \emph{worse} than the unmodified surrogate at every \(K=32\) cell (\(+0.007\) to
+\(+0.017\) at 20k).  This note locates the conflict and removes it at no cost.
 
 \section{Where the probabilities act}
 
 Gate \(\ell\) reads \(u_\ell=c_\ell+v_\ell\) (carried code plus the block's encoded contribution) and outputs
 \(c_{\ell+1}=M_\ell u_\ell\), \(M_\ell\) the Top-\(K\) mask.  Its output has two consumers, the carry
-\(u_{\ell+1}=c_{\ell+1}+v_{\ell+1}\) (a skip path) and the read \(x_{\ell+1}=\mathrm N(D_\ell c_{\ell+1})\) (a branch), so
+\(u_{\ell+1}=c_{\ell+1}+v_{\ell+1}\) (a skip path) and the read \(x_{\ell+1}=\mathrm N(D_\ell c_{\ell+1})\) (a branch):
 \begin{equation}
   \frac{\partial\mathcal L}{\partial u_\ell}=M_\ell\bigl(g^{\rm c}_{\ell+1}+r_{\ell+1}\bigr),\qquad
   g^{\rm c}_{\ell+1}=\frac{\partial\mathcal L}{\partial u_{\ell+1}},\quad
@@ -52,20 +51,19 @@ Gate \(\ell\) reads \(u_\ell=c_\ell+v_\ell\) (carried code plus the block's enco
   \label{eq:hard}
 \end{equation}
 (at the last gate \(r\) is the unembedding's gradient).  In the stream-carried stack the gate has only the second
-consumer: everything block \(\ell{+}1\) does, its own gate included, goes through \(D_\ell\).  RBLapSum relaxes the
-gate as a whole, \(M_\ell\to M_\ell+S_\ell\) with the \code{through\_rank\_kappa} support term \(S_\ell\) (kernel
+consumer: everything block \(\ell{+}1\) does, its own gate included, goes through \(D_\ell\).  RBLapSum relaxes the gate
+as a whole, \(M_\ell\to M_\ell+S_\ell\) with the \code{through\_rank\_kappa} support term \(S_\ell\) (kernel
 \(\kappa_i=e^{-|s_i-b|/T}/2T\); on the support \(S_{ii}=|u_i|\kappa_i\approx b/2T\) at the boundary).  In the stream
-stack \(S_\ell\) acts on \(r_{\ell+1}\) alone, and what reaches gate \(\ell{-}1\) has passed through \(E_\ell\), the
-block and \(D_{\ell-1}\), which mix the coordinates.  In the code stack it also acts on \(g^{\rm c}_{\ell+1}\), which
-already contains \(S_{\ell+1}g^{\rm c}_{\ell+2}\): along a coordinate near the boundary the backward multiplies
-\(1+|u|\kappa\) per gate.  The carry is a residual connection in code space; a residual connection trains because its
-backward is the identity, and a relaxation placed on the skip path compounds.  The conflict is \emph{where} the
-probabilities act, not the kernel: the same gates in the stream stack were never on a skip path.
+stack \(S_\ell\) acts on \(r_{\ell+1}\) alone and what reaches gate \(\ell{-}1\) has passed through \(E_\ell\), the block
+and \(D_{\ell-1}\), which mix the coordinates.  In the code stack it also acts on \(g^{\rm c}_{\ell+1}\), which already
+contains \(S_{\ell+1}g^{\rm c}_{\ell+2}\): along a coordinate near the boundary the backward multiplies \(1+|u|\kappa\)
+per gate.  The carry is a residual connection in code space, trainable because its backward is the identity; a
+relaxation placed on the skip path compounds.  The conflict is \emph{where} the probabilities act, not the kernel.
 
 \section{The carry-aware surrogate}
 
-Keep the skip path hard and relax the branch.  The gate's output is split into the copy the next gate carries and the
-copy the decoder reads (\code{\_CarryReadSplit}; forward and inference unchanged), and the backward is
+Keep the skip path hard, relax the branch: the gate's output is split into the copy the next gate carries and the
+copy the decoder reads (forward and inference unchanged), and
 \begin{equation}
   \frac{\partial\mathcal L}{\partial u_\ell}=M_\ell\bigl(g^{\rm c}_{\ell+1}+r_{\ell+1}\bigr)+S_\ell^{\!\top}\hat g_{\ell+1},
   \qquad
@@ -73,21 +71,21 @@ copy the decoder reads (\code{\_CarryReadSplit}; forward and inference unchanged
   \label{eq:carry}
 \end{equation}
 with \(H_\ell=M_\ell(r_{\ell+1}+H_{\ell+1})\) the downstream read gradients a coordinate reaches along the hard carry,
-\(R_\ell=r_{\ell+1}+\rho R_{\ell+1}\) all downstream reads weighted by a survival factor \(\rho\) per gate, and
-\(H=R=0\) above the last gate.  The support term is driven by read gradients only, so no kernel sees another gate's
-support term through the carry: the exponential products are gone, the terms of the gates above still reach gate
-\(\ell\) added through \(M_\ell\), and carry and update receive one gradient (R1 of
-\code{docs/rblapsum-code-residual.tex}).  The cost is two per-coordinate sums along the backward, no second pass.
-The drivers are the first-order loss change of one flip at gate \(\ell\) under three models of what follows: a flip
-changes \(c_{\ell+1,i}\) by \(\pm u_{\ell,i}\), which block \(\ell{+}1\) reads, and so do later blocks while the coordinate
-stays in the code.  \emph{Local} counts the next read only -- the stream stack's logic, and exactly the gradient of a
-model whose decoder reads a relaxed gate while the carry is hard.  \emph{Hard} follows the coordinate's actual
-downstream masks (an evicted feature's remaining run; for an inactive candidate almost always nothing).
-\emph{Persistent} assumes the entering coordinate survives each further gate with probability \(\rho\) (\(\rho=1\):
-to the end).  The \emph{mixed} scope uses hard for the active members and persistent for the inactive ones, the
-natural model on each side; \(\rho\) is measured in Section~\ref{sec:runs}.  Against the first-order estimator: that
-one needs the fully hard gradient at every gate, hence a second pass; here the carry is where the gradient is taken
-hard, and the reads still carry the gates above through the branch, as in the stream stack.
+\(R_\ell=r_{\ell+1}+\rho R_{\ell+1}\) every downstream read with a survival factor \(\rho\) per gate, \(H=R=0\) above
+the last gate.  The support term is driven by read gradients only, so no kernel sees another gate's support term
+through the carry: the products are gone, the terms of the gates above still reach gate \(\ell\), added, through
+\(M_\ell\), and carry and update receive one gradient (R1 of \code{docs/rblapsum-code-residual.tex}).  The cost is two
+per-coordinate sums along the backward; no second pass.  The drivers are the first-order loss change of one flip at
+gate \(\ell\) -- \(c_{\ell+1,i}\) changes by \(\pm u_{\ell,i}\), which block \(\ell{+}1\) reads, and later blocks read while
+the coordinate stays in the code -- under three models of what follows.  \emph{Local} counts the next read only (the
+stream stack's logic; exactly the gradient of a model whose decoder reads a relaxed gate while the carry is hard).
+\emph{Hard} follows the actual downstream masks (an evicted feature's remaining run; for an inactive candidate almost
+always nothing).  \emph{Persistent} lets the entering coordinate survive each further gate with probability \(\rho\).
+The \emph{mixed} scope uses hard for the active members and persistent for the inactive ones; \(\rho\) is measured
+below.  Unlike the first-order estimator, which needs the fully hard gradient at every gate and hence a second pass,
+the carry is where the gradient is taken hard, and the reads still carry the gates above through the branch, as in the
+stream stack.  (\code{rblapsum\_surrogate\_scope=carry\_local|carry\_hard|carry\_persistent|carry\_mixed},
+\code{rblapsum\_carry\_decay}=\(\rho\).)
 
 \section{Measurements}
 
@@ -176,7 +174,8 @@ model's code is the hard model's again -- one-gate survival \(0.57\), turnover \
 \(0.94\) (hard: \(0.62\), \(28\%\), \(0.93\); \code{pool}: \(0.40\), \(46\%\), \(0.89\)) -- and its gradient norm never
 exceeded 1.  The mixed scope goes further: \(+0.005\) at step 1000, below hard Top-256 from step 2000 and
 \(-0.0045\) at 3000 (\(1.736\) against \(1.741\)) -- a surrogate with 256 active features ahead of the hard model with
-the same count, which no code-carried cell of the grid achieved -- with hard Top-512 at \(-0.037\).
+the same count, which no code-carried cell of the grid achieved -- with hard Top-512 at \(-0.037\); its code is
+the hard model's too (survival \(0.61\), turnover \(30\%\), \(17\%\) of the final code carried from gate 0).
 \PH{K=128; the 10k continuations}
 
 \begin{figure}[t]
@@ -210,14 +209,30 @@ read at step 3000.  Bold: below every other surrogate of the row.}
 \section{What the measurements show}
 
 \textbf{The conflict is the placement, not the kernel.}  RBLapSum relaxes a gate whose output, in the code-carried
-stack, is also a skip connection; the relaxation is multiplied along the skip path and grows as \((1+b/2T)^{L}\)
-(Fig.~\ref{fig:init}).  Putting the probabilities where they were in the stream-carried stack, on what the decoder
-reads, and leaving the carry's backward the mask, removes the product exactly, in one backward pass, and gives the
-carry and the update one gradient.  \PH{training evidence}
+stack, is also a skip connection, and the relaxation is multiplied along the skip path, \((1+b/2T)\) per gate
+(Fig.~\ref{fig:init}).  Putting the probabilities where they were in the stream-carried stack -- on what the decoder
+reads -- and leaving the carry's backward the mask removes the product exactly, in one backward pass, with one gradient
+for carry and update.  Trained, the local scope keeps the unmodified surrogate's whole gain at \(K=32\) (first order,
+which also removes the product but at the price of a second pass, keeps half of it) and removes four fifths of its
+loss at \(K=256\), without a gradient spike in either cell.
 
-\textbf{The carry is used by a subset, and the unmodified surrogate trains it away.}  \PH{runs of the carry scopes}
+\textbf{The carry gives the surrogate something the stream stack could not: a downstream for the entry term.}  In
+the stream stack a candidate that enters at gate \(\ell\) is re-encoded by gate \(\ell{+}1\), so the next read is all
+there is to evaluate it against.  In the code stack an entering feature is carried, and the first-order value of
+letting it in is the sum of the reads it would reach.  The mixed scope evaluates the inactive candidates on that sum
+(\(\rho=1\)) and the active members on the reads their run actually reaches, and it doubles the gain at \(K=32\)
+(\(-0.118\): 32 active features at the loss of hard Top-128) and turns the loss at \(K=256\) into a gain
+(\(-0.005\) below hard Top-256, a model with the same active count).  Its surrogate energy equals the unmodified
+backward's (\(\sigma=0.74\) against \(0.70\) at \(K=32\)), delivered as a sum of single-flip terms instead of a
+product: the unmodified backward was not too strong, it was multiplying.
 
-\PH{large K}
+\textbf{The surrogate-trained model uses the carry only when the surrogate leaves it alone.}  The trained hard
+models carry about half of their support from gate to gate (one-gate survival \(0.5\)--\(0.6\), \(26\)--\(39\%\)
+turnover); the \code{pool}-trained ones re-select \(46\)--\(70\%\) of it at every gate and end with the stream stack's
+code, which is why the carry was worth nothing to them.  Every carry-scope model has the hard model's survival and
+turnover (Fig.~\ref{fig:runs}): the surrogate's support signal and the carry's persistence add instead of
+competing, and the measured survival (\(\rho\approx0.5\)) is also the natural value for the persistent chain
+(\PH{cm05}).
 
 \textbf{Scope.}  One seed, one configuration family (8 layers, \(N=1536\), \(T=2\), no output norm), screens of
 3000 steps with step-matched 20k-step baselines trained on a different machine of the same GPU generation; the
