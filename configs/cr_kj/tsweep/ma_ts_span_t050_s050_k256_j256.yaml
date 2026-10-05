@@ -1,6 +1,6 @@
 # ma_ts_span_t050_s050_k256_j256: configs/cr_kj/ma_cr_rbk_k256_j256_t2.yaml (code-carried RBLapSum, pool scope, no post-norm)
 # with the kernel width T = 0.5 * (s_(K+1) - s_(K+J)) per token and the
-# support strength s = 0.5 (gamma = 2 s T / b per token).  Reach x strength grid, 2026-10-06.
+# support strength s = 0.5 (gamma = 2 s T / b per token).  Reach x strength grid, 2026-10-05.
 model:
   vocab_size: 50257
   max_seq_len: 512
