@@ -141,6 +141,12 @@ def load_run(key: str):
     else:
         arrays = {"score": np.load(os.path.join(SCORES_DIR, f"{name}.npy"),
                                    mmap_mode="r")}
+        # since 2026-10-05 extract_bottleneck_scores.py also records the two
+        # gradients at every checkpoint, so the ladder gets the probe's panel
+        for g in GRAD_ARRAYS:
+            fp = os.path.join(SCORES_DIR, f"{name}.{g}.npy")
+            if os.path.exists(fp):
+                arrays[g] = np.load(fp, mmap_mode="r")
         meta = json.load(open(os.path.join(SCORES_DIR, f"{name}.json")))
     return arrays["score"], meta, arrays
 
@@ -165,8 +171,12 @@ def available_runs(kind: str):
                  if os.path.exists(p[: -len(".score.npy")] + ".json")]
         meta_dir = PROBE_DIR
     else:
+        # the .json marks a finished extraction (the arrays are allocated up
+        # front); the gradient arrays `<run>.g_*.npy` are not datasets
         names = [os.path.splitext(os.path.basename(p))[0]
-                 for p in glob.glob(os.path.join(SCORES_DIR, "*.npy"))]
+                 for p in glob.glob(os.path.join(SCORES_DIR, "*.npy"))
+                 if not p.endswith(tuple(f".{g}.npy" for g in GRAD_ARRAYS))
+                 and os.path.exists(os.path.splitext(p)[0] + ".json")]
         meta_dir = SCORES_DIR
 
     GROUP = ("hard", "lapsum", "rblapsum", "rblapsum_sf")
@@ -974,9 +984,10 @@ with st.sidebar:
     kind = st.radio("Analysis", kinds, index=0,
                     format_func=lambda k: KIND_LABEL[k],
                     help="The checkpoint ladder samples every 2000 steps from "
-                         "saved weights. The probe re-runs training with the "
-                         "same seed and measures every 10 steps without saving "
-                         "any, and it additionally carries the two gradients.")
+                         "saved weights (ladders extracted since 2026-10-05 carry "
+                         "the two gradients too). The probe re-runs training with "
+                         "the same seed and measures every 10 steps without saving "
+                         "any.")
     run = f"{kind}/" + st.selectbox("Run", available_runs(kind), index=0)
     arr, meta, arrays = load_run(run)
     C, L, B, T, N = arr.shape
@@ -1484,7 +1495,7 @@ fig3.update_yaxes(type="log", title="raw |score|", gridcolor=GRID,
 st.plotly_chart(fig3, width="stretch", theme=None)
 
 # --------------------------------------------------------------------------- #
-# panel 5 -- gradients against |score|   (probe datasets only)
+# panel 5 -- gradients against |score|   (probe datasets, and ladders extracted with --grads)
 # --------------------------------------------------------------------------- #
 # The question these answer: does the candidate pool receive gradients that
 # point the same way, i.e. is the surrogate driving the whole pool in one

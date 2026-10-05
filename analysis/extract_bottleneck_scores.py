@@ -27,8 +27,19 @@ surrogate gradient, and the remainder get exactly zero gradient from the gate.
 
 Output, one per run:
 
-    <out-dir>/<run>.npy     float32 (n_ckpt, n_layer, batch, n_pos, n_features)
-    <out-dir>/<run>.json    steps, layer labels, k, j, token ids, val CE
+    <out-dir>/<run>.npy           float32 (n_ckpt, n_layer, batch, n_pos, n_features)
+    <out-dir>/<run>.g_ztilde.npy  dL/d~z at the gate's output (same shape; --grads)
+    <out-dir>/<run>.g_z.npy       dL/dz at the gate's input, through the surrogate
+    <out-dir>/<run>.json          steps, layer labels, k, j, token ids, val CE
+
+With ``--grads`` (the default since 2026-10-05) every checkpoint also runs one
+forward + backward on the fixed batch in ``train()`` mode and float32 -- the
+same measurement as ``probe_early_training.py`` -- so the viewer's gradient
+panel is available on the checkpoint ladder too.  Under
+``rblapsum_surrogate_scope=first_order*`` the backward is the two-pass
+``first_order_backward`` the run trained with; otherwise ``loss.backward()``.
+The score itself is taken from the same pass: the forward is hard in both
+modes and there is no dropout, so it equals the eval-mode score.
 
 The array is written through ``open_memmap`` so peak memory stays at one
 checkpoint's worth, and the viewer reads it back memory-mapped and slices only
@@ -50,8 +61,11 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from wsparse.bottleneck.controller import _PLACEMENT_ATTR, parse_placements  # noqa: E402
+from wsparse.bottleneck.rblapsum import first_order_backward  # noqa: E402
 from wsparse.data import TokenStream  # noqa: E402
 from wsparse.train import load_for_inference  # noqa: E402
+
+GRAD_NAMES = ("g_ztilde", "g_z")
 
 
 def checkpoint_step(path: str) -> int:
@@ -92,6 +106,9 @@ def main() -> None:
     ap.add_argument("--offset", type=int, default=0, help="deterministic batch offset in val.bin")
     ap.add_argument("--split", default="val", choices=("val", "train"))
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--grads", dest="grads", action="store_true", default=True,
+                    help="also record dL/d~z and dL/dz at every checkpoint (default)")
+    ap.add_argument("--no-grads", dest="grads", action="store_false")
     args = ap.parse_args()
 
     run = os.path.basename(args.ckpt_dir.rstrip("/"))
@@ -131,13 +148,18 @@ def main() -> None:
         shape=(len(ckpts), len(labels), int(args.batch), n_pos, n_feat),
     )
 
+    grad_arrs = {}
+    if args.grads:
+        for g in GRAD_NAMES:
+            grad_arrs[g] = np.lib.format.open_memmap(
+                os.path.join(args.out_dir, f"{run}.{g}.npy"), mode="w+",
+                dtype=np.float32, shape=arr.shape)
+
     val_ce = []
     for ci, path in enumerate(ckpts):
         if ci > 0:  # the first is already loaded
             model, cfg, _ = load_for_inference(path, device=str(device))
             bottlenecks = find_bottlenecks(model, cfg)
-        model.eval()
-
         # The gate's first positional argument is the ranking signal in every
         # selection mode, so this one hook is placement- and mode-agnostic.
         grabbed: dict = {}
@@ -145,27 +167,58 @@ def main() -> None:
 
         def make_hook(li):
             def hook(module, inputs):
-                grabbed[li] = inputs[0].detach()
+                a = inputs[0]
+                grabbed[("score", li)] = a.detach()
+                if args.grads and a.requires_grad:
+                    a.register_hook(lambda g, li=li: grabbed.__setitem__(("g_z", li), g.detach()))
                 return None
             return hook
 
+        def make_post(li):
+            def post(module, inputs, output):
+                if output.requires_grad:
+                    output.register_hook(
+                        lambda g, li=li: grabbed.__setitem__(("g_ztilde", li), g.detach()))
+                return None
+            return post
+
         for li, (_, mod) in enumerate(bottlenecks):
             handles.append(mod.gate.register_forward_pre_hook(make_hook(li)))
+            if args.grads:
+                handles.append(mod.gate.register_forward_hook(make_post(li)))
 
-        with torch.no_grad():
+        if args.grads:
+            # train() mode: surrogate_active() is False in eval and under
+            # no_grad, so an eval-mode backward would measure the hard mask's
+            # gradient instead of the surrogate's.  No autocast: the gradients
+            # are reported in float32.  The forward is hard in both modes and
+            # there is no dropout, so the score is the eval-mode score.
+            model.train()
             _, loss = model(idx, targets)
+            scope = str(getattr(cfg.activation_bottleneck, "rblapsum_surrogate_scope", "pool"))
+            if scope.startswith("first_order"):
+                first_order_backward(loss, model.tok_emb.weight)
+            else:
+                loss.backward()
+            loss = loss.detach()
+        else:
+            model.eval()
+            with torch.no_grad():
+                _, loss = model(idx, targets)
         for h in handles:
             h.remove()
 
-        if len(grabbed) != len(bottlenecks):
-            raise RuntimeError(
-                f"{path}: captured {len(grabbed)} of {len(bottlenecks)} bottlenecks"
-            )
-        for li in range(len(bottlenecks)):
-            a = grabbed[li]
-            if a.shape != (args.batch, seq_len, n_feat):
-                raise RuntimeError(f"{path} layer {li}: unexpected score shape {tuple(a.shape)}")
-            arr[ci, li] = a[:, :n_pos, :].float().cpu().numpy()
+        names = ("score",) + (GRAD_NAMES if args.grads else ())
+        for name in names:
+            for li in range(len(bottlenecks)):
+                a = grabbed.get((name, li))
+                if a is None:
+                    raise RuntimeError(f"{path}: {name} never captured for bottleneck {li}")
+                if a.shape != (args.batch, seq_len, n_feat):
+                    raise RuntimeError(f"{path} layer {li}: unexpected {name} shape {tuple(a.shape)}")
+                dst = arr if name == "score" else grad_arrs[name]
+                dst[ci, li] = a[:, :n_pos, :].float().cpu().numpy()
+        model.zero_grad(set_to_none=True)
 
         val_ce.append(float(loss))
         print(f"  [{ci + 1}/{len(ckpts)}] step {steps[ci]:>6}  batch CE {float(loss):.4f}")
@@ -174,6 +227,8 @@ def main() -> None:
         torch.cuda.empty_cache() if device.type == "cuda" else None
 
     arr.flush()
+    for g in grad_arrs.values():
+        g.flush()
 
     meta = dict(
         run=run,
@@ -201,6 +256,14 @@ def main() -> None:
         batch_ce=val_ce,
         array=os.path.basename(out_path),
         array_shape=list(arr.shape),
+        arrays=({"score": os.path.basename(out_path),
+                 **{g: f"{run}.{g}.npy" for g in GRAD_NAMES}} if args.grads
+                else {"score": os.path.basename(out_path)}),
+        rblapsum_surrogate_scope=str(getattr(cfg.activation_bottleneck,
+                                             "rblapsum_surrogate_scope", "pool")),
+        code_residual=bool(getattr(cfg.activation_bottleneck, "code_residual", False)),
+        grads_mode=("train-mode float32 forward+backward on the fixed batch; "
+                    "first_order_backward for first_order scopes" if args.grads else None),
         note=(
             "scores are the signed pre-TopK ranking signal; rank by |value| when "
             f"selection_mode={sel!r}. Bands: [0,k) TopK, [k,k+j) J candidates, rest zero-grad."
