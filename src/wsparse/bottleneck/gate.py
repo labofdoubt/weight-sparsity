@@ -53,6 +53,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         rblapsum_surrogate_scope: str = "pool",
         rblapsum_relative_temperature: bool = False,
         rblapsum_center_tokens: bool = False,
+        rblapsum_carry_decay: float = 1.0,
         barrier_solver_tol: float = 1e-6,
         solver_dtype: str = "float32",
         log_diagnostics: bool = True,
@@ -122,6 +123,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
         # gate's index in the stack); plain attributes, not state
         self._carry_chain = None
         self._carry_index = -1
+        # see ActivationBottleneckConfig.rblapsum_carry_decay
+        if not 0.0 <= float(rblapsum_carry_decay) <= 1.0:
+            raise ValueError("rblapsum_carry_decay must be in [0, 1]")
+        self.rblapsum_carry_decay = float(rblapsum_carry_decay)
         # see ActivationBottleneckConfig.rblapsum_relative_temperature: the
         # kernel width is temperature * b per row
         if rblapsum_relative_temperature and surrogate_mode != "rblapsum":
@@ -430,7 +435,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
                                       SURROGATE_SCOPES[self.rblapsum_surrogate_scope],
                                       self.rblapsum_relative_temperature, cand_idx,
                                       self.n_features, self._carry_chain,
-                                      self._carry_index, self.rblapsum_surrogate_scope)
+                                      self._carry_index, self.rblapsum_surrogate_scope,
+                                      self.rblapsum_carry_decay)
         else:
             y_c = rblapsum_gate(value_c, active_c, score_c, sign_c, b, t,
                                 self.rblapsum_boundary_grad_mode, self.k, cap_active, sink,

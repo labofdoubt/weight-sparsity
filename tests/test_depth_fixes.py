@@ -799,9 +799,11 @@ def _support(gate_ref, u, g):
     return vjp(gate_ref, u, g) - m * g
 
 
-@pytest.mark.parametrize("scope", ["carry_local", "carry_hard", "carry_persistent",
-                                   "carry_mixed", "carry_mixed_inactive"])
-def test_carry_scope_chain_algebra(scope):
+@pytest.mark.parametrize("scope,decay", [("carry_local", 1.0), ("carry_hard", 1.0),
+                                         ("carry_persistent", 1.0), ("carry_mixed", 1.0),
+                                         ("carry_mixed_inactive", 1.0), ("carry_mixed", 0.5),
+                                         ("carry_persistent", 0.0)])
+def test_carry_scope_chain_algebra(scope, decay):
     # three gates in a carry with a read after each one (the decoder's gradient
     # w_l stands in for the read): u0 -> g0 -> (c0, r0); u1 = c0 + v1 -> g1 ->
     # (c1, r1); u2 = c1 + v2 -> g2 -> (c2, r2); L = sum_l <w_l, r_l>.
@@ -816,6 +818,7 @@ def test_carry_scope_chain_algebra(scope):
     chain = CarryChain()
     for i, g in enumerate(gates):
         g._carry_chain, g._carry_index = chain, i
+        g.rblapsum_carry_decay = decay
     c0, r0 = split_carry_read(gates[0](u0), chain, 0)
     u1 = c0 + v1
     c1, r1 = split_carry_read(gates[1](u1), chain, 1)
@@ -835,7 +838,8 @@ def test_carry_scope_chain_algebra(scope):
                     "carry_mixed_inactive": ("hard", "persistent")}[scope]
 
     def driver(kind, r, H, R):
-        return r if kind == "local" else (r + H if kind == "hard" else r + R)
+        # persistent: r_{l+1} + rho r_{l+2} + rho^2 r_{l+3} + ... = r + rho * R_above
+        return r if kind == "local" else (r + H if kind == "hard" else r + decay * R)
 
     def g_up(mask, r, H, R):
         return torch.where(mask > 0, driver(evict, r, H, R), driver(entry, r, H, R))
@@ -843,10 +847,10 @@ def test_carry_scope_chain_algebra(scope):
     # gate 2: nothing above it
     H, R = torch.zeros_like(w[2]), torch.zeros_like(w[2])
     du2 = m[2] * w[2] + _support(ref, u2d, g_up(m[2], w[2], H, R))
-    H, R = m[2] * (w[2] + H), w[2] + R
+    H, R = m[2] * (w[2] + H), w[2] + decay * R
     # gate 1: the carry brings du2, the read w1
     du1 = m[1] * (du2 + w[1]) + _support(ref, u1d, g_up(m[1], w[1], H, R))
-    H, R = m[1] * (w[1] + H), w[1] + R
+    H, R = m[1] * (w[1] + H), w[1] + decay * R
     du0 = m[0] * (du1 + w[0]) + _support(ref, u0d, g_up(m[0], w[0], H, R))
     assert torch.allclose(v2.grad, du2, atol=1e-12)
     assert torch.allclose(v1.grad, du1, atol=1e-12)

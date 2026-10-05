@@ -174,6 +174,7 @@ class SparseTopKBottleneck(nn.Module):
             rblapsum_relative_temperature=getattr(
                 cfg, "rblapsum_relative_temperature", False),
             rblapsum_center_tokens=getattr(cfg, "rblapsum_center_tokens", False),
+            rblapsum_carry_decay=getattr(cfg, "rblapsum_carry_decay", 1.0),
             barrier_solver_tol=cfg.barrier_solver_tol,
             solver_dtype=cfg.solver_dtype,
             log_diagnostics=cfg.log_diagnostics,

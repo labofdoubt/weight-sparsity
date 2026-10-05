@@ -132,7 +132,148 @@ def table_init():
                       f"  sigma {sig:.3f}")
 
 
+# --------------------------------------------------------------------------- #
+# Figure 2: the screens, against the hard baselines of the code-carried grid
+# --------------------------------------------------------------------------- #
+CELLS = {32: (224, "ma_cr_hard_k32_pnorm", "ma_cr_hard_k256_pnorm"),
+         64: (448, "ma_cr_hard_k64_pnorm", "ma_cr_hard_k512_pnorm"),
+         128: (384, "ma_cr_hard_k128_pnorm", "ma_cr_hard_k512_pnorm"),
+         256: (256, "ma_cr_hard_k256_pnorm", "ma_cr_hard_k512_pnorm")}
+
+
+def curves():
+    base = load(KJ, "curves_new.json") or {}
+    new = load(DATA, "curves_bergen.json") or {}
+    return {**base, **new}
+
+
+def run_of(K, key):
+    J = CELLS[K][0]
+    if key == "pool":
+        return f"ma_cr_rbk_k{K}_j{J}_t2"
+    if key == "fo":
+        return f"ma_cr_rbk_k{K}_j{J}_t2_fo"
+    return f"be_cr_rbk_k{K}_j{J}_t2_{key}"
+
+
+def series(cv, run):
+    c = cv.get(run)
+    return {} if c is None else dict((int(s), v) for s, v in c["val"])
+
+
+def delta_panel(ax, cv, K, keys, max_step=3000, show_pool_ref=True):
+    J, hard_k, hard_kj = CELLS[K]
+    h = series(cv, hard_k)
+    for key in keys:
+        d = series(cv, run_of(K, key))
+        pts = [(s, v - h[s]) for s, v in sorted(d.items()) if s in h and s <= max_step]
+        if not pts:
+            continue
+        lab, color, ls = STYLE[key]
+        ax.plot(*zip(*pts), ls, color=color, lw=1.5 if key in ("pool", "cl", "cm") else 1.0,
+                marker="o", ms=2.2, mfc="white", mew=0.7, label=lab)
+    if show_pool_ref:
+        hk = series(cv, hard_kj)
+        pts = [(s, v - h[s]) for s, v in sorted(hk.items()) if s in h and s <= max_step]
+        if pts:
+            ax.plot(*zip(*pts), "--", color=INK, lw=0.9, label=rf"hard Top-{K + J}")
+    ax.axhline(0, color=INK, lw=0.8)
+    ax.set_xlabel("step")
+    ax.set_ylabel(rf"val CE $-$ hard Top-{K}")
+
+
+def fig_screens(max_step=3000):
+    cv = curves()
+    Ks = [K for K in (32, 128, 256) if any(run_of(K, k) in cv for k in ("cl", "cm"))]
+    if not Ks:
+        return
+    fig, axes = plt.subplots(1, len(Ks), figsize=(2.4 * len(Ks) + 0.2, 2.0),
+                             gridspec_kw={"wspace": 0.45}, squeeze=False)
+    for ax, K, letter in zip(axes[0], Ks, "abc"):
+        delta_panel(ax, cv, K, ("pool", "fo", "ch", "cp", "cm", "cl"), max_step)
+        ax.set_title(rf"{letter}  $K{{=}}{K}$, $J{{=}}{CELLS[K][0]}$")
+        ax.set_xlim(400, max_step + 50)
+        if K == Ks[0]:
+            ax.legend(loc="lower left", fontsize=5.0, ncol=2)
+    save(fig, "fig_screens")
+
+
+def table_screens(steps=(1000, 2000, 3000)):
+    cv = curves()
+    for K in (32, 64, 128, 256):
+        h = series(cv, CELLS[K][1])
+        hk = series(cv, CELLS[K][2])
+        rows = []
+        for key in ("pool", "fo", "cl", "cm", "cp", "ch"):
+            d = series(cv, run_of(K, key))
+            if not d:
+                continue
+            rows.append((key, [round(d[s] - h[s], 4) if s in d and s in h else None for s in steps],
+                         [round(d[s], 4) if s in d else None for s in steps]))
+        if rows:
+            print(f"K={K}  hard Top-K at {steps}: {[round(h.get(s, float('nan')), 4) for s in steps]}"
+                  f"  hard Top-(K+J): {[round(hk.get(s, float('nan')) - h.get(s, float('nan')), 4) for s in steps]}")
+            for key, dv, v in rows:
+                print(f"   {key:5s} delta {dv}  abs {v}")
+
+
+# --------------------------------------------------------------------------- #
+# Figure 3: runs of the carried code (analysis/code_runs.py)
+# --------------------------------------------------------------------------- #
+def fig_runs():
+    fig, axes = plt.subplots(1, 3, figsize=(7.1, 1.95), gridspec_kw={"wspace": 0.45})
+    rows = [  # file stem, label, color, ls
+        ("ma_cr_hard_k32_pnorm_step20000", r"hard Top-32, 20k", INK, "-"),
+        ("ma_cr_hard_k32_pnorm_step2000", r"hard Top-32, 2k", INK, ":"),
+        ("ma_cr_hard_k256_pnorm_step20000", r"hard Top-256, 20k", MUTED, "-"),
+        ("ma_cr_hard_k256_pnorm_step2000", r"hard Top-256, 2k", MUTED, ":"),
+        ("ma_cr_rbk_k32_j224_t2_step20000", r"pool (32, 224), 20k", ORANGE, "-"),
+        ("ma_cr_rbk_k32_j224_t2_step2000", r"pool (32, 224), 2k", ORANGE, ":"),
+        ("ma_cr_rbk_k256_j256_t2_step20000", r"pool (256, 256), 20k", "#f2a37e", "-"),
+    ]
+    for key, panel in (("survival", 0), ("evict_frac", 1), ("final_entry", 2)):
+        ax = axes[panel]
+        for stem, lab, color, ls in rows:
+            d = load(DATA, "runs", stem + ".json")
+            if d is None:
+                continue
+            y = d[key]
+            x = list(range(len(y)))
+            if key == "evict_frac":
+                x, y = x[1:], y[1:]
+            ax.plot(x, y, ls, color=color, lw=1.2, marker="o", ms=2.0, mfc="white", mew=0.6,
+                    label=lab if panel == 0 else None)
+    axes[0].set_xlabel(r"gates after entry $d$")
+    axes[0].set_ylabel(r"P(still in the support)")
+    axes[0].set_ylim(0, 1.02)
+    axes[0].set_title("a  survival of an entered feature")
+    axes[0].legend(fontsize=5.0, loc="upper right")
+    axes[1].set_xlabel(r"gate $\ell$")
+    axes[1].set_ylabel(r"share of gate $\ell{-}1$'s support evicted")
+    axes[1].set_ylim(0, 0.8)
+    axes[1].set_title("b  turnover per gate")
+    axes[2].set_xlabel(r"gate of entry")
+    axes[2].set_ylabel("share of the final code")
+    axes[2].set_title("c  final code by gate of entry")
+    save(fig, "fig_runs")
+
+
+def table_runs():
+    import glob
+    for f in sorted(glob.glob(os.path.join(DATA, "runs", "*.json"))):
+        d = json.load(open(f))
+        surv = d["survival"]
+        exp_reads = 1 + sum(surv[1:])
+        print(f"  {os.path.basename(f)[:-5]:40s} survival d=1 {surv[1]:.2f}  expected downstream reads of an entry at gate 0 "
+              f"{exp_reads:.2f}  evict/gate {sum(d['evict_frac'][1:]) / (len(d['evict_frac']) - 1):.2f}  "
+              f"final from gate0 {d['final_entry'][0]:.2f} last gate {d['final_entry'][-1]:.2f}  reentry {d['reentry_frac']:.2f}")
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     fig_init()
     table_init()
+    fig_screens()
+    table_screens()
+    fig_runs()
+    table_runs()

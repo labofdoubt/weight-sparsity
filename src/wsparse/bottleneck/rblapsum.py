@@ -570,9 +570,14 @@ class _RBLapSumCarryGate(torch.autograd.Function):
     @staticmethod
     def forward(ctx, value_c, active_c, score_c, sign_c, b, t, mode_id, k,
                 cap_active, sink, supp_scale, members, relative_t, cand_idx,
-                n_features, chain, index, evict_id, entry_id):  # type: ignore[override]
+                n_features, chain, index, evict_id, entry_id,
+                decay=1.0):  # type: ignore[override]
         ctx.save_for_backward(value_c, active_c, score_c, sign_c, b, cap_active,
                               cand_idx)
+        # rblapsum_carry_decay: R_l = r_{l+1} + decay * R_{l+1}, the expected
+        # number of downstream reads of an entering feature when it survives
+        # each further gate with probability `decay` (1 = persistent)
+        ctx.decay = float(decay)
         ctx.n_features = int(n_features)
         ctx.t = float(t)
         ctx.mode_id = int(mode_id)
@@ -612,7 +617,8 @@ class _RBLapSumCarryGate(torch.autograd.Function):
             h_pool = rr_pool = r_pool
         else:
             h_full = r_full + above["H"]
-            rr_full = r_full + above["R"]
+            rr_full = (r_full + above["R"] if ctx.decay == 1.0
+                       else r_full + ctx.decay * above["R"])
             h_pool = h_full.gather(-1, cand_idx)
             rr_pool = rr_full.gather(-1, cand_idx)
 
@@ -630,20 +636,24 @@ class _RBLapSumCarryGate(torch.autograd.Function):
         # the chain for the gate below: H masked by THIS gate's support
         mask_full = torch.zeros_like(r_full).scatter(-1, cand_idx, active_c.to(r_full.dtype))
         state[ctx.index] = {"H": h_full * mask_full, "R": rr_full}
-        return (grad_value,) + (None,) * 18
+        return (grad_value,) + (None,) * 19
 
 
 def rblapsum_carry_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
                         cap_active, sink, supp_scale, members, relative_t,
-                        cand_idx, n_features, chain, index, scope):
-    """Apply the carry-scope gate; see :class:`_RBLapSumCarryGate`."""
+                        cand_idx, n_features, chain, index, scope, decay=1.0):
+    """Apply the carry-scope gate; see :class:`_RBLapSumCarryGate`.
+
+    ``decay`` is rblapsum_carry_decay, the per-gate factor on the persistent
+    chain (1.0: every downstream read counts in full).
+    """
     evict, entry = CARRY_DRIVERS[scope]
     return _RBLapSumCarryGate.apply(
         value_c, active_c, score_c.detach(), sign_c.detach(), b.detach(),
         float(t), _MODE_ID[mode], int(k), cap_active.detach(), sink,
         float(supp_scale), _MEMBERS_ID[members], bool(relative_t),
         cand_idx.detach(), int(n_features), chain, int(index),
-        _DRIVER_ID[evict], _DRIVER_ID[entry],
+        _DRIVER_ID[evict], _DRIVER_ID[entry], float(decay),
     )
 
 

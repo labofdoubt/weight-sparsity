@@ -503,6 +503,14 @@ class ActivationBottleneckConfig:
     # (docs/rblapsum-code-residual-journal.tex).  "inactive" and "update" keep
     # the carry's backward exact.  surrogate_mode="rblapsum" only.
     rblapsum_surrogate_scope: str = "pool"
+    # carry_persistent / carry_mixed only: the per-gate factor rho of the
+    # persistent chain, R_l = r_{l+1} + rho R_{l+1}.  With rho the probability
+    # that a feature which entered the code survives the next gate, R is the
+    # expected sum of the downstream read gradients an entering feature
+    # receives; 1.0 (the default) counts every downstream read in full, 0.0
+    # makes the entry driver the local one.  Trained hard code-carried models
+    # measure rho ~ 0.5-0.6 (analysis/code_runs.py).
+    rblapsum_carry_decay: float = 1.0
 
     # Scale-free kernel (surrogate_mode="rblapsum" only): the temperature
     # becomes temperature * b per row, b the rank boundary, so ``temperature``
@@ -772,6 +780,14 @@ class ActivationBottleneckConfig:
                     f"rblapsum_surrogate_scope={self.rblapsum_surrogate_scope!r} "
                     "splits a code-residual gate's output into its carry and its "
                     "read; set code_residual=true")
+            if not 0.0 <= float(self.rblapsum_carry_decay) <= 1.0:
+                raise ValueError("rblapsum_carry_decay must be in [0, 1]")
+            if (self.rblapsum_carry_decay != 1.0
+                    and self.rblapsum_surrogate_scope.split("_inactive")[0]
+                    not in ("carry_persistent", "carry_mixed")):
+                raise ValueError(
+                    "rblapsum_carry_decay applies to the persistent chain of "
+                    "rblapsum_surrogate_scope='carry_persistent' or 'carry_mixed'")
             if (self.rblapsum_surrogate_scope.startswith("carry")
                     and (self.rblapsum_rho_random_perm_prob_grad != 0.0
                          or self.rblapsum_center_tokens)):
