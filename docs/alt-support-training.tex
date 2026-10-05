@@ -72,12 +72,16 @@ Top-\((K{+}J)\).  \textbf{a} \((32,224)\); \textbf{b} \((256,256)\).}
 \end{figure}
 
 \textbf{At step 3000, minus hard Top-\(K\)} (Fig.~\ref{fig:alt}, Table~\ref{tab:alt}).  At \((256,256)\), the cell
-where the unmodified surrogate loses \(0.047\), both stochastic widths beat the hard model -- two-point \(-0.008\),
-uniform \(-0.006\) -- with no surrogate and no gradient modification, matching the best carry scope (\(-0.005\));
-candidates-only RBLapSum ends at \(+0.004\) and the soft straight-through at \(+0.030\).  At \((32,224)\) the two-point
-width gives \(-0.019\), the uniform width \(+0.014\) (the model is trained at a mean width of 144 and evaluated at
-32), candidates-only RBLapSum \(-0.032\), soft straight-through \(+0.018\); the unmodified surrogate is at \(-0.061\)
-and the mixed carry scope at \(-0.118\).  \PH{round 2: two-point p=0.25, geometric J/16, diagonal cells, 10k}
+where the unmodified surrogate loses \(0.047\), every width distribution except the narrowest beats the hard model
+-- two-point \(-0.008\) and \(-0.009\) (\(p=\tfrac12\), \(\tfrac14\)), uniform \(-0.006\), geometric \(J/4\) \(-0.005\),
+geometric \(J/16\) \(0.000\) -- with no surrogate and no gradient modification, as much as the best carry scope
+(\(-0.005\)); candidates-only RBLapSum ends at \(+0.004\), the soft straight-through at \(+0.030\).  At \((128,128)\)
+the two-point width gives \(-0.010\) against \(-0.006\) for the mixed carry scope and \(-0.007\) for candidates-only
+RBLapSum (\code{pool} \(+0.025\)) \PH{geo, two25 at 128; k64}.  At \((32,224)\) the order of the width
+distributions follows how much mass they put at \(K\): uniform \(+0.014\), two-point \(-0.019\) and \PH{p=0.25},
+geometric \(J/16\) \(-0.025\), geometric \(J/4\) \(-0.034\); candidates-only RBLapSum \(-0.032\), soft
+straight-through \(+0.018\), the unmodified surrogate \(-0.061\), the mixed carry scope \(-0.118\).
+\PH{10k continuations}
 
 \begin{figure}[t]
 \centering
@@ -98,19 +102,52 @@ at once.
 
 \begin{table}[t]
 \centering\footnotesize
-\begin{tabular}{llccccccc}
+\begin{tabular}{llcccccccc}
 \toprule
-\(K\) & \(J\) & pool & carry mixed & width, uniform & width, two-point & width, geometric & soft STE & cand.\ only \\
+ & & & & \multicolumn{4}{c}{stochastic width} & & \\
+\cmidrule(lr){5-8}
+\(K\) & \(J\) & pool & carry mixed & uniform & two-point & geom.\ \(J/4\) & geom.\ \(J/16\) & soft STE & cand.\ only \\
 \midrule
-32 & 224 & \(-0.061\) & \(-0.118\) & \(+0.014\) & \(-0.019\) & \PH{} & \(+0.018\) & \(-0.032\) \\
-256 & 256 & \(+0.047\) & \(-0.005\) & \(-0.006\) & \(-0.008\) & \PH{} & \(+0.030\) & \(+0.004\) \\
+32 & 224 & \(-0.061\) & \(\mathbf{-0.118}\) & \(+0.014\) & \(-0.019\) & \(-0.034\) & \(-0.025\) & \(+0.018\) & \(-0.032\) \\
+128 & 128 & \(+0.025\) & \(-0.006\) & -- & \(\mathbf{-0.010}\) & \PH{} & -- & -- & \(-0.007\) \\
+256 & 256 & \(+0.047\) & \(-0.005\) & \(-0.006\) & \(\mathbf{-0.008}\) & \(-0.005\) & \(0.000\) & \(+0.030\) & \(+0.004\) \\
 \bottomrule
 \end{tabular}
-\caption{Validation CE at step 3000 minus hard Top-\(K\) of the row (\(1.899\), \(1.741\)).}
+\caption{Validation CE at step 3000 minus the code-carried hard Top-\(K\) of the row (\(1.899\), \(1.776\), \(1.741\)); two-point with \(p=\tfrac12\). Bold: best of the row.}
 \label{tab:alt}
 \end{table}
 
 \section{Reading}
-\PH{}
+
+\textbf{The probability distribution on the pool can live in the forward.}  RBLapSum puts a distribution on the
+Top-\((K{+}J)\) pool and differentiates through it; under the carry that derivative compounds because the same
+carried value is relaxed at every gate.  Sampling the width puts the distribution on the pool into the forward
+instead -- a candidate at rank \(K{+}m\) is present with probability \(P(K'\ge K{+}m)\) and, when present, is trained
+by the exact gradient of a hard forward -- so there is no surrogate Jacobian, nothing to route, and the carried code
+is a hard code at every step.  At \((256,256)\) this is enough: every width distribution tried beats the hard model
+(\(-0.005\) to \(-0.008\)), the carry scopes' result without the carry scopes.  The price is a train/test mismatch
+on the support width: the deployed model has seen its own width only part of the time, and the gap to the hard
+baseline at \(K=32\) depends on how much of the distribution sits at \(K\) (uniform \(+0.014\), two-point
+\(-0.019\), geometric \(-0.034\), \PH{two-point 0.25, geometric J/16}).  Where the unmodified surrogate is worth
+\(0.06\) and the mixed carry scope \(0.12\), the width distributions tried are worth \PH{} at most.
+
+\textbf{What the hard forward cannot give the candidates.}  The two surrogate-free rules differ in what a
+candidate learns from.  Under the stochastic width it learns from being \emph{present}, in a forward where the
+whole stack adapts to its presence; under the soft straight-through it learns from a counterfactual, the gradient
+it would receive if present, with the rest of the stack unchanged.  The second is worse than the hard backward at
+both \(K\) (\(+0.018\), \(+0.030\)), while RBLapSum restricted to the same candidates with its boundary exchange
+term (\(-0.032\), \(+0.004\)) is not: the value of RBLapSum's signal is the \emph{relative} ranking of candidates
+near the boundary, not the counterfactual gradient as such.
+
+\textbf{Against the carry scopes.}  The carry scopes keep RBLapSum's signal, including the eviction term that the
+measurements of \code{docs/carry-surrogate.tex} found decisive at \(K=32\), and make it compatible with the carry
+by a rule about where the kernel acts.  The stochastic width is the natural surrogate-free training of a hard
+Top-\(K\) under the code residual and matches them at large \(K\), where the hard model's own selection is already
+good and the surrogate's job is only to keep candidates alive; at small \(K\), where the selection itself is
+worth \(0.1\) nats, a distribution over widths does not reach what a gradient on the ranking does.  \PH{10k}
+
+\textbf{Scope.}  One seed, 3000-step screens (one 10k continuation), the \(T=2\) code-carried family of the K+J
+grid; the stochastic-width models carry the post-norm of the hard baselines, the surrogate cells do not (worth
+about \(0.007\) to a hard model in the stream grid).
 
 \end{document}

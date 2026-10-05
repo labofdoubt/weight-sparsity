@@ -51,7 +51,9 @@ STYLE = {
     "hard": ("hard Top-$K$", INK, "-"),
     "sw_uni": ("stochastic width, uniform", "#1f77b4", "-"),
     "sw_two": ("stochastic width, two-point", "#17becf", "-"),
-    "sw_geo": ("stochastic width, geometric", "#9467bd", "-"),
+    "sw_geo": ("stochastic width, geometric $J/4$", "#9467bd", "-"),
+    "sw_geo16": ("stochastic width, geometric $J/16$", "#c5b0d5", "-"),
+    "sw_two25": ("stochastic width, two-point $p{=}0.25$", "#9edae5", "-"),
     "ste": ("soft straight-through", "#2ca02c", "-"),
     "inact": ("RBLapSum, candidates only", "#d62728", "-"),
     "cm05": (r"carry, mixed, $\rho{=}0.5$", AQUA, ":"),
@@ -447,12 +449,12 @@ def fig_mech():
 # --------------------------------------------------------------------------- #
 # Figure 5: alternatives to the surrogate (stochastic width, soft STE, candidates-only)
 # --------------------------------------------------------------------------- #
-ALT_KEYS = ("sw_uni", "sw_two", "sw_geo", "ste", "inact")
+ALT_KEYS = ("sw_uni", "sw_two", "sw_two25", "sw_geo", "sw_geo16", "ste", "inact")
 
 
 def alt_run_of(cell, key):
     K, J = cell
-    if key in ("sw_uni", "sw_two", "sw_geo"):
+    if key.startswith("sw_"):
         return f"ma_alt_{key}_k{K}_j{J}"
     if key == "ste":
         return f"ma_alt_ste_k{K}_j{J}_t2"
@@ -466,7 +468,7 @@ def fig_alt(max_step=3000):
     cells = [c for c in ((32, 224), (128, 128), (256, 256)) if any(alt_run_of(c, k) in cv for k in ALT_KEYS)]
     if not cells:
         return
-    fig, axes = plt.subplots(1, len(cells), figsize=(2.4 * len(cells) + 0.3, 1.8),
+    fig, axes = plt.subplots(1, len(cells), figsize=(2.4 * len(cells) + 0.3, 1.85),
                              gridspec_kw={"wspace": 0.5}, squeeze=False)
     for ax, cell, letter in zip(axes[0], cells, "abc"):
         K, J = cell
@@ -493,7 +495,11 @@ def fig_alt(max_step=3000):
         ax.set_xlabel("step")
         ax.set_ylabel(rf"val CE $-$ hard Top-{K}")
         ax.set_title(rf"{letter}  $K{{=}}{K}$, $J{{=}}{J}$")
-    axes[0][-1].legend(fontsize=4.6, loc="best")
+    from matplotlib.lines import Line2D
+    present = [k for k in ("pool", "cm") + ALT_KEYS if any((alt_run_of(c, k) if k in ALT_KEYS else (f"be_cr_rbk_k{c[0]}_j{c[1]}_t2_cm" if k == "cm" else run_of(c, k))) in cv for c in cells)]
+    handles = [Line2D([], [], color=STYLE[k][1], ls=STYLE[k][2], marker="o", ms=2.0, mfc="white", mew=0.6, lw=1.2, label=STYLE[k][0]) for k in present]
+    handles.append(Line2D([], [], color=INK, ls="--", lw=0.9, label=r"hard Top-$(K{+}J)$"))
+    axes[0][-1].legend(handles=handles, fontsize=4.2, loc="upper right", ncol=1)
     save(fig, "fig_alt")
 
 
