@@ -82,18 +82,15 @@ distributions follows how much mass they put near \(K\): uniform \(+0.014\), two
 and \(\tfrac14\), geometric \(J/16\) \(-0.025\), geometric \(J/4\) \(-0.034\); at \((64,64)\) the two-point and geometric widths give
 \(-0.029\) and \(-0.023\) (\code{pool} \(-0.005\), mixed carry scope \(-0.047\), hard Top-128 \(-0.059\)); candidates-only RBLapSum \(-0.032\), soft
 straight-through \(+0.018\), the unmodified surrogate \(-0.061\), the mixed carry scope \(-0.118\).
-\PH{10k continuations}
+Continued to 10k at \((256,256)\) (Fig.~\ref{fig:extra}b), the two-point width holds its margin, \(-0.008\) at every
+point from 4k on, while the mixed carry scope's grows from \(-0.005\) to \(-0.014\) and overtakes it at 6k; hard
+Top-512 is at \(-0.029\).  At \((32,224)\) \PH{10k geometric}.
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=.74\textwidth]{figures/carry/fig_widths.png}
-\caption{One checkpoint, several inference widths: validation CE at step 3000 of the stochastic-width models
-evaluated with hard Top-\(K'\) for \(K'\) in their training range, against the grid's hard models trained at each
-\(K'\) (\code{analysis/eval\_widths.py}).}
-\label{fig:widths}
-\end{figure}
 
-\textbf{What a stochastic-width model is} (Fig.~\ref{fig:widths}).  Evaluated across its training range, the model
+
+
+
+\textbf{What a stochastic-width model is} (Fig.~\ref{fig:extra}c,d).  Evaluated across its training range, the model
 is not a slimmable ladder: its loss is lowest at an intermediate width and rises again toward \(K{+}J\), where it is
 far above the hard model trained there (\(1.736\) against \(1.703\) at \(K'=512\)).  At the narrow end it beats the hard
 models: the uniform model trained at \(K=32\) gives \(1.809\) at \(K'=64\) against \(1.835\) for hard Top-64, and both
@@ -118,6 +115,17 @@ at once.
 \caption{Validation CE at step 3000 minus the code-carried hard Top-\(K\) of the row (\(1.899\), \(1.835\), \(1.776\), \(1.741\)); two-point with \(p=\tfrac12\). Bold: best of the row.}
 \label{tab:alt}
 \end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/carry/fig_alt_extra.png}
+\caption{\textbf{a}, \textbf{b} The 10k continuations: the best stochastic width of each cell (geometric \(J/4\) at
+\((32,224)\), two-point at \((256,256)\)) against the mixed carry scope's continuation, the unmodified surrogate and
+the hard ladder.  \textbf{c}, \textbf{d} One checkpoint, several inference widths: validation CE at step 3000 of the
+stochastic-width models evaluated with hard Top-\(K'\) across their training range, against the grid's hard models
+trained at each \(K'\) (\code{analysis/eval\_widths.py}).}
+\label{fig:extra}
+\end{figure}
 
 \section{Reading}
 

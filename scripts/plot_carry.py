@@ -548,6 +548,84 @@ def fig_widths():
     save(fig, "fig_widths")
 
 
+def fig_alt_long(max_step=10000):
+    cv = {**curves(), **(load(DATA, "curves_alt.json") or {})}
+    cells = [(32, 224), (256, 256)]
+    fig, axes = plt.subplots(1, 2, figsize=(5.0, 1.7), gridspec_kw={"wspace": 0.5})
+    for ax, cell, letter in zip(axes, cells, "ab"):
+        K, J = cell
+        h = series(cv, CELLS[cell][0])
+        refs = {32: [(64, "#f0a0a0"), (128, "#d05050")], 256: [(512, "#800000")]}[K]
+        for Kp, color in refs:
+            r = series(cv, f"ma_cr_hard_k{Kp}_pnorm")
+            pts = [(s_, v - h[s_]) for s_, v in sorted(r.items()) if s_ in h and s_ <= max_step]
+            ax.plot(*zip(*pts), "--", color=color, lw=0.9, label=rf"hard Top-{Kp}")
+        runs = [("pool", run_of(cell, "pool")), ("cm", f"be_cr_rbk_k{K}_j{J}_t2_cm_long"),
+                ("sw_geo" if K == 32 else "sw_two", f"ma_alt_sw_{'geo' if K == 32 else 'two'}_k{K}_j{J}_long")]
+        for key, run in runs:
+            d = series(cv, run)
+            pts = [(s_, v - h[s_]) for s_, v in sorted(d.items()) if s_ in h and s_ <= max_step]
+            if pts:
+                lab, color, ls = STYLE[key]
+                ax.plot(*zip(*pts), ls, color=color, lw=1.3, marker="o", ms=1.8, mfc="white", mew=0.6, label=lab)
+        ax.axhline(0, color=INK, lw=0.8)
+        ax.set_xticks([0, 5000, 10000]); ax.set_xticklabels(["0", "5k", "10k"])
+        ax.set_xlabel("step"); ax.set_ylabel(rf"val CE $-$ hard Top-{K}")
+        ax.set_title(rf"{letter}  $K{{=}}{K}$, $J{{=}}{J}$, to 10k")
+        ax.legend(fontsize=4.4, loc="best")
+    save(fig, "fig_alt_long")
+
+
+def fig_alt_extra(max_step=10000):
+    """One row: the 10k continuations (a, b) and the inference-width sweeps (c, d)."""
+    import glob
+    cv = {**curves(), **(load(DATA, "curves_alt.json") or {})}
+    fig, axes = plt.subplots(1, 4, figsize=(7.2, 1.55), gridspec_kw={"wspace": 0.55})
+    for ax, cell, letter in zip(axes[:2], [(32, 224), (256, 256)], "ab"):
+        K, J = cell
+        h = series(cv, CELLS[cell][0])
+        refs = {32: [(64, "#f0a0a0"), (128, "#d05050")], 256: [(512, "#800000")]}[K]
+        for Kp, color in refs:
+            r = series(cv, f"ma_cr_hard_k{Kp}_pnorm")
+            pts = [(s_, v - h[s_]) for s_, v in sorted(r.items()) if s_ in h and s_ <= max_step]
+            ax.plot(*zip(*pts), "--", color=color, lw=0.9, label=rf"hard Top-{Kp}")
+        runs = [("pool", run_of(cell, "pool")), ("cm", f"be_cr_rbk_k{K}_j{J}_t2_cm_long"),
+                ("sw_geo" if K == 32 else "sw_two", f"ma_alt_sw_{'geo' if K == 32 else 'two'}_k{K}_j{J}_long")]
+        for key, run in runs:
+            d = series(cv, run)
+            pts = [(s_, v - h[s_]) for s_, v in sorted(d.items()) if s_ in h and s_ <= max_step]
+            if pts:
+                lab, color, ls = STYLE[key]
+                ax.plot(*zip(*pts), ls, color=color, lw=1.2, marker="o", ms=1.6, mfc="white", mew=0.5,
+                        label=lab.replace("stochastic width", "stoch. width"))
+        ax.axhline(0, color=INK, lw=0.8)
+        ax.set_xticks([0, 5000, 10000]); ax.set_xticklabels(["0", "5k", "10k"])
+        ax.set_xlabel("step"); ax.set_ylabel(rf"val CE $-$ hard Top-{K}")
+        ax.set_title(rf"{letter}  $({K}, {J})$, to 10k")
+        ax.legend(fontsize=4.0, loc="best", handlelength=1.3)
+    files = sorted(glob.glob(os.path.join(DATA, "alt", "widths_ma_alt_sw_*.json")))
+    ladder = {Kp: series(cv, f"ma_cr_hard_k{Kp}_pnorm").get(3000) for Kp in (32, 64, 128, 256, 512)}
+    for ax, K, letter in zip(axes[2:], (32, 256), "cd"):
+        xs = [Kp for Kp in sorted(ladder) if Kp >= K and ladder[Kp] is not None]
+        ax.plot(xs, [ladder[Kp] for Kp in xs], "--o", color=INK, ms=2.2, lw=0.9, label="hard Top-$K'$ trained at $K'$")
+        for f in files:
+            d = json.load(open(f))
+            if d["k_train"] != K:
+                continue
+            key = "sw_two" if "_two_" in f else ("sw_uni" if "_uni_" in f else "sw_geo")
+            w = sorted((int(a), b) for a, b in d["widths"].items())
+            lab, color, _ = STYLE[key]
+            ax.plot([a for a, _ in w], [b for _, b in w], "-o", color=color, ms=2.2, lw=1.1,
+                    label=lab.replace("stochastic width", "stoch. width") + f", trained at {K}")
+        ax.set_xscale("log", base=2)
+        ticks = xs if K == 32 else [256, 320, 384, 448, 512]
+        ax.set_xticks(ticks); ax.set_xticklabels([str(x) for x in ticks]); ax.minorticks_off()
+        ax.set_xlabel(r"inference width $K'$"); ax.set_ylabel("val CE, step 3000")
+        ax.set_title(rf"{letter}  one checkpoint, $K{{=}}{K}$")
+        ax.legend(fontsize=4.0, loc="best", handlelength=1.3)
+    save(fig, "fig_alt_extra")
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     fig_init()
@@ -563,3 +641,5 @@ if __name__ == "__main__":
     fig_alt()
     table_alt()
     fig_widths()
+    fig_alt_long()
+    fig_alt_extra()
