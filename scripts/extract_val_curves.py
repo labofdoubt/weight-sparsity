@@ -18,6 +18,8 @@ import json
 import os
 import sys
 
+DIAG_EVERY = 100
+
 
 def read_run(run_dir):
     cfg_p = os.path.join(run_dir, "config.json")
@@ -36,9 +38,15 @@ def read_run(run_dir):
         "support_scale": float(b.get("rblapsum_support_scale", 1.0)),
         "grad_mode": b.get("rblapsum_boundary_grad_mode"),
         "b0": b.get("rblapsum_boundary_floor"),
+        # kernel-width rule and per-token support strength (tsweep grid, 2026-10-05)
+        "kernel_width": b.get("rblapsum_kernel_width", "fixed"),
+        "strength": b.get("rblapsum_support_strength"),
         "n_layers": m["n_layers"], "d_model": m["d_model"], "decouple": bool(m.get("decouple")),
         "seed": t["seed"], "max_steps": t["max_steps"],
         "val": [],
+        # realized RBLapSum diagnostics every DIAG_EVERY steps:
+        # [step, T_eff, gamma_eff, b, grad_norm]
+        "diag": [],
     }
     mj = os.path.join(run_dir, "metrics.jsonl")
     if os.path.exists(mj):
@@ -50,6 +58,10 @@ def read_run(run_dir):
                     continue  # torn tail line of a live run
                 if "val/ce" in r:
                     rec["val"].append([r["step"], r["val/ce"]])
+                elif "bottleneck/rb_temperature_eff" in r and r["step"] % DIAG_EVERY == 0:
+                    rec["diag"].append([r["step"], r["bottleneck/rb_temperature_eff"],
+                                        r.get("bottleneck/rb_support_scale_eff"),
+                                        r.get("bottleneck/rb_boundary"), r.get("train/grad_norm")])
     for key, fn in (("diverged", "diverged.json"), ("summary", "summary.json")):
         p = os.path.join(run_dir, fn)
         if os.path.exists(p):
