@@ -483,6 +483,19 @@ class ActivationBottleneckConfig:
     #               process only
     #   "first_order_inactive"  the same with the term restricted to the
     #               inactive members
+    #   "carry_local", "carry_hard", "carry_persistent", "carry_mixed"
+    #               code_residual only, one backward pass: the gate's output is
+    #               split into the copy the next gate carries and the copy the
+    #               decoder reads; the carry's backward is the hard mask on the
+    #               total gradient, and the support term is driven by read
+    #               gradients only -- this gate's own decoder read ("local"),
+    #               plus the downstream reads the coordinate reaches along the
+    #               hard carry ("hard"), plus every downstream read as if the
+    #               flipped coordinate stayed in the code ("persistent"), or
+    #               hard for the active members and persistent for the inactive
+    #               ones ("mixed").  No support term is ever multiplied by
+    #               another along the carry (wsparse.bottleneck.rblapsum)
+    #   "carry_*_inactive"  the same restricted to the inactive members
     # In a code-residual stack the carry is the identity on each coordinate, so
     # a support term on the carried code multiplies the gradient of a coordinate
     # near the boundary by 1 + |u| kappa at every gate it passes, and the product
@@ -733,7 +746,11 @@ class ActivationBottleneckConfig:
         if self.solver_dtype not in ("float32", "float64"):
             raise ValueError(f"unknown solver_dtype: {self.solver_dtype} (float32 | float64)")
         scopes = ("pool", "inactive", "update", "update_inactive", "update_active",
-                  "first_order", "first_order_inactive")
+                  "first_order", "first_order_inactive",
+                  "carry_local", "carry_local_inactive",
+                  "carry_hard", "carry_hard_inactive",
+                  "carry_persistent", "carry_persistent_inactive",
+                  "carry_mixed", "carry_mixed_inactive")
         if self.rblapsum_surrogate_scope not in scopes:
             raise ValueError(
                 "unknown rblapsum_surrogate_scope: "
@@ -749,6 +766,18 @@ class ActivationBottleneckConfig:
                     f"rblapsum_surrogate_scope={self.rblapsum_surrogate_scope!r} "
                     "routes the support term into a code-residual block's update; "
                     "set code_residual=true")
+            if (self.rblapsum_surrogate_scope.startswith("carry")
+                    and not self.code_residual):
+                raise ValueError(
+                    f"rblapsum_surrogate_scope={self.rblapsum_surrogate_scope!r} "
+                    "splits a code-residual gate's output into its carry and its "
+                    "read; set code_residual=true")
+            if (self.rblapsum_surrogate_scope.startswith("carry")
+                    and (self.rblapsum_rho_random_perm_prob_grad != 0.0
+                         or self.rblapsum_center_tokens)):
+                raise ValueError(
+                    "the carry scopes do not implement rblapsum_rho_random_perm_prob_grad "
+                    "or rblapsum_center_tokens")
             if (self.rblapsum_surrogate_scope == "update_active"
                     and self.rblapsum_boundary_grad_mode == "through_rank"):
                 raise ValueError(

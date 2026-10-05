@@ -347,20 +347,39 @@ class TransformerLM(nn.Module):
         ``Delta_0``; checkpoints from then carry ``code_entry.*`` keys and
         belong to that definition.
         """
+        from .bottleneck.rblapsum import CarryChain, carry_scope, split_carry_read
         alpha = float(getattr(self, "code_residual_scale", 1.0))
+        # carry scopes (rblapsum_surrogate_scope="carry_*"): every gate's output
+        # is split into the copy the next gate carries and the copy the decoder
+        # reads, and the gates share one chain per forward for their backward
+        chain = None
+        if torch.is_grad_enabled() and any(
+                carry_scope(getattr(b.residual_out_bottleneck.gate,
+                                    "rblapsum_surrogate_scope", "pool"))
+                for b in self.blocks):
+            chain = CarryChain()
         code = None
-        for block in self.blocks:
+        for index, block in enumerate(self.blocks):
             bot = block.residual_out_bottleneck
-            if code is None:
-                # block 0: the installed stream bottleneck, up to its gate
-                code = bot.gate(bot.in_proj(block.body(x)))
-            else:
-                update = alpha * bot.in_proj(block.branches(x))
-                if getattr(bot.gate, "rblapsum_surrogate_scope", "pool").startswith("update"):
-                    code = self._split_surrogate(bot.gate, code, update)
+            if chain is not None:
+                bot.gate._carry_chain, bot.gate._carry_index = chain, index
+            try:
+                if code is None:
+                    # block 0: the installed stream bottleneck, up to its gate
+                    code = bot.gate(bot.in_proj(block.body(x)))
                 else:
-                    code = bot.gate(code + update)
-            x = bot.post_norm(bot.decode(code))
+                    update = alpha * bot.in_proj(block.branches(x))
+                    if getattr(bot.gate, "rblapsum_surrogate_scope", "pool").startswith("update"):
+                        code = self._split_surrogate(bot.gate, code, update)
+                    else:
+                        code = bot.gate(code + update)
+            finally:
+                if chain is not None:
+                    bot.gate._carry_chain, bot.gate._carry_index = None, -1
+            read = code
+            if chain is not None:
+                code, read = split_carry_read(code, chain, index)
+            x = bot.post_norm(bot.decode(read))
         return x
 
     @staticmethod

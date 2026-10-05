@@ -83,6 +83,35 @@ _MEMBERS_ID = {"pool": 0, "inactive": 1, "active": 2}
 SURROGATE_SCOPES = {"pool": "pool", "inactive": "inactive", "update": "pool",
                     "update_inactive": "inactive", "update_active": "active",
                     "first_order": "pool", "first_order_inactive": "inactive"}
+# The carry-aware scopes (code_residual only): the gate's output is split into
+# the copy the next gate carries and the copy the decoder reads
+# (:class:`_CarryReadSplit`); the carry's backward is the hard mask, and the
+# support term is driven by the READ gradients only, never by a gradient that
+# arrived along the carry from another gate's support term.  The suffix names
+# how far downstream a flip at this gate is assumed to be felt:
+#   local       the next block's read only (the stream-carried surrogate's
+#               logic: D^T of the gradient at this bottleneck's own decoder)
+#   hard        plus the downstream reads the coordinate reaches along the hard
+#               carry (the actual masks: for an inactive candidate, usually none)
+#   persistent  plus every downstream read, as if the flipped coordinate stayed
+#               in the code to the end
+#   mixed       hard for the active members (eviction removes what the carry
+#               would have delivered), persistent for the inactive ones (an
+#               entering feature is carried from here on)
+# ``_inactive`` restricts the term to the J inactive members.
+CARRY_DRIVERS = {"carry_local": ("local", "local"),
+                 "carry_hard": ("hard", "hard"),
+                 "carry_persistent": ("persistent", "persistent"),
+                 "carry_mixed": ("hard", "persistent")}
+for _name in list(CARRY_DRIVERS):
+    SURROGATE_SCOPES[_name] = "pool"
+    SURROGATE_SCOPES[_name + "_inactive"] = "inactive"
+    CARRY_DRIVERS[_name + "_inactive"] = CARRY_DRIVERS[_name]
+_DRIVER_ID = {"local": 0, "hard": 1, "persistent": 2}
+
+
+def carry_scope(scope: str) -> bool:
+    return scope in CARRY_DRIVERS
 
 
 class FirstOrderState:
@@ -161,6 +190,96 @@ def relative_kernel_width(t: float, b: torch.Tensor) -> torch.Tensor:
 
 
 
+def support_term(g_up, value_c, active_c, score_c, sign_c, b, t, mode_id, k,
+             cap_active, supp_scale, perm_rho, members, cand_idx, n_features,
+             sink):
+    """The RBLapSum support term in score space over the sorted pool.
+
+    ``g_up`` is the upstream the term is driven by (``dL/dy`` over the pool, or
+    the hard-path gradient under the first-order and carry scopes); the
+    result ``g_s`` is added to ``dL/dz`` as ``sign_c * g_s``.  Shared by the
+    gate Functions so that every scope applies exactly the same term.
+    """
+    # the surrogate signal dL/dp_i = upstream_i * z_i.  The permutation
+    # ablation scrambles a rho fraction of it WITHIN each row's pool,
+    # BEFORE the kernel weighting: each position keeps its own kappa (its
+    # distance to the boundary), so the surrogate's scale profile, kernel
+    # locality and zero-sum structure are preserved and only the
+    # assignment of task signal to neuron is destroyed.  The hard task
+    # path above is exact and is never permuted.  rho=0 is a no-op on the
+    # exact code path of the original backward.
+    g_p = g_up * value_c
+    if perm_rho > 0.0:
+        g_p = permute_fraction(g_p, perm_rho)
+
+    # raw support gradient in score-margin space:  a = dL/dp * kappa
+    kappa = laplace_pdf((score_c - b) / t) / t
+    member = None
+    if members:
+        # rblapsum_surrogate_scope restricted to one side of the boundary:
+        # 1 = the J inactive members (active ones keep the exact hard
+        # gradient), 2 = the K active members (inactive ones get none);
+        # every correction below is taken over those members alone
+        member = (1 - active_c) if members == 1 else active_c
+        kappa = kappa * member
+    a = g_p * kappa
+    a_raw = a
+
+    if mode_id == 1:  # project: remove the common-mode direction where cap binds
+        if member is not None:
+            mean_m = a.sum(-1, keepdim=True) / member.sum(-1, keepdim=True).clamp_min(1)
+            a_proj = a - member * mean_m
+        else:
+            a_proj = a - a.mean(-1, keepdim=True)
+        a = torch.where(cap_active, a_proj, a)
+    elif mode_id == 2:  # through_rank: -sum(a) onto the (K+1)-st position
+        total = a.sum(-1, keepdim=True)
+        corr = torch.zeros_like(a)
+        corr[..., k:k + 1] = torch.where(cap_active, total, torch.zeros_like(total))
+        a = a - corr
+    elif mode_id == 3:  # through_rank_kappa: the same zero-sum correction,
+        # distributed kappa-weighted across the pool instead of as a point
+        # mass on the boundary feature.  This is exactly LapSum's rank-one
+        # Jacobian structure (g = a - q * sum(a), q = kappa / sum kappa)
+        # applied at the rank boundary: each member's common mode is removed
+        # IN PROPORTION TO ITS OWN kernel weight, so no feature is left
+        # uncompensated and none becomes a sink.  Cap-active rows only.
+        total = a.sum(-1, keepdim=True)
+        q = kappa / kappa.sum(-1, keepdim=True).clamp_min(
+            torch.finfo(kappa.dtype).tiny)
+        a = torch.where(cap_active, a - q.to(a.dtype) * total, a)
+
+    g_s = a if supp_scale == 1.0 else a * supp_scale
+    if cand_idx is not None:
+        g_s = center_over_tokens(g_s, cand_idx, n_features)
+
+    if sink is not None:
+        with torch.no_grad():
+            gs = g_s.reshape(-1, g_s.shape[-1])
+            nrm = gs.norm(dim=-1)
+            sink["rb_support_grad_norm"] = nrm.mean().detach()
+            eps = torch.finfo(gs.dtype).eps
+            sink["rb_common_mode"] = (
+                gs.sum(-1).abs() / (nrm + eps)
+            ).mean().detach()
+            ar = a_raw.reshape(-1, a_raw.shape[-1])
+            sink["rb_common_mode_raw"] = (
+                ar.sum(-1).abs() / (ar.norm(dim=-1) + eps)
+            ).mean().detach()
+            # mean |kick| inside the kernel window -- the temperature
+            # servo's raw pressure signal (read at the next forward)
+            win = (score_c - b).abs() < t
+            sink["rb_kick_win"] = (
+                g_s.abs()[win].mean().detach() if bool(win.any())
+                else torch.zeros((), device=g_s.device))
+            if mode_id == 2:
+                # is the boundary feature becoming a gradient sink?
+                bmag = gs[:, k].abs().mean()
+                omag = gs.abs().mean()
+                sink["rb_boundary_grad_ratio"] = (bmag / (omag + eps)).detach()
+    return g_s
+
+
 class _RBLapSumGate(torch.autograd.Function):
     """``y_c = value_c * active_c`` with the rank-boundary support gradient.
 
@@ -216,85 +335,10 @@ class _RBLapSumGate(torch.autograd.Function):
                 # from another gate's support term
                 g_up, ctx.hard_upstream = ctx.hard_upstream, None
 
-        # the surrogate signal dL/dp_i = upstream_i * z_i.  The permutation
-        # ablation scrambles a rho fraction of it WITHIN each row's pool,
-        # BEFORE the kernel weighting: each position keeps its own kappa (its
-        # distance to the boundary), so the surrogate's scale profile, kernel
-        # locality and zero-sum structure are preserved and only the
-        # assignment of task signal to neuron is destroyed.  The hard task
-        # path above is exact and is never permuted.  rho=0 is a no-op on the
-        # exact code path of the original backward.
-        g_p = g_up * value_c
-        if ctx.perm_rho > 0.0:
-            g_p = permute_fraction(g_p, ctx.perm_rho)
-
-        # raw support gradient in score-margin space:  a = dL/dp * kappa
-        kappa = laplace_pdf((score_c - b) / t) / t
-        member = None
-        if ctx.members:
-            # rblapsum_surrogate_scope restricted to one side of the boundary:
-            # 1 = the J inactive members (active ones keep the exact hard
-            # gradient), 2 = the K active members (inactive ones get none);
-            # every correction below is taken over those members alone
-            member = (1 - active_c) if ctx.members == 1 else active_c
-            kappa = kappa * member
-        a = g_p * kappa
-        a_raw = a
-
-        if mode_id == 1:  # project: remove the common-mode direction where cap binds
-            if member is not None:
-                mean_m = a.sum(-1, keepdim=True) / member.sum(-1, keepdim=True).clamp_min(1)
-                a_proj = a - member * mean_m
-            else:
-                a_proj = a - a.mean(-1, keepdim=True)
-            a = torch.where(cap_active, a_proj, a)
-        elif mode_id == 2:  # through_rank: -sum(a) onto the (K+1)-st position
-            total = a.sum(-1, keepdim=True)
-            corr = torch.zeros_like(a)
-            corr[..., k:k + 1] = torch.where(cap_active, total, torch.zeros_like(total))
-            a = a - corr
-        elif mode_id == 3:  # through_rank_kappa: the same zero-sum correction,
-            # distributed kappa-weighted across the pool instead of as a point
-            # mass on the boundary feature.  This is exactly LapSum's rank-one
-            # Jacobian structure (g = a - q * sum(a), q = kappa / sum kappa)
-            # applied at the rank boundary: each member's common mode is removed
-            # IN PROPORTION TO ITS OWN kernel weight, so no feature is left
-            # uncompensated and none becomes a sink.  Cap-active rows only.
-            total = a.sum(-1, keepdim=True)
-            q = kappa / kappa.sum(-1, keepdim=True).clamp_min(
-                torch.finfo(kappa.dtype).tiny)
-            a = torch.where(cap_active, a - q.to(a.dtype) * total, a)
-
-        g_s = a if ctx.supp_scale == 1.0 else a * ctx.supp_scale
-        if cand_idx is not None:
-            g_s = center_over_tokens(g_s, cand_idx, ctx.n_features)
+        g_s = support_term(g_up, value_c, active_c, score_c, sign_c, b, t, mode_id, k,
+                           cap_active, ctx.supp_scale, ctx.perm_rho, ctx.members,
+                           cand_idx, ctx.n_features, ctx.sink)
         grad_value = grad_value + sign_c * g_s
-
-        sink = ctx.sink
-        if sink is not None:
-            with torch.no_grad():
-                gs = g_s.reshape(-1, g_s.shape[-1])
-                nrm = gs.norm(dim=-1)
-                sink["rb_support_grad_norm"] = nrm.mean().detach()
-                eps = torch.finfo(gs.dtype).eps
-                sink["rb_common_mode"] = (
-                    gs.sum(-1).abs() / (nrm + eps)
-                ).mean().detach()
-                ar = a_raw.reshape(-1, a_raw.shape[-1])
-                sink["rb_common_mode_raw"] = (
-                    ar.sum(-1).abs() / (ar.norm(dim=-1) + eps)
-                ).mean().detach()
-                # mean |kick| inside the kernel window -- the temperature
-                # servo's raw pressure signal (read at the next forward)
-                win = (score_c - b).abs() < t
-                sink["rb_kick_win"] = (
-                    g_s.abs()[win].mean().detach() if bool(win.any())
-                    else torch.zeros((), device=g_s.device))
-                if mode_id == 2:
-                    # is the boundary feature becoming a gradient sink?
-                    bmag = gs[:, k].abs().mean()
-                    omag = gs.abs().mean()
-                    sink["rb_boundary_grad_ratio"] = (bmag / (omag + eps)).detach()
         return (grad_value, None, None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None)
 
@@ -454,3 +498,155 @@ def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
         None if cand_idx is None else cand_idx.detach(), int(n_features),
         bool(first_order),
     )
+
+
+# ---- carry-aware scopes (code_residual) ------------------------------------- #
+
+class CarryChain:
+    """Per-forward backward state of a code-residual stack under a carry scope.
+
+    ``state[l]`` is written in two steps during the backward: the split of
+    gate ``l``'s output stores ``"r"``, the gradient the decoder read of that
+    output sends back (over all N coordinates); gate ``l``'s own backward then
+    replaces it by ``"H"`` and ``"R"``, the two per-coordinate sums it hands
+    to gate ``l-1``:
+
+        H_l = m_l * (r_{l+1} + H_{l+1})   reads reached along the hard carry
+        R_l = r_{l+1} + R_{l+1}           every downstream read
+
+    (``m_l`` this gate's mask, ``H = R = 0`` above the last gate).  The model
+    creates one chain per forward (``TransformerLM._code_residual_stack``), so
+    micro-batches never share state; gate ``l+1``'s backward precedes gate
+    ``l``'s because ``u_{l+1}`` depends on ``c_{l+1}``.
+    """
+
+    def __init__(self) -> None:
+        self.state: dict = {}
+
+
+class _CarryReadSplit(torch.autograd.Function):
+    """``y -> (y_carry, y_read)``: two copies of the gate's output.
+
+    The next gate carries the first, the decoder reads the second.  The
+    backward returns their sum to the gate (the total gradient, as before) and
+    keeps the read gradient in the chain so that the gate's backward can tell
+    the two apart.
+    """
+
+    @staticmethod
+    def forward(ctx, y, chain, index):  # type: ignore[override]
+        ctx.chain = chain
+        ctx.index = int(index)
+        return y.clone(), y.clone()
+
+    @staticmethod
+    def backward(ctx, g_carry, g_read):  # type: ignore[override]
+        ctx.chain.state.setdefault(ctx.index, {})["r"] = g_read
+        return g_carry + g_read, None, None
+
+
+class _RBLapSumCarryGate(torch.autograd.Function):
+    """:class:`_RBLapSumGate` for the carry scopes.
+
+    The forward is the hard gate.  In the backward the hard mask passes the
+    TOTAL upstream (carry + read) back to the gate's input, as the hard model
+    does, and the support term is driven by the read gradients only::
+
+        g_up_i = r_i + H_i   (active members, "hard"; eviction loses what the
+                              hard carry would have delivered downstream)
+        g_up_i = r_i + R_i   (inactive members, "persistent"; an entering
+                              feature is carried from here on)
+        g_up_i = r_i         ("local": the next block's read only)
+
+    with ``r`` this gate's own read gradient and ``H``, ``R`` the chain sums of
+    the gate above (:class:`CarryChain`).  No gradient that arrived along the
+    carry from another gate's support term ever enters a kernel, so the
+    products of support terms along the identity carry -- the term that grows
+    exponentially with depth under the ``pool`` scope -- do not exist; the
+    support terms of the gates above still reach this gate's input, added,
+    through the mask.
+    """
+
+    @staticmethod
+    def forward(ctx, value_c, active_c, score_c, sign_c, b, t, mode_id, k,
+                cap_active, sink, supp_scale, members, relative_t, cand_idx,
+                n_features, chain, index, evict_id, entry_id):  # type: ignore[override]
+        ctx.save_for_backward(value_c, active_c, score_c, sign_c, b, cap_active,
+                              cand_idx)
+        ctx.n_features = int(n_features)
+        ctx.t = float(t)
+        ctx.mode_id = int(mode_id)
+        ctx.k = int(k)
+        ctx.sink = sink
+        ctx.supp_scale = float(supp_scale)
+        ctx.members = int(members)
+        ctx.relative_t = bool(relative_t)
+        ctx.chain = chain
+        ctx.index = int(index)
+        ctx.evict_id = int(evict_id)
+        ctx.entry_id = int(entry_id)
+        return value_c * active_c
+
+    @staticmethod
+    def backward(ctx, grad_y):  # type: ignore[override]
+        value_c, active_c, score_c, sign_c, b, cap_active, cand_idx = ctx.saved_tensors
+        t, mode_id, k = ctx.t, ctx.mode_id, ctx.k
+        if ctx.relative_t:
+            t = relative_kernel_width(t, b)
+        state = ctx.chain.state
+        mine = state.get(ctx.index)
+        if mine is None or "r" not in mine:
+            raise RuntimeError(
+                "carry scope: the gate's output was not split into carry and read "
+                "copies (TransformerLM._code_residual_stack does this)")
+        r_full = mine.pop("r")
+        above = state.pop(ctx.index + 1, None)
+
+        # the hard path on the total upstream, as in every other scope
+        grad_value = grad_y * active_c
+
+        r_pool = r_full.gather(-1, cand_idx)
+        if above is None:
+            h_full = r_full
+            rr_full = r_full
+            h_pool = rr_pool = r_pool
+        else:
+            h_full = r_full + above["H"]
+            rr_full = r_full + above["R"]
+            h_pool = h_full.gather(-1, cand_idx)
+            rr_pool = rr_full.gather(-1, cand_idx)
+
+        def driver(did):
+            return r_pool if did == 0 else (h_pool if did == 1 else rr_pool)
+
+        g_up = (driver(ctx.evict_id) if ctx.evict_id == ctx.entry_id
+                else torch.where(active_c > 0, driver(ctx.evict_id),
+                                 driver(ctx.entry_id)))
+        g_s = support_term(g_up, value_c, active_c, score_c, sign_c, b, t, mode_id, k,
+                           cap_active, ctx.supp_scale, 0.0, ctx.members,
+                           None, ctx.n_features, ctx.sink)
+        grad_value = grad_value + sign_c * g_s
+
+        # the chain for the gate below: H masked by THIS gate's support
+        mask_full = torch.zeros_like(r_full).scatter(-1, cand_idx, active_c.to(r_full.dtype))
+        state[ctx.index] = {"H": h_full * mask_full, "R": rr_full}
+        return (grad_value,) + (None,) * 18
+
+
+def rblapsum_carry_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
+                        cap_active, sink, supp_scale, members, relative_t,
+                        cand_idx, n_features, chain, index, scope):
+    """Apply the carry-scope gate; see :class:`_RBLapSumCarryGate`."""
+    evict, entry = CARRY_DRIVERS[scope]
+    return _RBLapSumCarryGate.apply(
+        value_c, active_c, score_c.detach(), sign_c.detach(), b.detach(),
+        float(t), _MODE_ID[mode], int(k), cap_active.detach(), sink,
+        float(supp_scale), _MEMBERS_ID[members], bool(relative_t),
+        cand_idx.detach(), int(n_features), chain, int(index),
+        _DRIVER_ID[evict], _DRIVER_ID[entry],
+    )
+
+
+def split_carry_read(y, chain, index):
+    """``(y_carry, y_read)`` for a gate's output under a carry scope."""
+    return _CarryReadSplit.apply(y, chain, index)

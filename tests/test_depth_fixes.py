@@ -788,3 +788,156 @@ def test_first_order_inactive_keeps_active_features_exact_and_sums_single_gates(
     ActivationBottleneckConfig(enabled=True, n_features=64, k=8, j=8, placement="residual_out",
                                share_projections=True, surrogate_mode="rblapsum",
                                code_residual=True, rblapsum_surrogate_scope="first_order_inactive")
+
+
+# ---- rblapsum_surrogate_scope="carry_*" ----------------------------------------- #
+
+def _support(gate_ref, u, g):
+    """The support term in z-space that the reference (pool / inactive) gate adds
+    for the upstream ``g``: its vjp minus the hard path."""
+    m = (gate_ref(u.detach()) != 0).to(g.dtype)
+    return vjp(gate_ref, u, g) - m * g
+
+
+@pytest.mark.parametrize("scope", ["carry_local", "carry_hard", "carry_persistent",
+                                   "carry_mixed", "carry_mixed_inactive"])
+def test_carry_scope_chain_algebra(scope):
+    # three gates in a carry with a read after each one (the decoder's gradient
+    # w_l stands in for the read): u0 -> g0 -> (c0, r0); u1 = c0 + v1 -> g1 ->
+    # (c1, r1); u2 = c1 + v2 -> g2 -> (c2, r2); L = sum_l <w_l, r_l>.
+    from wsparse.bottleneck.rblapsum import CarryChain, split_carry_read
+    torch.manual_seed(11)
+    dt = torch.float64
+    u0 = (3 * torch.randn(6, 64, dtype=dt)).requires_grad_(True)
+    v1 = (0.7 * torch.randn(6, 64, dtype=dt)).requires_grad_(True)
+    v2 = (0.7 * torch.randn(6, 64, dtype=dt)).requires_grad_(True)
+    w = [torch.randn(6, 64, dtype=dt) for _ in range(3)]
+    gates = [rbk_gate(scope) for _ in range(3)]
+    chain = CarryChain()
+    for i, g in enumerate(gates):
+        g._carry_chain, g._carry_index = chain, i
+    c0, r0 = split_carry_read(gates[0](u0), chain, 0)
+    u1 = c0 + v1
+    c1, r1 = split_carry_read(gates[1](u1), chain, 1)
+    u2 = c1 + v2
+    c2, r2 = split_carry_read(gates[2](u2), chain, 2)
+    loss = (w[0] * r0).sum() + (w[1] * r1).sum() + (w[2] * r2).sum()
+    loss.backward()
+
+    members = "inactive" if scope.endswith("_inactive") else "pool"
+    ref = rbk_gate(members)
+    u0d, u1d, u2d = u0.detach(), u1.detach(), u2.detach()
+    assert torch.equal(c2.detach(), ref(ref(ref(u0d) + v1.detach()) + v2.detach()))
+    m = [(ref(u) != 0).to(dt) for u in (u0d, u1d, u2d)]
+    evict, entry = {"carry_local": ("local", "local"), "carry_hard": ("hard", "hard"),
+                    "carry_persistent": ("persistent", "persistent"),
+                    "carry_mixed": ("hard", "persistent"),
+                    "carry_mixed_inactive": ("hard", "persistent")}[scope]
+
+    def driver(kind, r, H, R):
+        return r if kind == "local" else (r + H if kind == "hard" else r + R)
+
+    def g_up(mask, r, H, R):
+        return torch.where(mask > 0, driver(evict, r, H, R), driver(entry, r, H, R))
+
+    # gate 2: nothing above it
+    H, R = torch.zeros_like(w[2]), torch.zeros_like(w[2])
+    du2 = m[2] * w[2] + _support(ref, u2d, g_up(m[2], w[2], H, R))
+    H, R = m[2] * (w[2] + H), w[2] + R
+    # gate 1: the carry brings du2, the read w1
+    du1 = m[1] * (du2 + w[1]) + _support(ref, u1d, g_up(m[1], w[1], H, R))
+    H, R = m[1] * (w[1] + H), w[1] + R
+    du0 = m[0] * (du1 + w[0]) + _support(ref, u0d, g_up(m[0], w[0], H, R))
+    assert torch.allclose(v2.grad, du2, atol=1e-12)
+    assert torch.allclose(v1.grad, du1, atol=1e-12)
+    assert torch.allclose(u0.grad, du0, atol=1e-12)
+    # the ordinary backward (gate 1's kernel applied to the total carry gradient)
+    # is different whenever gate 2 added a support term
+    pooled = m[1] * (du2 + w[1]) + _support(ref, u1d, du2 + w[1])
+    assert not torch.allclose(v1.grad, pooled)
+    # and no chain state leaks past the bottom gate's consumer
+    assert set(chain.state) <= {0}
+
+
+def test_carry_local_is_relaxed_read_with_hard_carry():
+    # on a real code-residual stack: carry_local equals the model in which the
+    # decoder reads the relaxed gate output and the carry is the hard mask
+    from wsparse.model import TransformerLM
+    torch.manual_seed(12)
+
+    def model(scope):
+        torch.manual_seed(0)
+        cfg = ActivationBottleneckConfig(
+            enabled=True, n_features=96, k=8, j=24, surrogate_mode="rblapsum",
+            rblapsum_boundary_grad_mode="through_rank_kappa", placement="residual_out",
+            share_projections=True, code_residual=True, init_mode="unit_norm_dictionary",
+            rblapsum_surrogate_scope=scope)
+        m = build_model(ModelConfig(vocab_size=61, max_seq_len=16, n_layers=3, d_model=24,
+                                    n_heads=4)).double()
+        apply_activation_bottleneck(m, cfg)
+        m.double().train()
+        return m
+
+    idx = torch.randint(0, 61, (2, 12))
+
+    def grads(m):
+        return torch.cat([p.grad.reshape(-1) for p in m.parameters() if p.grad is not None])
+
+    cl = model("carry_local")
+    _, loss = cl(idx, idx)
+    loss.backward()
+    g_cl = grads(cl)
+
+    def reference_stack(self, x):
+        code = None
+        for block in self.blocks:
+            bot = block.residual_out_bottleneck
+            u = (bot.in_proj(block.body(x)) if code is None
+                 else code + bot.in_proj(block.branches(x)))
+            read = bot.gate(u)                       # the relaxed read
+            mask = (read.detach() != 0).to(u.dtype)
+            code = u * mask                          # the hard carry
+            x = bot.post_norm(bot.decode(read))
+        return x
+
+    ref = model("pool")
+    orig = TransformerLM._code_residual_stack
+    TransformerLM._code_residual_stack = reference_stack
+    try:
+        _, loss_ref = ref(idx, idx)
+        loss_ref.backward()
+    finally:
+        TransformerLM._code_residual_stack = orig
+    assert torch.allclose(loss, loss_ref)
+    assert torch.allclose(g_cl, grads(ref), rtol=1e-9, atol=1e-11)
+    # not the ordinary backward
+    pool = model("pool")
+    pool(idx, idx)[1].backward()
+    assert not torch.allclose(grads(pool), g_cl)
+    # eval: the hard forward, no chain needed
+    cl.eval()
+    with torch.no_grad():
+        cl(idx, idx)
+
+
+def test_carry_scope_trains_end_to_end(tmp_path):
+    import numpy as np
+    import wsparse.train as wt
+    from tests.test_train import make_fake_dataset, smoke_config
+    data_dir = make_fake_dataset(tmp_path)
+    cfg = smoke_config(data_dir, str(tmp_path / "out"))
+    cfg.activation_bottleneck = ActivationBottleneckConfig(
+        enabled=True, placement="residual_out", layers="all", n_features=64, k=8, j=8,
+        surrogate_mode="rblapsum", rblapsum_boundary_grad_mode="through_rank_kappa",
+        share_projections=True, code_residual=True, rblapsum_surrogate_scope="carry_mixed")
+    summary = wt.train(cfg)
+    assert np.isfinite(summary["best_val_ce"])
+
+
+def test_carry_scope_needs_code_residual():
+    base = dict(enabled=True, n_features=64, k=8, j=8, placement="residual_out",
+                surrogate_mode="rblapsum", rblapsum_boundary_grad_mode="through_rank_kappa")
+    with pytest.raises(ValueError):
+        ActivationBottleneckConfig(**base, rblapsum_surrogate_scope="carry_mixed")
+    ActivationBottleneckConfig(**base, code_residual=True, share_projections=True,
+                               rblapsum_surrogate_scope="carry_mixed")

@@ -27,8 +27,9 @@ import torch
 import torch.nn as nn
 
 from .lapsum import lapsum_barrier_sorted, lapsum_probs, laplace_cdf
-from .rblapsum import (GRAD_MODES, SURROGATE_SCOPES, VALUE_GRAD_MODES, rblapsum_gate,
-                       rblapsum_sf_gate, relative_kernel_width)
+from .rblapsum import (GRAD_MODES, SURROGATE_SCOPES, VALUE_GRAD_MODES, carry_scope,
+                       rblapsum_carry_gate, rblapsum_gate, rblapsum_sf_gate,
+                       relative_kernel_width)
 
 _DTYPES = {"float32": torch.float32, "float64": torch.float64}
 
@@ -116,6 +117,11 @@ class AdaptiveLapSumTopKGate(nn.Module):
             raise ValueError(
                 f"unknown rblapsum_surrogate_scope: {rblapsum_surrogate_scope!r}")
         self.rblapsum_surrogate_scope = rblapsum_surrogate_scope
+        # carry scopes: set by TransformerLM._code_residual_stack for the
+        # duration of the gate call (the chain of the current forward and this
+        # gate's index in the stack); plain attributes, not state
+        self._carry_chain = None
+        self._carry_index = -1
         # see ActivationBottleneckConfig.rblapsum_relative_temperature: the
         # kernel width is temperature * b per row
         if rblapsum_relative_temperature and surrogate_mode != "rblapsum":
@@ -411,6 +417,20 @@ class AdaptiveLapSumTopKGate(nn.Module):
                                    self.k, cap_active, sink,
                                    supp_scale=float(self.rblapsum_support_scale),
                                    value_grad=self.rblapsum_sf_value_grad)
+        elif carry_scope(self.rblapsum_surrogate_scope) and torch.is_grad_enabled():
+            if self._carry_chain is None:
+                raise RuntimeError(
+                    f"rblapsum_surrogate_scope={self.rblapsum_surrogate_scope!r} needs "
+                    "the code-residual stack to split the gate's output into its carry "
+                    "and read copies (TransformerLM._code_residual_stack)")
+            y_c = rblapsum_carry_gate(value_c, active_c, score_c, sign_c, b, t,
+                                      self.rblapsum_boundary_grad_mode, self.k,
+                                      cap_active, sink,
+                                      float(self.rblapsum_support_scale),
+                                      SURROGATE_SCOPES[self.rblapsum_surrogate_scope],
+                                      self.rblapsum_relative_temperature, cand_idx,
+                                      self.n_features, self._carry_chain,
+                                      self._carry_index, self.rblapsum_surrogate_scope)
         else:
             y_c = rblapsum_gate(value_c, active_c, score_c, sign_c, b, t,
                                 self.rblapsum_boundary_grad_mode, self.k, cap_active, sink,
