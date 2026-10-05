@@ -5,7 +5,8 @@ written by scripts/extract_val_curves.py) and the hard Top-K' ladder of the
 code-carried K+J grid (docs/figures/kj-cr/data/curves_new.json); writes
 docs/figures/tsweep/fig_*.{pdf,png} and prints the step-3000 table.
 
-Runs: ma_ts_{span|b}_t{025|050|100}_s{010|025|050|100}_k{32|256}_j{480|256}.
+Runs: ma_ts_{span|b}_t{025|050|100}_s{010|025|050|100}_k{32|256}_j{480|256},
+10k steps of the 20k schedule (train_guard --stop-step 10000), validation every 500.
 The kernel width is T = tau * span (span = s_(K+1) - s_(K+J)) or T = tau * b
 (b = s_(K+1)); the support strength s sets gamma = 2 s T / b per token, so the
 (K+1)-th member's support gradient equals s times its read gradient.
@@ -102,7 +103,7 @@ def s_shade(s):
     return {0.1: 0.35, 0.25: 0.55, 0.5: 0.78, 1.0: 1.0}[s]
 
 
-def grid_panel(ax, cv, mode, K, max_step=3000, ref="hard"):
+def grid_panel(ax, cv, mode, K, max_step=10000, ref="hard"):
     """12 curves: val CE minus the reference, colour = tau, shade = s."""
     h = series(cv, hard_of(K) if ref == "hard" else ref)
     for tk, tau in TAUS:
@@ -128,7 +129,7 @@ def grid_panel(ax, cv, mode, K, max_step=3000, ref="hard"):
     ax.set_xlim(0, max_step)
 
 
-def fig_grid(mode, K, max_step=3000):
+def fig_grid(mode, K, max_step=10000):
     cv = curves()
     fig, ax = plt.subplots(figsize=(5.2, 3.3))
     grid_panel(ax, cv, mode, K, max_step)
@@ -137,7 +138,7 @@ def fig_grid(mode, K, max_step=3000):
     save(fig, f"fig_ts_{mode}_k{K}")
 
 
-def table(step=3000):
+def table(step=10000):
     cv = curves()
     rows = []
     for mode in ("span", "b"):
@@ -156,7 +157,7 @@ def table(step=3000):
     return rows
 
 
-def best_cells(step=3000):
+def best_cells(step=10000):
     cv = curves()
     best = {}
     for mode in ("span", "b"):
@@ -172,7 +173,7 @@ def best_cells(step=3000):
     return best
 
 
-def fig_best(max_step=3000, step=3000):
+def fig_best(max_step=10000, step=10000):
     cv = curves()
     best = best_cells(step)
     ref = hard_of(512)
@@ -236,7 +237,7 @@ def main():
         print(f"{mode:5} {K:>4} {tau:>5g} {s:>5g} {f(v)} {f(dv)} {f(T, 7, 3)} {f(g, 7, 3)} {f(b, 7, 3)}  {'yes' if div else ''}")
     cv = curves()
     for (mode, K), (v, tau, s) in sorted(best_cells().items()):
-        h = series(cv, hard_of(K)).get(3000)
+        h = series(cv, hard_of(K)).get(10000)
         print(f"best {mode:5} K={K:>3}: tau={tau:g} s={s:g}  val {v:.4f}  ({v - h:+.4f} vs hard Top-{K})")
 
 
