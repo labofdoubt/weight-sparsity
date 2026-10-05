@@ -160,7 +160,33 @@ the carry scopes at step 3000}.}
 \end{figure}
 
 
-\textbf{Training.}  \PH{screens}
+\textbf{Training} (Fig.~\ref{fig:screens}, Table~\ref{tab:screens}).  \PH{screens: per K, the carry scopes against pool,
+first order, hard Top-K and hard Top-(K+J) at step 3000; stability (gradient-norm spikes); the carry usage of the
+trained models from Fig.~\ref{fig:runs}.}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/carry/fig_screens.png}
+\caption{\textbf{Validation CE relative to hard Top-\(K\)} (code carried, post-norm) during the first 3000 steps,
+one panel per \((K, J)\); the dashed line is hard Top-\((K{+}J)\), the model that activates the whole pool.  \PH{}}
+\label{fig:screens}
+\end{figure}
+
+\begin{table}[t]
+\centering\small
+\begin{tabular}{llcccccc}
+\toprule
+ & & \multicolumn{6}{c}{validation CE at step 3000, minus hard Top-\(K\)} \\
+\cmidrule(lr){3-8}
+\(K\) & \(J\) & pool & first order & carry local & carry mixed & carry mixed, \(\rho{=}0.5\) & hard Top-\((K{+}J)\) \\
+\midrule
+\PH{} \\
+\bottomrule
+\end{tabular}
+\caption{\PH{}}
+\label{tab:screens}
+\end{table}
+
 
 \section{What the measurements show}
 \PH{...}
