@@ -397,7 +397,27 @@ class ActivationBottleneckConfig:
     # rblapsum    -> hard forward, rank-boundary local kernel (see below)
     # rblapsum_sf -> the probabilities in the forward: y_i = z_i p_i
     # hard        -> plain hard-mask backward, no surrogate
+    # soft_ste    -> hard forward; backward Jacobian M + (1 - M) p over the
+    #                Top(K+J) pool, p = F((|u| - b)/T) the kernel's CDF: the J
+    #                candidates receive the gradient they would receive if
+    #                present, weighted by how close they are to the boundary.
+    #                No support (boundary-exchange) term, so every per-coordinate
+    #                gain is <= 1 and nothing compounds along a code-residual
+    #                carry (2026-10-05)
     surrogate_mode: str = "hard"
+
+    # Stochastic support width (surrogate_mode="hard" only, training only): per
+    # token the gate keeps the Top-K' with K' drawn from [K, K+J] --
+    #   "uniform"   K' uniform on {K, ..., K+J}
+    #   "two_point" K' = K+J with probability stochastic_width_param, else K
+    #   "geometric" K' = K + min(J, G), G geometric with mean
+    #               stochastic_width_param * J
+    # -- and K at evaluation.  Every forward is a hard forward with exact
+    # gradients; a candidate at rank K+m is active, and trained, with
+    # probability P(K' >= K+m).  The width-sampling of universally slimmable
+    # networks (Yu & Huang 2019) applied to the support (2026-10-05).
+    stochastic_width: str = "none"
+    stochastic_width_param: float = 0.5
 
     # Constant kernel/barrier temperature shared by the lapsum and rblapsum
     # modes (unified 2026-09-28; formerly fixed_temperature and
@@ -700,11 +720,26 @@ class ActivationBottleneckConfig:
                 f"unknown selection_mode: {self.selection_mode} "
                 "(topk | abs_topk | gated_topk)"
             )
-        if self.surrogate_mode not in ("lapsum", "rblapsum", "rblapsum_sf", "hard"):
+        if self.surrogate_mode not in ("lapsum", "rblapsum", "rblapsum_sf", "hard",
+                                       "soft_ste"):
             raise ValueError(
                 f"unknown surrogate_mode: {self.surrogate_mode} "
-                "(lapsum | rblapsum | rblapsum_sf | hard)"
+                "(lapsum | rblapsum | rblapsum_sf | hard | soft_ste)"
             )
+        if self.stochastic_width not in ("none", "uniform", "two_point", "geometric"):
+            raise ValueError(
+                f"unknown stochastic_width: {self.stochastic_width!r} "
+                "(none | uniform | two_point | geometric)")
+        if self.stochastic_width != "none":
+            if self.surrogate_mode != "hard":
+                raise ValueError("stochastic_width samples the hard support; it needs "
+                                 f"surrogate_mode='hard', got {self.surrogate_mode!r}")
+            if self.j < 1:
+                raise ValueError("stochastic_width draws K' from [K, K+J]; set j >= 1")
+            if self.selection_mode == "gated_topk":
+                raise ValueError("stochastic_width is not implemented for gated_topk")
+            if not 0.0 <= float(self.stochastic_width_param) <= 1.0:
+                raise ValueError("stochastic_width_param must be in [0, 1]")
         if self.temperature <= 0:
             raise ValueError("temperature must be positive")
         if self.rblapsum_boundary_floor is None:

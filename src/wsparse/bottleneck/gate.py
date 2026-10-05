@@ -60,9 +60,18 @@ class AdaptiveLapSumTopKGate(nn.Module):
         hard_inference: bool = True,
         value_shift: str = "none",
         value_shift_lambda: float = 0.0,
+        stochastic_width: str = "none",
+        stochastic_width_param: float = 0.5,
     ):
         super().__init__()
         validate_gate_shapes(n_features, k, j, surrogate_mode)
+        # see ActivationBottleneckConfig.stochastic_width
+        if stochastic_width not in ("none", "uniform", "two_point", "geometric"):
+            raise ValueError(f"unknown stochastic_width: {stochastic_width!r}")
+        if stochastic_width != "none" and (surrogate_mode != "hard" or j < 1):
+            raise ValueError("stochastic_width needs surrogate_mode='hard' and j >= 1")
+        self.stochastic_width = stochastic_width
+        self.stochastic_width_param = float(stochastic_width_param)
         if value_shift not in ("none", "fixed", "energy"):
             raise ValueError(
                 f"unknown value_shift: {value_shift!r} (none | fixed | energy)")
@@ -79,10 +88,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
             raise ValueError(
                 f"unknown selection_mode: {selection_mode!r} (topk | abs_topk | gated_topk)"
             )
-        if surrogate_mode not in ("lapsum", "rblapsum", "rblapsum_sf", "hard"):
+        if surrogate_mode not in ("lapsum", "rblapsum", "rblapsum_sf", "hard", "soft_ste"):
             raise ValueError(
                 f"unknown surrogate_mode: {surrogate_mode!r} "
-                "(lapsum | rblapsum | rblapsum_sf | hard)"
+                "(lapsum | rblapsum | rblapsum_sf | hard | soft_ste)"
             )
         if temperature <= 0:
             raise ValueError("temperature must be positive")
@@ -285,13 +294,21 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 self._record_usage(hard_mask)
             return value * hard_mask
 
-        if self.surrogate_mode in ("rblapsum", "rblapsum_sf"):
+        if self.surrogate_mode in ("rblapsum", "rblapsum_sf", "soft_ste"):
             return self._rblapsum(scores, value)
 
         cand_scores, cand_idx = torch.topk(
             scores, self.m, dim=-1, largest=True, sorted=True
         )
-        hard_mask = torch.zeros_like(scores).scatter(-1, cand_idx[..., : self.k], 1.0)
+        if self.stochastic_width != "none" and self.training:
+            # per-token width K' in [K, K+J]: the sorted pool keeps ranks < K'
+            kprime = self._sample_width(scores)
+            keep = (torch.arange(self.m, device=scores.device) < kprime).to(scores.dtype)
+            hard_mask = torch.zeros_like(scores).scatter(-1, cand_idx, keep)
+            if self.log_diagnostics:
+                self._forward_diag["active_count"] = kprime.to(torch.float32).mean().detach()
+        else:
+            hard_mask = torch.zeros_like(scores).scatter(-1, cand_idx[..., : self.k], 1.0)
         if self.log_diagnostics and self.training:
             self._record_usage(hard_mask)
 
@@ -301,7 +318,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 # forward-side statistics are all still meaningful, and the
                 # gradient on the J candidates is exactly zero by construction
                 # rather than merely absent.
+                width = self._forward_diag.get("active_count")
                 self._record_hard(cand_scores.to(self.solver_dtype).detach())
+                if width is not None:
+                    self._forward_diag["active_count"] = width
             if self.value_shift != "none":
                 return self._shifted(value, cand_idx[..., : self.k])
             return value * hard_mask
@@ -338,6 +358,25 @@ class AdaptiveLapSumTopKGate(nn.Module):
         if self.log_diagnostics:
             self._record(detached, b, t, p.detach(), solver_diag)
         return value * mask
+
+    # ---- stochastic support width --------------------------------------------- #
+    def _sample_width(self, scores: torch.Tensor) -> torch.Tensor:
+        """Per-token K' in [K, K+J] (see ActivationBottleneckConfig.stochastic_width).
+
+        Returns an integer tensor of shape ``scores.shape[:-1] + (1,)``.
+        """
+        shape = scores.shape[:-1] + (1,)
+        dev = scores.device
+        k, j, q = self.k, self.j, self.stochastic_width_param
+        if self.stochastic_width == "uniform":
+            extra = torch.randint(0, j + 1, shape, device=dev)
+        elif self.stochastic_width == "two_point":
+            extra = (torch.rand(shape, device=dev) < q).long() * j
+        else:  # geometric with mean q * J, capped at J
+            mean = max(q * j, 1e-6)
+            u = torch.rand(shape, device=dev).clamp_min(1e-12)
+            extra = torch.floor(torch.log(u) / math.log(mean / (1.0 + mean))).long().clamp_(0, j)
+        return k + extra
 
     # ---- value shift (hard forward) -------------------------------------------- #
     def _shifted(self, value: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
@@ -415,7 +454,15 @@ class AdaptiveLapSumTopKGate(nn.Module):
         # flip hard_inference off around a second eval pass for the soft CE.
         soft = (self.surrogate_mode == "rblapsum_sf"
                 and (self.training or not self.hard_inference))
-        if soft:
+        if self.surrogate_mode == "soft_ste":
+            # hard forward; backward M + (1 - M) p over the pool: a candidate
+            # receives the gradient it would receive if present, times its
+            # kernel probability.  The soft part is numerically zero in the
+            # forward and carries only its gradient.
+            p_c = laplace_cdf((score_c - b) / t)
+            soft_part = value_c * (p_c * (1.0 - active_c)).to(value_c.dtype)
+            y_c = value_c * active_c + (soft_part - soft_part.detach())
+        elif soft:
             p_c = laplace_cdf((score_c - b) / t)
             y_c = rblapsum_sf_gate(value_c, p_c, active_c, score_c, sign_c,
                                    b, t, self.rblapsum_boundary_grad_mode,

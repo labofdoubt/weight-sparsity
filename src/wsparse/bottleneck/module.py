@@ -184,6 +184,8 @@ class SparseTopKBottleneck(nn.Module):
                 getattr(cfg, "value_shift_lambda", None)
                 if getattr(cfg, "value_shift_lambda", None) is not None
                 else critical_shift(int(cfg.k), self.n_features)),
+            stochastic_width=getattr(cfg, "stochastic_width", "none"),
+            stochastic_width_param=getattr(cfg, "stochastic_width_param", 0.5),
         )
         self.init_mode = getattr(cfg, "init_mode", "default")
         if self.init_mode in _RENAMED_INIT_MODES:
