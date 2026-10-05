@@ -80,8 +80,7 @@ coordinate stays in the code) under three models of what follows.  \emph{Local}:
 stack's logic, exactly the gradient of a model whose decoder reads a relaxed gate while the carry is hard.
 \emph{Hard}: the actual downstream masks (an evicted feature's remaining run; for an inactive candidate almost always
 nothing).  \emph{Persistent}: an entering coordinate survives each further gate with probability \(\rho\).
-\emph{Mixed}: hard for the active members, persistent for the inactive ones.  (First order takes every gate hard,
-hence its second pass; here only the carry.)
+\emph{Mixed}: hard for the active members, persistent for the inactive ones.
 
 \begin{figure}[b]
 \centering
@@ -104,8 +103,8 @@ with the schedules untouched, two cells continued to 10k.  At step 3000 the grid
 
 \textbf{At initialization} (Fig.~\ref{fig:mech}a,b) the surrogate's share of the gradient energy at the gates,
 \(\sigma=\lVert S^\top\hat g\rVert^2/\lVert m\odot g\rVert^2\), is \(0.70\) for \code{pool}, \(0.74\) for mixed,
-\(0.31\) for local and \(0.24\) for first order at \(K=32\) (\(0.30\), \(0.20\), \(0.09\), \(0.09\) at \(K=256\)): the
-mixed scope injects as much support signal as the unmodified backward, as a sum instead of a product.
+\(0.31\) for local and \(0.24\) for first order at \(K=32\) (\(0.30\), \(0.20\), \(0.09\), \(0.09\) at \(K=256\)): mixed
+injects as much support signal as the unmodified backward, as a sum instead of a product.
 
 \textbf{Runs of the carried code} (Fig.~\ref{fig:mech}c,d; 16 validation sequences, hard forward).  The carry is
 persistent for a subset of the code, not for the code: in the trained hard Top-32 model every gate evicts
@@ -129,8 +128,8 @@ the grid's do, \(-0.109\) at 5k and \(-0.100\) at 10k, against hard Top-128 at \
 \(-0.064\), \(-0.063\) and \code{pool} at \(-0.054\), \(-0.045\).  At \((256,256)\), the pathological cell (\code{pool} \(+0.047\) at 3000, its code turning
 over \(46\%\) per gate against the hard model's \(28\%\)), the local scope closes the gap to \(+0.009\) and the mixed
 scope is below hard Top-256 from step 2000, \(-0.0045\) at 3000 (\(1.736\) against \(1.741\)): a surrogate ahead of
-the hard model with the same active count, which no code-carried cell of the grid achieved (hard Top-512: \(-0.037\);
-the hard baselines also carry a post-norm, worth about \(0.007\) to a hard model in the stream grid).  Continued to 10k the lead widens, \(-0.008\) at 5k and \(-0.014\) at 10k, with \code{pool} at \(+0.037\),
+the hard model with the same active count, a first in the code-carried grid (hard Top-512: \(-0.037\); the hard
+baselines also carry a post-norm, worth about \(0.007\) to a hard model in the stream grid).  Continued to 10k the lead widens, \(-0.008\) at 5k and \(-0.014\) at 10k, with \code{pool} at \(+0.037\),
 \(+0.031\) and hard Top-512 at \(-0.034\), \(-0.029\).  On the diagonal \(J=K\), the stream grid's winning configuration, the mixed scope is below hard Top-\(K\)
 from step 500 on at \((128,128)\) and ends at \(-0.006\) (\code{pool} \(+0.025\); hard Top-256 \(-0.035\)), and
 \PH{} at \((64,64)\) (\code{pool} \(-0.005\); hard Top-128 \(-0.059\)); with the measured
@@ -164,10 +163,10 @@ still widening at 10k, with the unmodified backward's surrogate energy (\(\sigma
 a sum of single-flip terms instead of a product.  The unmodified backward was not too strong; it was multiplying.
 
 \textbf{The model uses the carry only when the surrogate leaves it alone.}  \code{pool}-trained models re-select
-\(46\)--\(70\%\) of their support at every gate (hard: about half) and end with the stream stack's code, which is why
+\(46\)--\(70\%\) of their support at every gate and end with the stream stack's code, which is why
 the carry was worth nothing to them; every carry-scope model has the hard model's survival and turnover, so the
 support signal and the carry's persistence add instead of competing.  \textbf{Scope:} one seed, one family (8 layers, \(N=1536\), \(T=2\), no output norm), 3000-step screens and two 10k
-continuations against step-matched 20k baselines from another machine of the same GPU generation; untested: \(T=1\), the
-post-norm arm, the hard and persistent drivers alone \PH{}, depths beyond eight blocks.
+continuations against step-matched 20k baselines from another machine of the same GPU generation; untested: \(T=1\), the post-norm
+arm, the hard and persistent drivers alone \PH{}, more than eight blocks.
 
 \end{document}
