@@ -35,7 +35,7 @@ With the code carried between blocks hard Top-\(K'\) gains \(0.06\)--\(0.075\) n
 (\(K\) active, pool \(K{+}J\)) gains \(-0.03\) to \(+0.015\): at a matched active count it is worth \(0.047\) at
 \(K=32\), loses \(0.02\)--\(0.03\) at \(K=128,256\), no cell reaches hard Top-\((K{+}J)\), and its backward is the
 unstable part of the grid (\code{docs/kj-vs-hard-topk-code-residual.tex}); the first-order scope removes the
-instability with a second backward pass and is \emph{worse} than the unmodified surrogate at every \(K=32\) cell.
+instability at the price of a second backward pass and is \emph{worse} than it at every \(K=32\) cell.
 This note locates the conflict and removes it at no cost.
 
 \section{Where the probabilities act}
@@ -115,7 +115,7 @@ gate (hard Top-256: \(0.57\), \(0.41\), \(17\%\), \(34\%\)); an entry at gate 0 
 average, against 8 under the persistent model and 1 under the local one.  The \code{pool} surrogate trains the
 model \emph{out of} the carry -- at \((32,224)\) turnover \(63\%\) per gate at step 4000 and \(70\%\) at 20k, survival
 \(0.21\to0.16\), \(77\%\) of the final code entering at the last gate: the stream stack's re-selection at every block,
-in a model that has a carry -- which is why the carry was ``nearly neutral'' for it.  Every carry-scope model keeps
+in a model that has a carry.  Every carry-scope model keeps
 the hard model's code: survival \(0.52\)--\(0.61\), turnover \(30\)--\(40\%\) at step 3000, and \(0.47\)/\(45\%\) for
 the mixed \((32,224)\) model at 10k (hard Top-32 at 20k: \(0.51\)/\(39\%\)).
 
@@ -157,9 +157,9 @@ surrogate's whole gain at \(K=32\) (first order keeps half) and removes four fif
 \textbf{The carry gives the surrogate what the stream stack could not: a downstream for the entry term.}  In the
 code stack an entering feature is carried, so the first-order value of admitting it is the sum of the reads it would
 reach -- a sum the stream stack, which re-encodes at every block, does not have.  The mixed scope evaluates inactive candidates on that sum and active members
-on the reads their run reaches: it doubles the gain at \(K=32\) and turns the loss at \(K=256\) into a gain, with the
-unmodified backward's surrogate energy (\(\sigma=0.74\) against \(0.70\)) delivered as a sum of single-flip terms
-instead of a product.  The unmodified backward was not too strong; it was multiplying.
+on the reads their run reaches: it doubles the gain at \(K=32\) and turns the loss at \(K=256\) into a gain that is
+still widening at 10k, with the unmodified backward's surrogate energy (\(\sigma=0.74\) against \(0.70\)) delivered as
+a sum of single-flip terms instead of a product.  The unmodified backward was not too strong; it was multiplying.
 
 \textbf{The model uses the carry only when the surrogate leaves it alone.}  \code{pool}-trained models re-select
 \(46\)--\(70\%\) of their support at every gate (hard: about half) and end with the stream stack's code, which is why
