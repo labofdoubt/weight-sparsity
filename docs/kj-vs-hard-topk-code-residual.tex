@@ -85,7 +85,10 @@ surrogate, and the first-order scope, which removes the products of support
 terms along the carry, costs $0.007$--$0.024$; the penalty grows with $J$.
 The compounding of support terms along the carry is therefore not what
 limits the code-carried surrogate at $T=2$: the full term with the plain
-backward is its best variant at every $J$. \PH{K=64, 128, 256 to follow}
+backward is its best variant at every $J$. At $K = 64$ the same ordering
+holds with penalties two to five times smaller ($0.001$--$0.019$), and the
+first-order scope is within $0.005$ of the full term. \PH{K=128, 256 to
+follow}
 \end{itemize}
 
 % ============================================================
@@ -606,7 +609,41 @@ section, which lie within $0.02$ of the dashed curves.}
 \end{figure}
 
 %% K=64, K=128, K=256 blocks are appended here as each K's sweep finishes
-%%SWEEP-K64%%
+\subsection*{$K = 64$}
+
+\begin{center}\small
+\begin{tabular}{lcccccc}
+\toprule
+$J$ & stream & code, $\gamma{=}1$ & $\gamma{=}0.8$ & $\gamma{=}0.6$ & $\gamma{=}0.4$ & first-order \\
+\midrule
+$64$  & 1.5142 & 1.4840 & 1.4867 & 1.4852 & 1.4891 & 1.4855 \\
+$192$ & 1.4922 & 1.4773 & 1.4807 & 1.4828 & 1.4864 & 1.4787 \\
+$448$ & 1.4727 & 1.4641 & 1.4686 & 1.4753 & 1.4835 & 1.4690 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The same ordering as at $K = 32$ with smaller margins: the full code-carried
+surrogate is again the best variant at every $J$, and relative to it
+$\gamma = 0.8$ costs $0.003$--$0.005$ nats, $\gamma = 0.6$ $0.001$--$0.011$,
+$\gamma = 0.4$ $0.005$--$0.019$ and the first-order scope $0.001$--$0.005$,
+each penalty growing with $J$ and each two to five times smaller than its
+$K = 32$ counterpart. At $J = 64$ the five code-carried variants span
+$0.005$ nats, all $0.025$--$0.030$ below the stream-carried cell; at
+$J = 448$ they span $0.019$, and the two most weakened ones ($\gamma = 0.6$,
+$0.4$) fall behind the stream-carried cell ($1.4727$) while $\gamma = 0.8$,
+the first-order scope and $\gamma = 1$ stay ahead of it. The first-order
+scope is within $0.005$ of $\gamma = 1$ at every $J$: at $K = 64$ the
+products of support terms along the carry are nearly inert.
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_k64_sweep.png}
+\caption{$K = 64$, $T = 2$, no output norm; panels and colours as in the
+$K = 32$ figure, $J = 64, 192, 448$. Every solid curve lies below the dashed
+curve of its $J$ in the $\gamma = 0.8$ and first-order panels; in the
+$\gamma = 0.6$ and $\gamma = 0.4$ panels the $J = 448$ curves cross late in
+training and the stream-carried cell ends below.}
+\end{figure}
 
 %%SWEEP-K128%%
 
@@ -668,8 +705,11 @@ the carry took from the surrogate's margin is therefore not recovered by
 changing the backward; it is the re-selection that the window no longer has
 to compensate, the first reading. The compounding does matter at $T = 1$,
 where it collapsed half of the post-norm arm, so the two kernel widths sit
-on opposite sides of its threshold at this depth. \PH{sweep at K=64, 128,
-256}
+on opposite sides of its threshold at this depth. At $K = 64$ the
+penalties for weakening the term shrink to $0.001$--$0.019$ and the
+first-order scope becomes nearly equivalent to the full backward, so the
+part of the surrogate's gradient that the carry compounds is itself small
+once the window holds 64 active features. \PH{sweep at K=128, 256}
 
 % ============================================================
 \section{Scope}
