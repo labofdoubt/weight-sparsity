@@ -36,7 +36,7 @@ With the code carried between blocks hard Top-\(K'\) gains \(0.06\)--\(0.075\) n
 \(K=32\), loses \(0.02\)--\(0.03\) at \(K=128,256\), no cell reaches hard Top-\((K{+}J)\), and its backward is the
 unstable part of the grid (\code{docs/kj-vs-hard-topk-code-residual.tex}); the first-order scope removes the
 instability at the price of a second backward pass and is \emph{worse} than it at every \(K=32\) cell.
-This note locates the conflict and removes it at no cost.
+This note removes the conflict at no cost.
 
 \section{Where the probabilities act}
 
@@ -113,27 +113,27 @@ average (persistent model: 8, local: 1).  The \code{pool} surrogate trains the
 model \emph{out of} the carry: at \((32,224)\) turnover \(63\%\) per gate at step 4000 and \(70\%\) at 20k, survival
 \(0.21\to0.16\), \(77\%\) of the final code entering at the last gate -- the stream stack's re-selection at every
 block.  Every carry-scope model keeps
-the hard model's code: survival \(0.52\)--\(0.61\), turnover \(30\)--\(40\%\) at step 3000, and at 10k
-\(0.47\)/\(45\%\) and \(0.59\)/\(33\%\) for the mixed \((32,224)\) and \((256,256)\) models (hard at 20k: \(0.51\)/\(39\%\),
-\(0.57\)/\(32\%\)).
+the hard model's code (survival \(0.52\)--\(0.61\), turnover \(30\)--\(40\%\) at 3000; the mixed \((32,224)\) and
+\((256,256)\) models at 10k: \(0.47\)/\(45\%\), \(0.59\)/\(33\%\); hard at 20k: \(0.51\)/\(39\%\), \(0.57\)/\(32\%\)).
 
 \textbf{Training} (Fig.~\ref{fig:training}).  At \((32,224)\) the local scope ends step 3000
 at \(-0.058\) below hard Top-32, where \code{pool} is at \(-0.061\) and first order at \(-0.033\).  The mixed scope ends at \(-0.118\), twice the margin of the
 unmodified surrogate and the margin of hard Top-128 over hard Top-32 at that step (\(-0.124\)): 32 active features at
 the loss of the hard model that activates 128 (\(1.782\) against \(1.776\)).  Continued to 10k its margin decays as
-the grid's do: \(-0.100\) at 10k, against hard Top-128 \(-0.117\), hard Top-64 \(-0.063\), \code{pool} \(-0.045\).  At \((256,256)\), the pathological cell (\code{pool} \(+0.047\) at 3000, its code turning
-over \(46\%\) per gate against the hard model's \(28\%\)), the local scope closes the gap to \(+0.009\) and the mixed
+the grid's do: \(-0.100\) at 10k, against hard Top-128 \(-0.117\), hard Top-64 \(-0.063\), \code{pool} \(-0.045\).  At \((256,256)\), the pathological cell (\code{pool} \(+0.047\) at 3000, turnover \(46\%\) per gate against the
+hard model's \(28\%\)), the local scope closes the gap to \(+0.009\) and the mixed
 scope is below hard Top-256 from step 2000, \(-0.0045\) at 3000 (\(1.736\) against \(1.741\)): a surrogate ahead of
-the hard model with the same active count, a first in the code-carried grid (hard Top-512 \(-0.037\); the hard
-baselines also have the post-norm, worth about \(0.007\) in the stream grid).  Continued to 10k the lead widens to \(-0.014\) (\code{pool} \(+0.031\), hard Top-512 \(-0.029\)).  On the diagonal \(J=K\) (the stream grid's winning cells) the mixed scope is below hard Top-\(K\) from step
+the hard model with the same active count (hard Top-512 \(-0.037\); the hard baselines also have the post-norm, worth
+about \(0.007\) in the stream grid).  Continued to 10k the lead widens to \(-0.014\) (\code{pool} \(+0.031\), hard Top-512 \(-0.029\)).  On the diagonal \(J=K\) (the stream grid's winning cells) the mixed scope is below hard Top-\(K\) from step
 500 on and ends at \(-0.047\) at \((64,64)\) (\code{pool} \(-0.005\), first order \(-0.003\); hard Top-128
 \(-0.059\)) and \(-0.006\) at \((128,128)\) (\code{pool} \(+0.025\), first order \(+0.026\); hard Top-256 \(-0.035\)).
-At \((128,384)\) mixed ends at \(-0.025\) (\code{pool} \(+0.016\), first order \(+0.021\)).  The drivers
-at \((256,256)\): persistent on both sides \(-0.013\), mixed \(-0.005\), local \(+0.009\), hard on both sides
-\(+0.023\), mixed with \(\rho=0.5\) \(+0.021\) (\(-0.072\) against mixed's \(-0.118\) at \((32,224)\)); \PH{cp32}.  The
-two sides of the boundary want one driver (the exchange term compares flip gains across the pool, and a driver that
-follows the run on one side and one read on the other biases it), and the entry term works best as if the candidate
-were carried to the end.  No carry-scope run's gradient norm exceeded 1 (\code{pool} at
+At \((128,384)\) mixed ends at \(-0.025\) (\code{pool} \(+0.016\), first order \(+0.021\)).  The drivers:
+at \((256,256)\) persistent on both sides \(-0.013\), mixed \(-0.005\), local \(+0.009\), hard on both sides
+\(+0.023\), mixed with \(\rho=0.5\) \(+0.021\); at \((32,224)\) mixed \(-0.118\), mixed with \(\rho=0.5\) \(-0.072\),
+persistent on both sides \(-0.060\), local \(-0.058\).  The entry term works best as if the candidate were carried
+to the end (\(\rho=1\)) at both \(K\); the eviction term wants the actual run at \(K=32\), where the persistent driver
+loses the whole doubling, and is slightly better persistent at \(K=256\) -- the \(K\)-dependence of the active-side
+term seen in the 24-layer study, now confined to \(0.008\).  No carry-scope run's gradient norm exceeded 1 (\code{pool} at
 \((32,224)\): four spikes, to 3.3); their feature-usage entropy is the hard model's (\(0.79\), \(0.94\); hard
 \(0.73\), \(0.93\); \code{pool} \(0.59\), \(0.89\)).
 
