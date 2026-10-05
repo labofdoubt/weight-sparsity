@@ -89,8 +89,10 @@ backward is its best variant at every $J$. At $K = 64$ the same ordering
 holds with penalties two to five times smaller ($0.001$--$0.019$), and the
 first-order scope is within $0.005$ of the full term. At $K = 128$ the
 ordering reverses: $\gamma = 0.4$ gains $0.020$ at $J = 128$ and the
-first-order scope $0.005$--$0.008$, so the strength of the support term
-that the carry can use decreases with $K$. \PH{K=256 to follow}
+first-order scope $0.005$--$0.008$, and at $K = 256$ every weakening
+gains, $0.024$ at $\gamma = 0.4$. The best support scale under the carry
+falls from $1$ at $K \le 64$ to $0.4$ at $K = 256$, and no variant reaches
+the code-carried hard model with the same active count beyond $K = 64$.
 \end{itemize}
 
 % ============================================================
@@ -683,7 +685,46 @@ $\gamma = 0.4$ and first-order panels; in the $\gamma = 0.4$ panel the
 $J = 128$ curve ends below the $J = 384$ one.}
 \end{figure}
 
-%%SWEEP-K256%%
+\subsection*{$K = 256$}
+
+\begin{center}\small
+\begin{tabular}{lcccccc}
+\toprule
+$J$ & stream & code, $\gamma{=}1$ & $\gamma{=}0.8$ & $\gamma{=}0.6$ & $\gamma{=}0.4$ & first-order \\
+\midrule
+$256$ & 1.4425 & 1.4244 & 1.4176 & 1.4072 & 1.4007 & 1.4074 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Every weakening gains, monotonically in $\gamma$: $0.007$ at $\gamma = 0.8$,
+$0.017$ at $0.6$, $0.024$ at $0.4$, and $0.017$ for the first-order scope,
+which again lands at the $\gamma = 0.6$ level. The best cell, $1.4007$, is
+$0.042$ below the stream-carried cell and $0.014$ below the best model of
+the K+J note (the stream-carried $(256,256)$ post-norm cell at $1.4146$),
+and still $0.010$ above code-carried hard Top-256 ($1.3907$) and $0.038$
+above hard Top-512.
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_k256_sweep.png}
+\caption{$K = 256$, $T = 2$, no output norm, $J = 256$; panels as in the
+$K = 32$ figure. The solid curve lies below the dashed one from the first
+validation point in every panel, by a margin that widens from $\gamma = 0.8$
+to $\gamma = 0.4$; the $\gamma = 0.4$ and first-order panels are the lowest.}
+\end{figure}
+
+\paragraph{Across $K$.}
+The best support scale under the carry falls with the active count. Taking
+each $K$'s widest window, the best variant is $\gamma = 1$ at $K = 32$
+($1.4927$; $\gamma = 0.4$ costs $0.026$), $\gamma = 1$ at $K = 64$
+($1.4641$; $\gamma = 0.4$ costs $0.019$), the first-order scope at $K = 128$
+($1.4385$; $\gamma = 0.4$ gains $0.004$) and $\gamma = 0.4$ at $K = 256$
+(gains $0.024$). The first-order scope behaves like a support scale of about
+$0.6$--$0.8$ at every $K$. Against the code-carried hard baseline with the
+same active count, the best code-carried surrogate of the sweep is $0.047$
+better at $K = 32$, $0.010$ better at $K = 64$, and $0.013$ and $0.010$
+worse at $K = 128$ and $256$; the sweep narrows the deficits of
+Section~4 ($0.021$ and $0.032$) but does not close them.
 
 % ============================================================
 \section{Interpretation}
@@ -750,9 +791,15 @@ damping the term to $\gamma = 0.4$ or removing its products gains up to
 $0.020$, which is the 24-layer study's finding at $K = 256$ -- the term on
 the active members crowds the rank boundary once many features are active
 -- now visible at eight blocks. Under the carry the best support scale
-therefore falls with $K$, from the full term at $K = 32$ to about $0.4$ at
-$K = 128$, and none of the variants closes the gap to the code-carried hard
-model at the same active count. \PH{sweep at K=256}
+therefore falls with $K$, from the full term at $K \le 64$ to $0.4$ at
+$K = 256$, where the gain reaches $0.024$ and is monotone in $\gamma$. The
+pattern is a single crossover: with few active features the window's
+gradient is worth its full strength and its compounding along the carry is
+harmless; with many, the term itself is too strong, and both damping it and
+the first-order scope help. None of the variants closes the gap to the
+code-carried hard model at the same active count beyond $K = 64$: the best
+code-carried surrogate at $K = 256$ ($1.4007$) remains $0.010$ above hard
+Top-256 and $0.038$ above hard Top-512.
 
 % ============================================================
 \section{Scope}
@@ -768,7 +815,9 @@ four were stopped by the divergence guard's rule (training CE more than
 $2.5$ above its best for 800 steps) and one by hand after its validation CE
 had reached the unigram level. The grid itself keeps the default surrogate
 scope and support scale, as the single-flag premise requires; Section~6
-varies both at $K=32$, $T=2$ only. The depth is eight blocks throughout,
+varies them one at a time, at $T = 2$ only and at the grid's $(K, J)$ --
+the post-norm ($T = 1$) arm, where the compounding of the support term
+collapsed five cells, was not swept. The depth is eight blocks throughout,
 $K + J \le 512$ well inside $N = 1536$, and the hard baselines all carry the
 post-norm.
 
