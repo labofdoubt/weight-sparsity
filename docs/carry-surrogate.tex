@@ -120,8 +120,7 @@ the hard model's code: survival \(0.52\)--\(0.61\), turnover \(30\)--\(40\%\) at
 \(0.57\)/\(32\%\)).
 
 \textbf{Training} (Fig.~\ref{fig:training}).  At \((32,224)\) the local scope ends step 3000
-at \(-0.058\) below hard Top-32, where \code{pool} is at \(-0.061\) and first order at \(-0.033\); it leads \code{pool}
-by \(0.02\) at step 1000 and the two coincide from 2000.  The mixed scope ends at \(-0.118\), twice the margin of the
+at \(-0.058\) below hard Top-32, where \code{pool} is at \(-0.061\) and first order at \(-0.033\).  The mixed scope ends at \(-0.118\), twice the margin of the
 unmodified surrogate and the margin of hard Top-128 over hard Top-32 at that step (\(-0.124\)): 32 active features at
 the loss of the hard model that activates 128 (\(1.782\) against \(1.776\)).  Continued to 10k its margin decays as
 the grid's do, \(-0.109\) at 5k and \(-0.100\) at 10k, against hard Top-128 at \(-0.121\), \(-0.117\), hard Top-64 at
@@ -142,9 +141,8 @@ candidate were carried to the end.  No carry-scope run's gradient norm exceeded 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\textwidth]{figures/carry/fig_training.png}
-\caption{\textbf{Validation CE relative to hard Top-\(K\)} (code carried, post-norm): \textbf{a}, \textbf{b} the
-first 3000 steps, dashed hard Top-\((K{+}J)\); \textbf{c}, \textbf{d} the mixed scope continued to 10k against the grid's
-20k runs.}
+\caption{\textbf{Validation CE relative to hard Top-\(K\)}: \textbf{a}, \textbf{b} the first 3000 steps, dashed
+hard Top-\((K{+}J)\); \textbf{c}, \textbf{d} the mixed scope continued to 10k against the grid's 20k runs.}
 \label{fig:training}
 \end{figure}
 
@@ -168,7 +166,7 @@ a sum of single-flip terms instead of a product.  The unmodified backward was no
 \(46\)--\(70\%\) of their support at every gate and end with the stream stack's code, which is why
 the carry was worth nothing to them; every carry-scope model has the hard model's survival and turnover, so the
 support signal and the carry's persistence add instead of competing.  \textbf{Scope:} one seed, one family (8 layers, \(N=1536\), \(T=2\), no output norm), 3000-step screens and two 10k
-continuations against step-matched 20k baselines from another machine of the same GPU generation; untested: \(T=1\), the post-norm
+continuations against step-matched 20k baselines; untested: \(T=1\), the post-norm
 arm, the hard and persistent drivers alone \PH{}, more than eight blocks.
 
 \end{document}
