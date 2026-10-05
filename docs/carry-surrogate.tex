@@ -129,8 +129,8 @@ the grid's do, \(-0.109\) at 5k and \(-0.100\) at 10k, against hard Top-128 at \
 over \(46\%\) per gate against the hard model's \(28\%\)), the local scope closes the gap to \(+0.009\) and the mixed
 scope is below hard Top-256 from step 2000, \(-0.0045\) at 3000 (\(1.736\) against \(1.741\)): a surrogate ahead of
 the hard model with the same active count, which no code-carried cell of the grid achieved (hard Top-512: \(-0.037\);
-the hard baselines also carry a post-norm, worth about \(0.007\) to a hard model in the stream grid).  At
-10k \PH{}.  On the diagonal \(J=K\), the stream grid's winning configuration, the mixed scope reaches \PH{} at
+the hard baselines also carry a post-norm, worth about \(0.007\) to a hard model in the stream grid).  Continued to 10k the lead widens, \(-0.008\) at 5k and \(-0.014\) at 10k, with \code{pool} at \(+0.037\),
+\(+0.031\) and hard Top-512 at \(-0.034\), \(-0.029\).  On the diagonal \(J=K\), the stream grid's winning configuration, the mixed scope reaches \PH{} at
 \((128,128)\) and \PH{} at \((64,64)\), against hard Top-\(2K\) at \(-0.035\) and \(-0.059\); with the measured
 survival \(\rho=0.5\) in the persistent chain \PH{}.  No carry-scope run's gradient norm exceeded 1 (\code{pool} at
 \((32,224)\): four spikes, to 3.3); their feature-usage entropy is the hard model's (\(0.79\), \(0.94\); hard
