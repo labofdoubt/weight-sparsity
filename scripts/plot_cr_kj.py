@@ -37,6 +37,12 @@ are printed.
                          the stream-carried T=2 cells at that K (dashed, reds
                          light-to-dark with J; the new family solid, blues).
 
+  cr_fo_active.png       the first-order family against the hard ladder: one
+                         panel per K, the first-order cells (solid, blues
+                         light-to-dark with J) against all five code-carried
+                         hard Top-K' baselines (dashed, reds light-to-dark
+                         with K'), the layout of cr_active_k<K>.png.
+
 Families: "stream" and "cr" are the one-flag grid (support scale 1, pool
 scope); "cr_ss0.8", "cr_ss0.6", "cr_ss0.4" and "cr_fo" are the sweep.
 
@@ -320,6 +326,35 @@ for K in SWEEP_KS:
     fig.suptitle(f"$K = {K}$, $T = 2$: the surrogate's support scale and the first-order scope "
                  "under the code residual, against the stream-carried cells", fontsize=14, y=0.995)
     save(fig, f"cr_k{K}_sweep.png")
+
+
+# ---- F: the first-order family against the hard ladder, one panel per K --- #
+fo_ks = sorted({k for (fam, kind, k, j, v) in cells if fam == "cr_fo" and kind == "kappa" and v == "t2"})
+if fo_ks and cr_hard_ks:
+    recs = [get("cr", "hard", kp, None, "pnorm")[1] for kp in cr_hard_ks]
+    recs += [cells[key][1] for key in cells if key[0] == "cr_fo" and key[1] == "kappa" and key[4] == "t2"]
+    ylim = ylim_for(recs)
+    fig, axes = plt.subplots(2, 2, figsize=(13.0, 9.2), sharex=True, sharey=True)
+    for i, (ax, K) in enumerate(zip(axes.ravel(), fo_ks)):
+        js = sorted({j for (fam, kind, k, j, v) in cells
+                     if fam == "cr_fo" and kind == "kappa" and k == K and v == "t2"})
+        col = shades(js, BLUES, B_RANGE)
+        for kp in cr_hard_ks:
+            curve(ax, get("cr", "hard", kp, None, "pnorm")[1], hcol[kp], "--", 1.7, ylim)
+        for j in js:
+            curve(ax, get("cr_fo", "kappa", K, j, "t2")[1], col[j], "-", 2.1, ylim)
+        finish(ax, ylim, "validation CE (nats)")
+        ax.set_title(f"$K = {K}$: first-order scope, $T = 2$, against all hard Top-$K'$", fontsize=12)
+        hd = [Line2D([0], [0], color=col[j], lw=2.2, label=f"first-order, $K={K}$, $J={j}$") for j in js]
+        if i == 1:
+            hd += [Line2D([0], [0], color=hcol[kp], ls="--", lw=1.7, label=f"hard Top-${kp}$")
+                   for kp in cr_hard_ks]
+        ax.legend(handles=hd, fontsize=8.5, loc="lower left", framealpha=0.93, ncol=2 if i == 1 else 1)
+    for ax in axes.ravel()[len(fo_ks):]:
+        ax.set_visible(False)
+    fig.suptitle("The first-order family (code residual, $\\gamma = 1$) against the code-carried "
+                 "hard Top-$K'$ ladder", fontsize=14, y=0.995)
+    save(fig, "cr_fo_active.png")
 
 
 # ---- tables --------------------------------------------------------------- #

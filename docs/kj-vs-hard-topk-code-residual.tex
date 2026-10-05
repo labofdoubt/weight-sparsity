@@ -821,4 +821,31 @@ collapsed five cells, was not swept. The depth is eight blocks throughout,
 $K + J \le 512$ well inside $N = 1536$, and the hard baselines all carry the
 post-norm.
 
+% ============================================================
+\section{The first-order family against the hard ladder}
+% ============================================================
+
+The per-active-count figures of Section~4 placed every pool-scope window on
+the code-carried hard ladder. The same view for the first-order family of
+Section~6: one panel per $K$, the first-order cells (code carried, $T=2$,
+$\gamma = 1$; solid, blue ramp light to dark with $J$) against all five
+code-carried hard Top-$\Kp$ baselines (dashed, red ramp light to dark with
+$\Kp$).
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/kj-cr/cr_fo_active.png}
+\caption{The first-order family on the code-carried hard ladder. $K = 32$:
+$1.5369$, $1.5291$, $1.5145$, $1.5167$ for $J = 32, 96, 224, 480$, all
+between hard Top-32 ($1.5400$) and hard Top-64 ($1.4745$), the widest two
+windows lowest. $K = 64$: $1.4855$, $1.4787$, $1.4690$ for $J = 64, 192,
+448$; only $J = 448$ ends below hard Top-64, by $0.006$. $K = 128$:
+$1.4423$ and $1.4385$ for $J = 128, 384$, between hard Top-64 and hard
+Top-128 ($1.4187$), $0.020$--$0.024$ above the latter. $K = 256$: $1.4074$,
+between hard Top-128 and hard Top-256 ($1.3907$), $0.017$ above the latter.
+At every $K$ the first-order family sits one rung of the ladder above the
+pool-scope cells' position in the stream-carried grid, where a pool of
+$2K$ beat hard Top-$2K$: here no window reaches hard Top-$2K$, and only the
+widest window at $K \le 64$ reaches hard Top-$K$.}
+\end{figure}
+
 \end{document}
