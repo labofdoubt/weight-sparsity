@@ -63,11 +63,11 @@ its RBLapSum \code{pool} cells; the carry-scope results of \code{docs/carry-surr
 Candidate A trains the hard baseline's own config (post-norm) with a random width; B and C train the \code{pool}
 cell's config (no post-norm, \(T=2\)) with one field changed.
 
-\begin{figure}[t]
+\begin{figure}[b]
 \centering
-\includegraphics[width=.74\textwidth]{figures/carry/fig_alt.png}
+\includegraphics[width=\textwidth]{figures/carry/fig_alt.png}
 \caption{Validation CE minus the code-carried hard Top-\(K\) baseline over the first 3000 steps; dashed, hard
-Top-\((K{+}J)\).  \textbf{a} \((32,224)\); \textbf{b} \((256,256)\).}
+Top-\((K{+}J)\).  \textbf{a} \((32,224)\); \textbf{b} \((128,128)\); \textbf{c} \((256,256)\).}
 \label{fig:alt}
 \end{figure}
 
@@ -76,10 +76,11 @@ where the unmodified surrogate loses \(0.047\), every width distribution except 
 -- two-point \(-0.008\) and \(-0.009\) (\(p=\tfrac12\), \(\tfrac14\)), uniform \(-0.006\), geometric \(J/4\) \(-0.005\),
 geometric \(J/16\) \(0.000\) -- with no surrogate and no gradient modification, as much as the best carry scope
 (\(-0.005\)); candidates-only RBLapSum ends at \(+0.004\), the soft straight-through at \(+0.030\).  At \((128,128)\)
-the two-point width gives \(-0.010\) against \(-0.006\) for the mixed carry scope and \(-0.007\) for candidates-only
-RBLapSum (\code{pool} \(+0.025\)) \PH{geo, two25 at 128; k64}.  At \((32,224)\) the order of the width
-distributions follows how much mass they put at \(K\): uniform \(+0.014\), two-point \(-0.019\) and \PH{p=0.25},
-geometric \(J/16\) \(-0.025\), geometric \(J/4\) \(-0.034\); candidates-only RBLapSum \(-0.032\), soft
+the widths give \(-0.012\) (geometric \(J/4\)), \(-0.010\) (two-point) and \(-0.008\) (two-point \(p=\tfrac14\)),
+against \(-0.006\) for the mixed carry scope and \(-0.007\) for candidates-only RBLapSum (\code{pool} \(+0.025\)).  At \((32,224)\) the order of the width
+distributions follows how much mass they put near \(K\): uniform \(+0.014\), two-point \(-0.019\) at both \(p=\tfrac12\)
+and \(\tfrac14\), geometric \(J/16\) \(-0.025\), geometric \(J/4\) \(-0.034\); at \((64,64)\) the two-point and geometric widths give
+\(-0.029\) and \(-0.023\) (\code{pool} \(-0.005\), mixed carry scope \(-0.047\), hard Top-128 \(-0.059\)); candidates-only RBLapSum \(-0.032\), soft
 straight-through \(+0.018\), the unmodified surrogate \(-0.061\), the mixed carry scope \(-0.118\).
 \PH{10k continuations}
 
@@ -109,11 +110,12 @@ at once.
 \(K\) & \(J\) & pool & carry mixed & uniform & two-point & geom.\ \(J/4\) & geom.\ \(J/16\) & soft STE & cand.\ only \\
 \midrule
 32 & 224 & \(-0.061\) & \(\mathbf{-0.118}\) & \(+0.014\) & \(-0.019\) & \(-0.034\) & \(-0.025\) & \(+0.018\) & \(-0.032\) \\
-128 & 128 & \(+0.025\) & \(-0.006\) & -- & \(\mathbf{-0.010}\) & \PH{} & -- & -- & \(-0.007\) \\
+64 & 64 & \(-0.005\) & \(\mathbf{-0.047}\) & -- & \(-0.029\) & \(-0.023\) & -- & -- & -- \\
+128 & 128 & \(+0.025\) & \(-0.006\) & -- & \(-0.010\) & \(\mathbf{-0.012}\) & -- & -- & \(-0.007\) \\
 256 & 256 & \(+0.047\) & \(-0.005\) & \(-0.006\) & \(\mathbf{-0.008}\) & \(-0.005\) & \(0.000\) & \(+0.030\) & \(+0.004\) \\
 \bottomrule
 \end{tabular}
-\caption{Validation CE at step 3000 minus the code-carried hard Top-\(K\) of the row (\(1.899\), \(1.776\), \(1.741\)); two-point with \(p=\tfrac12\). Bold: best of the row.}
+\caption{Validation CE at step 3000 minus the code-carried hard Top-\(K\) of the row (\(1.899\), \(1.835\), \(1.776\), \(1.741\)); two-point with \(p=\tfrac12\). Bold: best of the row.}
 \label{tab:alt}
 \end{table}
 
@@ -128,8 +130,8 @@ is a hard code at every step.  At \((256,256)\) this is enough: every width dist
 (\(-0.005\) to \(-0.008\)), the carry scopes' result without the carry scopes.  The price is a train/test mismatch
 on the support width: the deployed model has seen its own width only part of the time, and the gap to the hard
 baseline at \(K=32\) depends on how much of the distribution sits at \(K\) (uniform \(+0.014\), two-point
-\(-0.019\), geometric \(-0.034\), \PH{two-point 0.25, geometric J/16}).  Where the unmodified surrogate is worth
-\(0.06\) and the mixed carry scope \(0.12\), the width distributions tried are worth \PH{} at most.
+\(-0.019\), geometric \(J/16\) \(-0.025\), geometric \(J/4\) \(-0.034\)).  Where the unmodified surrogate is worth
+\(0.06\) and the mixed carry scope \(0.12\), the best width distribution tried is worth \(0.034\).
 
 \textbf{What the hard forward cannot give the candidates.}  The two surrogate-free rules differ in what a
 candidate learns from.  Under the stochastic width it learns from being \emph{present}, in a forward where the
