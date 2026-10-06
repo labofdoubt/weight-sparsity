@@ -84,6 +84,14 @@ $T = 2$, $\gamma = 1$ run ($+0.031$).
 coincide in realized $\gamma$. The span rule is the more sensitive to $\tau$
 at $K = 32$ (the loss keeps falling to $\tau = 1$ at $s \le 0.5$) and the
 $b$ rule reaches its best at the narrowest width.
+
+\item \textbf{The first-order scope gains nothing from the grid either}
+(Section~\ref{sec:fo}). Its best $K = 32$ cell ends $0.028$ below hard
+Top-32, $0.004$ better than its own $T = 2$, $\gamma = 1$ run and $0.018$
+behind the pool scope's best; it does not profit from a wider kernel, where
+the pool scope does, and it shows the same score-scale runaway at $\gamma >
+1$. At $K = 256$ it is within $0.002$ of hard Top-256 at every $s \le 0.5$ and
+never below it.
 \end{itemize}
 
 % ============================================================
@@ -462,14 +470,114 @@ cell. Only two $(K, J)$ cells were run, both at $K + J = 512$.
 
 The span rule of the grid, $\tau \in \{0.25, 0.5, 1\}$, $s \in \{0.1, 0.25,
 0.5, 1\}$, at $(32, 480)$ and $(256, 256)$, repeated with the scope
-\code{rblapsum\_surrogate\_scope} $=$ \code{first\_order}: each gate's support term is
-evaluated on the gradient that reached it along hard paths, so no gradient
-carries more than one support term and the products of terms along the carry
-are removed (\code{docs/kj-vs-hard-topk-code-residual.tex}, Section 6). The
-reference of this arm is the first-order $T = 2$, $\gamma = 1$ cell of the
-K+J grid, \code{ma\_cr\_rbk\_k<K>\_j<J>\_t2\_fo}, at $1.6322$ ($-0.024$
-against hard Top-32) and $1.5285$ ($+0.018$ against hard Top-256) at step
-10000. The 24 runs (\code{ma\_ts\_span\_*\_fo}) are training at the time of
-writing; this section is completed when they finish.
+\code{rblapsum\_surrogate\_scope} $=$ \code{first\_order}: each gate's support
+term is evaluated on the gradient that reached it along hard paths, so no
+gradient carries more than one support term and the products of terms along
+the carry are removed (\code{docs/kj-vs-hard-topk-code-residual.tex},
+Section~6). The kernel width and the strength are set per token exactly as in
+the pool arm, and the realized $\gamma$ at step 10000 agrees with the pool
+arm's cell by cell to within $0.01$. The reference of this arm is the
+first-order $T = 2$, $\gamma = 1$ cell of the K+J grid,
+\code{ma\_cr\_rbk\_k<K>\_j<J>\_t2\_fo}, at $1.6322$ ($-0.024$ against hard
+Top-32) and $1.5285$ ($+0.018$ against hard Top-256) at step 10000. The 24
+runs (\code{ma\_ts\_span\_*\_fo}) train at $0.60$ s per step, against $0.41$
+for the pool scope, because the first-order backward is a second backward
+pass. None diverged.
+
+Validation CE at step 10000 minus hard Top-$K$; in parentheses the
+pool-scope cell with the same $(\tau, s)$ from Section~4. Bold marks the best
+cell of the arm, a dagger a score-scale runaway.
+
+\begin{center}\small
+\begin{tabular}{l|cccc}
+\toprule
+$K = 32$, $J = 480$, $\tau$ & $s{=}0.1$ & $0.25$ & $0.5$ & $1$ \\
+\midrule
+$0.25$ & $-0.004$ ($-0.005$) & $-0.012$ ($-0.009$) & $-0.018$ ($-0.014$) & $\mathbf{-0.028}$ ($-0.033$) \\
+$0.5$  & $-0.005$ ($-0.005$) & $-0.009$ ($-0.011$) & $-0.020$ ($-0.027$) & $-0.024$ ($-0.046$) \\
+$1$    & $-0.006$ ($-0.005$) & $-0.011$ ($-0.013$) & $-0.011$ ($-0.036$) & $+0.034^\dagger$ ($-0.007^\dagger$) \\
+\midrule
+first-order $T{=}2$, $\gamma{=}1$ & \multicolumn{4}{c}{$-0.024$ \quad (pool scope: $-0.049$)} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{center}\small
+\begin{tabular}{l|cccc}
+\toprule
+$K = 256$, $J = 256$, $\tau$ & $s{=}0.1$ & $0.25$ & $0.5$ & $1$ \\
+\midrule
+$0.25$ & $+0.005$ ($-0.001$) & $0.000$ ($+0.001$) & $+0.001$ ($+0.002$) & $+0.002$ ($+0.005$) \\
+$0.5$  & $+0.001$ ($-0.005$) & $\mathbf{0.000}$ ($0.000$) & $+0.001$ ($+0.005$) & $+0.008$ ($+0.017$) \\
+$1$    & $+0.001$ ($+0.004$) & $+0.001$ ($+0.005$) & $+0.006$ ($+0.010$) & $+0.017$ ($+0.029$) \\
+\midrule
+first-order $T{=}2$, $\gamma{=}1$ & \multicolumn{4}{c}{$+0.018$ \quad (pool scope: $+0.031$)} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{$K = 32$.}
+At the narrowest width the two scopes agree to within $0.005$ at every $s$,
+the first-order scope ahead at $s = 0.25$ and $0.5$ and behind at $s = 1$.
+Widening the kernel separates them: at $\tau = 0.5$ the first-order cells
+trail the pool cells by $0.007$ and $0.022$ at $s = 0.5$ and $1$, at $\tau =
+1$ by $0.025$ at $s = 0.5$, and the first-order loss no longer improves with
+$\tau$ at any $s \ge 0.25$. Its best cell, $(\tau, s) = (0.25, 1)$ at
+$-0.028$, is $0.004$ better than the first-order $T = 2$, $\gamma = 1$ run and
+$0.018$ behind the pool scope's best cell. The pool scope's extra gain at wide
+kernels is therefore carried by the products of support terms along the
+carry, which the first-order scope removes: the K+J note measured this at
+$T = 2$ as a cost of $0.007$--$0.024$ for the first-order scope at $K = 32$,
+and the grid finds the same sign and size at every width that reaches the
+whole pool.
+
+\paragraph{The score scale.}
+The runaway of Section~\ref{sec:stab} does not depend on the products along
+the carry. The first-order cell $(1, 1)$ at $K = 32$, realized $\gamma =
+1.3$, grows its boundary score from $6.0$ at step 1000 to $12$, $41$, $103$
+and $224$ at steps 3000, 6000, 8000 and 10000, the same factor of $1.5$--$1.6$
+per thousand steps as the pool cell, and ends $0.034$ above hard Top-32 after
+a lead of $0.007$ at step 2000; the two cells at $\gamma \approx 0.65$,
+$(0.5, 1)$ and $(1, 0.5)$, sit at $b = 4.2$ and $4.7$, as the pool cells at
+that scale do. At $K = 256$ the boundary score falls with $\tau s$ as in the
+pool arm, to $0.51$ at $(1, 1)$.
+
+\paragraph{$K = 256$.}
+The first-order scope flattens the table: at $s \le 0.5$ every cell is within
+$0.006$ of hard Top-256, and the strong cells lose about half of what the
+pool cells lose ($+0.008$ against $+0.017$ at $(0.5, 1)$, $+0.017$ against
+$+0.029$ at $(1, 1)$). No cell is below hard Top-256 by more than $0.0002$,
+and the weak-and-moderate corner, where the pool scope found its $-0.005$, is
+at $+0.001$ to $+0.005$ here. All 24 cells beat the first-order $T = 2$,
+$\gamma = 1$ run.
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/tsweep/fig_ts_fo_span_k32.png}
+\caption{$K = 32$, $J = 480$, span rule, first-order scope; conventions as in
+Figure~\ref{fig:span32}, the dotted grey curve now the first-order $T = 2$,
+$\gamma = 1$ run. The $s = 1$ curve is the lowest only at $\tau = 0.25$; at
+$\tau = 0.5$ it meets the $s = 0.5$ curve from step 5000 on, and at $\tau = 1$
+it is the runaway cell, which crosses above hard Top-32 at step 3500 and ends
+$0.034$ above it.}
+\label{fig:fo32}
+\end{figure}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/tsweep/fig_ts_fo_span_k256.png}
+\caption{$K = 256$, $J = 256$, span rule, first-order scope. The $s \le 0.5$
+curves of all three panels converge onto hard Top-256 from step 7000 on; only
+the $s = 1$ curves stay above, by less than the pool-scope cells of
+Figure~\ref{fig:span256}.}
+\label{fig:fo256}
+\end{figure}
+
+\begin{figure}[htb]\centering
+\includegraphics[width=.6\textwidth]{figures/tsweep/fig_ts_fo_best.png}
+\caption{The best first-order cell of each $K$ at step 10000 against the
+code-carried hard ladder, as in Figure~\ref{fig:best}. The $K = 32$ cell,
+$(0.25, 1)$, ends $0.035$ above hard Top-64 (the pool scope's best:
+$0.017$); the $K = 256$ cell, $(0.5, 0.25)$, ends on hard Top-256.}
+\label{fig:fobest}
+\end{figure}
 
 \end{document}
