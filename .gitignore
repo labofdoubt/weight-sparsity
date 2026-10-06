@@ -41,3 +41,4 @@ wandb/
 !docs/rblapsum-code-residual.pdf
 !docs/rblapsum-code-residual-journal.pdf
 !docs/tsweep-reach-strength.pdf
+!docs/kj-vs-hard-topk-code-residual.pdf
