@@ -71,7 +71,33 @@ def test_config_validation():
         ActivationBottleneckConfig(**base, rblapsum_kernel_width="relative_x")
     with pytest.raises(ValueError):
         ActivationBottleneckConfig(**{**base, "surrogate_mode": "hard"}, rblapsum_support_strength=0.5)
+    # first_order shares the pool's member set and the per-token T / gamma code path
+    c = ActivationBottleneckConfig(**base, rblapsum_support_strength=0.5,
+                                   code_residual=True, rblapsum_surrogate_scope="first_order")
+    assert c.rblapsum_support_strength == 0.5
     with pytest.raises(ValueError):
         ActivationBottleneckConfig(**base, rblapsum_support_strength=0.5,
                                    code_residual=True, share_projections=True,
-                                   rblapsum_surrogate_scope="first_order")
+                                   rblapsum_surrogate_scope="carry_mixed")
+
+
+def test_first_order_scope_uses_the_same_per_token_width_and_strength():
+    # outside the hard pass the first_order gate's backward is the pool gate's backward
+    torch.manual_seed(2)
+    k, j = 8, 24
+    for mode in ("relative_span", "relative_b"):
+        grads = []
+        for scope in ("pool", "first_order"):
+            g = AdaptiveLapSumTopKGate(n_features=64, k=k, j=j, surrogate_mode="rblapsum",
+                                       rblapsum_boundary_grad_mode="through_rank_kappa",
+                                       temperature=0.5, rblapsum_kernel_width=mode,
+                                       rblapsum_support_strength=0.5,
+                                       rblapsum_surrogate_scope=scope)
+            g.train()
+            torch.manual_seed(3)
+            z = (3 * torch.randn(6, 64, dtype=torch.float64)).requires_grad_(True)
+            w = torch.randn(6, 64, dtype=torch.float64)
+            (g(z) * w).sum().backward()
+            grads.append(z.grad.clone())
+        assert torch.allclose(grads[0], grads[1], rtol=1e-12, atol=1e-14), mode
+        assert (grads[0] != 0).sum() > 6 * k           # the support term is present

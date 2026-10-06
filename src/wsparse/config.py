@@ -878,9 +878,10 @@ class ActivationBottleneckConfig:
                 raise ValueError("rblapsum_support_strength applies to surrogate_mode='rblapsum' only")
             if not float(self.rblapsum_support_strength) >= 0:
                 raise ValueError("rblapsum_support_strength must be >= 0")
-            if self.rblapsum_surrogate_scope not in ("pool", "inactive"):
-                raise ValueError("rblapsum_support_strength is implemented for the pool and "
-                                 "inactive scopes only")
+            if self.rblapsum_surrogate_scope not in ("pool", "inactive",
+                                                     "first_order", "first_order_inactive"):
+                raise ValueError("rblapsum_support_strength is implemented for the pool, "
+                                 "inactive and first_order scopes only (not the carry scopes)")
         if self.rblapsum_relative_temperature and self.surrogate_mode != "rblapsum":
             raise ValueError(
                 "rblapsum_relative_temperature applies to the hard-forward "
