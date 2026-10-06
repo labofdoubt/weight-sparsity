@@ -1,61 +1,55 @@
-"""Figures of the (reach, strength) grid for code-carried RBLapSum, 2026-10-05.
+"""Figures of the (reach, strength) grid for code-carried RBLapSum, 2026-10-05/06.
 
-Reads docs/figures/tsweep/data/curves_tsweep.json (the 48 ``ma_ts_*`` runs,
+Reads docs/figures/tsweep/data/curves_tsweep.json (the ``ma_ts_*`` runs,
 written by scripts/extract_val_curves.py) and the hard Top-K' ladder of the
 code-carried K+J grid (docs/figures/kj-cr/data/curves_new.json); writes
-docs/figures/tsweep/fig_*.{pdf,png} and prints the step-3000 table.
+docs/figures/tsweep/fig_ts_*.{pdf,png} and prints the step-10000 table.
 
-Runs: ma_ts_{span|b}_t{025|050|100}_s{010|025|050|100}_k{32|256}_j{480|256},
+Runs: ma_ts_{span|b}_t{025|050|100}_s{010|025|050|100}_k{32|256}_j{480|256}[_fo],
 10k steps of the 20k schedule (train_guard --stop-step 10000), validation every 500.
 The kernel width is T = tau * span (span = s_(K+1) - s_(K+J)) or T = tau * b
 (b = s_(K+1)); the support strength s sets gamma = 2 s T / b per token, so the
-(K+1)-th member's support gradient equals s times its read gradient.
+(K+1)-th member's support gradient equals s times its read gradient.  The
+``_fo`` runs use the first-order scope instead of the pool scope.
+
+Colour conventions follow scripts/plot_cr_kj.py (docs/kj-vs-hard-topk-code-residual.tex):
+the varied family is a blue ramp light to dark, hard baselines are dashed reds
+light to dark with K', the reference run of the family is dotted grey.
 
   python scripts/plot_tsweep.py            # all figures and the table
 """
 import json
 import os
-import sys
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.colors import to_rgb  # noqa: E402
+from matplotlib import cm  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 DATA = os.path.join(ROOT, "docs", "figures", "tsweep", "data")
 KJ = os.path.join(ROOT, "docs", "figures", "kj-cr", "data")
 OUT = os.path.join(ROOT, "docs", "figures", "tsweep")
 
-BLUE, ORANGE, AQUA, YELLOW, MAGENTA = "#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"
-INK, INK2, MUTED, LIGHT = "#0b0b0b", "#52514e", "#898781", "#c3c2b7"
-GRID = "#e1e0d9"
-plt.rcParams.update({
-    "font.family": "sans-serif",
-    "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],
-    "font.size": 7.2, "axes.titlesize": 7.6, "axes.labelsize": 7.2,
-    "xtick.labelsize": 6.6, "ytick.labelsize": 6.6, "legend.fontsize": 6.0,
-    "axes.edgecolor": LIGHT, "axes.linewidth": 0.6,
-    "axes.labelcolor": INK2, "xtick.color": MUTED, "ytick.color": MUTED,
-    "xtick.labelcolor": INK2, "ytick.labelcolor": INK2,
-    "xtick.major.width": 0.6, "ytick.major.width": 0.6,
-    "xtick.major.size": 2.5, "ytick.major.size": 2.5,
-    "axes.grid": True, "grid.color": GRID, "grid.linewidth": 0.5,
-    "grid.linestyle": "-", "axes.axisbelow": True,
-    "lines.linewidth": 1.3, "lines.solid_capstyle": "round",
-    "legend.frameon": False, "legend.handlelength": 1.5,
-    "legend.borderaxespad": 0.2, "legend.labelspacing": 0.3,
-    "axes.spines.top": False, "axes.spines.right": False,
-    "axes.titlecolor": INK, "axes.titleweight": "bold", "axes.titlelocation": "left",
-    "axes.titlepad": 3.0, "savefig.dpi": 300, "pdf.fonttype": 42,
-})
+BLUES, REDS = cm.get_cmap("Blues"), cm.get_cmap("Reds")
+B_RANGE, R_RANGE = (0.40, 0.95), (0.40, 0.92)
+GREY = "0.40"
+plt.rcParams.update({"font.size": 10, "axes.titlesize": 11, "legend.fontsize": 9,
+                     "axes.grid": True, "grid.alpha": 0.35, "savefig.dpi": 200})
 
 TAUS = [("025", 0.25), ("050", 0.5), ("100", 1.0)]
 SS = [("010", 0.1), ("025", 0.25), ("050", 0.5), ("100", 1.0)]
 CELLS = {32: 480, 256: 256}
-TAU_COLOR = {0.25: BLUE, 0.5: ORANGE, 1.0: AQUA}
-MODE_LABEL = {"span": r"$T=\tau\,(s_{(K+1)}-s_{(K+J)})$", "b": r"$T=\tau\, s_{(K+1)}$"}
 HARD_KS = [32, 64, 128, 256, 512]
+# the hard rungs drawn next to the zero line of each grid figure
+EXTRA_HARD = {32: [64, 128], 256: [128, 512]}
+MODE_LABEL = {"span": r"$T=\tau\,(s_{(K+1)}-s_{(K+J)})$", "b": r"$T=\tau\, s_{(K+1)}$"}
+ARM_LABEL = {"pool": "pool scope", "fo": "first-order scope"}
+
+
+def ramp(cmap, n, lo, hi):
+    return [cmap(lo + (hi - lo) * i / max(n - 1, 1)) for i in range(n)]
 
 
 def load(*parts):
@@ -73,19 +67,19 @@ def curves():
     return {**(load(KJ, "curves_new.json") or {}), **(load(DATA, "curves_tsweep.json") or {})}
 
 
-def run_of(mode, tau, s, K):
-    t = dict(TAUS)
+def run_of(mode, tau, s, K, arm="pool"):
     tk = [k for k, v in TAUS if v == tau][0]
     sk = [k for k, v in SS if v == s][0]
-    return f"ma_ts_{mode}_t{tk}_s{sk}_k{K}_j{CELLS[K]}"
+    return f"ma_ts_{mode}_t{tk}_s{sk}_k{K}_j{CELLS[K]}" + ("_fo" if arm == "fo" else "")
 
 
 def hard_of(K):
     return f"ma_cr_hard_k{K}_pnorm"
 
 
-def pool_of(K):
-    return f"ma_cr_rbk_k{K}_j{CELLS[K]}_t2"
+def ref_of(K, arm="pool"):
+    """The T=2, gamma=1 run of the same scope: the configuration used so far."""
+    return f"ma_cr_rbk_k{K}_j{CELLS[K]}_t2" + ("_fo" if arm == "fo" else "")
 
 
 def series(cv, run):
@@ -93,61 +87,118 @@ def series(cv, run):
     return {} if c is None else dict((int(st), v) for st, v in c["val"])
 
 
-def shade(color, frac):
-    """Blend `color` towards white: frac=1 is the full color, frac=0 is white."""
-    r, g, b = to_rgb(color)
-    return (1 - frac * (1 - r), 1 - frac * (1 - g), 1 - frac * (1 - b))
+def delta(cv, run, ref, max_step):
+    d, h = series(cv, run), series(cv, ref)
+    pts = [(st, v - h[st]) for st, v in sorted(d.items()) if st in h and st <= max_step]
+    return list(zip(*pts)) if pts else ([], [])
 
 
-def s_shade(s):
-    return {0.1: 0.35, 0.25: 0.55, 0.5: 0.78, 1.0: 1.0}[s]
-
-
-def grid_panel(ax, cv, mode, K, max_step=10000, ref="hard"):
-    """12 curves: val CE minus the reference, colour = tau, shade = s."""
-    h = series(cv, hard_of(K) if ref == "hard" else ref)
-    for tk, tau in TAUS:
-        for sk, s in SS:
-            d = series(cv, run_of(mode, tau, s, K))
-            pts = [(st, v - h[st]) for st, v in sorted(d.items()) if st in h and st <= max_step]
-            if not pts:
-                continue
-            ax.plot(*zip(*pts), "-", color=shade(TAU_COLOR[tau], s_shade(s)),
-                    lw=1.0 + 0.5 * s, marker="o", ms=1.8 + 1.2 * s, mfc="white", mew=0.6,
-                    label=rf"$\tau={tau:g}$, $s={s:g}$")
-    p = series(cv, pool_of(K))
-    pts = [(st, v - h[st]) for st, v in sorted(p.items()) if st in h and st <= max_step]
-    if pts:
-        ax.plot(*zip(*pts), ":", color=INK2, lw=1.0, label=rf"pool, $T=2$, $\gamma=1$ (reference)")
-    # hard Top-(K+J) is left out on purpose: at K=32 it sits 0.17 below and
-    # would compress the grid into a strip; it appears in fig_ts_best.
-    ax.axhline(0, color=INK, lw=0.8, label=rf"hard Top-{K}")
-    ax.set_xlabel("step")
-    ax.set_ylabel(rf"val CE $-$ hard Top-{K}")
-    ax.set_xlim(0, max_step)
-
-
-def fig_grid(mode, K, max_step=10000):
+# --------------------------------------------------------------------------- #
+# grid figures: one panel per tau, the four s curves as a blue ramp
+# --------------------------------------------------------------------------- #
+def fig_grid(mode, K, arm="pool", max_step=10000):
     cv = curves()
-    fig, ax = plt.subplots(figsize=(6.6, 3.4))
-    grid_panel(ax, cv, mode, K, max_step)
-    ax.set_title(rf"$K={K}$, $J={CELLS[K]}$, {MODE_LABEL[mode]}, $\gamma=2sT/b$")
-    ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=6.0)
-    save(fig, f"fig_ts_{mode}_k{K}")
+    J = CELLS[K]
+    scol = dict(zip([s for _, s in SS], ramp(BLUES, len(SS), *B_RANGE)))
+    hcol = dict(zip(EXTRA_HARD[K], ramp(REDS, len(EXTRA_HARD[K]), *R_RANGE)))
+    fig, axes = plt.subplots(1, 3, figsize=(15.0, 4.6), sharey=True)
+    for ax, (tk, tau) in zip(axes, TAUS):
+        for kp in EXTRA_HARD[K]:
+            x, y = delta(cv, hard_of(kp), hard_of(K), max_step)
+            ax.plot(x, y, "--", color=hcol[kp], lw=1.6)
+        x, y = delta(cv, ref_of(K, arm), hard_of(K), max_step)
+        ax.plot(x, y, ":", color=GREY, lw=1.8)
+        for _, s in SS:
+            x, y = delta(cv, run_of(mode, tau, s, K, arm), hard_of(K), max_step)
+            ax.plot(x, y, "-", color=scol[s], lw=2.0, marker="o", ms=3, mfc="white", mew=0.8)
+        ax.axhline(0, color="0.15", lw=1.4)
+        ax.set_title(rf"$\tau = {tau:g}$")
+        ax.set_xlabel("step")
+        ax.set_xlim(0, max_step)
+    axes[0].set_ylabel(rf"val CE $-$ hard Top-{K}")
+    hd = [Line2D([0], [0], color="0.15", lw=1.4, label=f"hard Top-{K}")]
+    hd += [Line2D([0], [0], color=hcol[kp], ls="--", lw=1.6, label=f"hard Top-{kp}") for kp in EXTRA_HARD[K]]
+    hd += [Line2D([0], [0], color=GREY, ls=":", lw=1.8,
+                  label=rf"{ARM_LABEL[arm]}, $T=2$, $\gamma=1$")]
+    hd += [Line2D([0], [0], color=scol[s], lw=2.0, label=rf"$s={s:g}$") for _, s in SS]
+    axes[2].legend(handles=hd, loc="best", framealpha=0.93, ncol=2)
+    fig.suptitle(rf"$K={K}$, $J={J}$, {MODE_LABEL[mode]}, $\gamma=2sT/b$, {ARM_LABEL[arm]}",
+                 y=1.01, fontsize=12)
+    save(fig, f"fig_ts_{arm}_{mode}_k{K}")
 
 
-def table(step=10000):
+# --------------------------------------------------------------------------- #
+# best cells against the hard ladder
+# --------------------------------------------------------------------------- #
+def best_cells(arm="pool", step=10000, modes=("span", "b")):
+    cv = curves()
+    best = {}
+    for mode in modes:
+        for K in CELLS:
+            cand = [(series(cv, run_of(mode, tau, s, K, arm)).get(step), tau, s)
+                    for _, tau in TAUS for _, s in SS]
+            cand = [c for c in cand if c[0] is not None]
+            if cand:
+                best[(mode, K)] = min(cand)
+    return best
+
+
+def fig_best(arm="pool", modes=("span", "b"), max_step=10000, step=10000, absolute=False):
+    cv = curves()
+    best = best_cells(arm, step, modes)
+    hcol = dict(zip(HARD_KS, ramp(REDS, len(HARD_KS), *R_RANGE)))
+    ccol = {32: BLUES(0.60), 256: BLUES(0.95)}
+    fig, axes = plt.subplots(1, len(modes), figsize=(7.5 * len(modes), 4.8), sharey=True,
+                             squeeze=False)
+    axes = axes[0]
+    for ax, mode in zip(axes, modes):
+        for kp in HARD_KS:
+            if absolute:
+                d = series(cv, hard_of(kp))
+                x, y = zip(*[(st, v) for st, v in sorted(d.items()) if 500 <= st <= max_step])
+            else:
+                x, y = delta(cv, hard_of(kp), hard_of(512), max_step)
+            ax.plot(x, y, "--", color=hcol[kp], lw=1.7)
+        for K in CELLS:
+            if (mode, K) not in best:
+                continue
+            _, tau, s = best[(mode, K)]
+            r = run_of(mode, tau, s, K, arm)
+            if absolute:
+                d = series(cv, r)
+                x, y = zip(*[(st, v) for st, v in sorted(d.items()) if 500 <= st <= max_step])
+            else:
+                x, y = delta(cv, r, hard_of(512), max_step)
+            ax.plot(x, y, "-", color=ccol[K], lw=2.2, marker="o", ms=3, mfc="white", mew=0.8,
+                    label=rf"$K={K}$, $J={CELLS[K]}$: $\tau={tau:g}$, $s={s:g}$")
+        if not absolute:
+            ax.axhline(0, color="0.15", lw=1.0)
+        ax.set_title(MODE_LABEL[mode] + rf", best cells at step {step}, {ARM_LABEL[arm]}")
+        ax.set_xlabel("step")
+        ax.set_xlim(500 if absolute else 0, max_step)
+        hd = [Line2D([0], [0], color=hcol[kp], ls="--", lw=1.7, label=f"hard Top-{kp}") for kp in HARD_KS]
+        hd += ax.get_legend_handles_labels()[0]
+        lo, hi = ax.get_ylim()                      # headroom so the legend covers no curve
+        ax.set_ylim(lo, hi + 0.30 * (hi - lo))
+        ax.legend(handles=hd, loc="upper right", framealpha=0.93, ncol=2)
+    axes[0].set_ylabel("val CE" if absolute else r"val CE $-$ hard Top-512")
+    save(fig, f"fig_ts_{arm}_best" + ("_abs" if absolute else ""))
+
+
+# --------------------------------------------------------------------------- #
+# tables
+# --------------------------------------------------------------------------- #
+def table(arm="pool", step=10000, modes=("span", "b")):
     cv = curves()
     rows = []
-    for mode in ("span", "b"):
+    for mode in modes:
         for K in CELLS:
             h = series(cv, hard_of(K)).get(step)
-            for tk, tau in TAUS:
-                for sk, s in SS:
-                    r = run_of(mode, tau, s, K)
-                    d = series(cv, r)
+            for _, tau in TAUS:
+                for _, s in SS:
+                    r = run_of(mode, tau, s, K, arm)
                     c = cv.get(r)
-                    v = d.get(step)
+                    v = series(cv, r).get(step)
                     dg = c["diag"] if c else []
                     last = dg[-1] if dg else [None] * 5
                     rows.append((mode, K, tau, s, v, None if (v is None or h is None) else v - h,
@@ -155,100 +206,33 @@ def table(step=10000):
     return rows
 
 
-def best_cells(step=10000):
+def print_table(arm, modes):
+    print(f"\n== {ARM_LABEL[arm]}: val CE at 10000, minus hard Top-K; T_eff, gamma, b at 10k")
+    print(f"{'mode':5} {'K':>4} {'tau':>5} {'s':>5} {'val CE':>8} {'- hard':>8} {'T_eff':>8} {'gamma':>7} {'b':>8}  div")
+    for mode, K, tau, s, v, dv, T, g, b, div in table(arm, modes=modes):
+        f = lambda x, w=8, p=4: f"{x:>{w}.{p}f}" if isinstance(x, (int, float)) else f"{'-':>{w}}"
+        print(f"{mode:5} {K:>4} {tau:>5g} {s:>5g} {f(v)} {f(dv)} {f(T, 8, 3)} {f(g, 7, 3)} {f(b, 8, 3)}  {'yes' if div else ''}")
     cv = curves()
-    best = {}
-    for mode in ("span", "b"):
-        for K in CELLS:
-            cand = []
-            for tk, tau in TAUS:
-                for sk, s in SS:
-                    v = series(cv, run_of(mode, tau, s, K)).get(step)
-                    if v is not None:
-                        cand.append((v, tau, s))
-            if cand:
-                best[(mode, K)] = min(cand)
-    return best
-
-
-def shared_legend(fig, axes):
-    """The hard ladder is common to both panels; the best cells differ per panel."""
-    h0, l0 = axes[0].get_legend_handles_labels()
-    h1, l1 = axes[1].get_legend_handles_labels()
-    hard = [(h, l) for h, l in zip(h0, l0) if l.startswith("hard")]
-    best0 = [(h, "span: " + l) for h, l in zip(h0, l0) if not l.startswith("hard")]
-    best1 = [(h, "b: " + l) for h, l in zip(h1, l1) if not l.startswith("hard")]
-    items = hard + best0 + best1
-    fig.legend([h for h, _ in items], [l for _, l in items], loc="lower center",
-               bbox_to_anchor=(0.5, -0.17), ncol=3, fontsize=6.0, frameon=False)
-
-
-def fig_best(max_step=10000, step=10000):
-    cv = curves()
-    best = best_cells(step)
-    ref = hard_of(512)
-    h512 = series(cv, ref)
-    fig, axes = plt.subplots(1, 2, figsize=(7.4, 3.1), sharey=True)
-    for ax, mode in zip(axes, ("span", "b")):
-        for i, K in enumerate(HARD_KS):
-            d = series(cv, hard_of(K))
-            pts = [(st, v - h512[st]) for st, v in sorted(d.items()) if st in h512 and st <= max_step]
-            if pts:
-                ax.plot(*zip(*pts), "-", color=shade(INK, 0.3 + 0.7 * (1 - i / (len(HARD_KS) - 1))),
-                        lw=0.9, label=rf"hard Top-{K}")
-        for K, color in ((32, MAGENTA), (256, YELLOW)):
-            if (mode, K) not in best:
-                continue
-            v, tau, s = best[(mode, K)]
-            d = series(cv, run_of(mode, tau, s, K))
-            pts = [(st, v - h512[st]) for st, v in sorted(d.items()) if st in h512 and st <= max_step]
-            ax.plot(*zip(*pts), "-", color=color, lw=1.6, marker="o", ms=2.4, mfc="white", mew=0.7,
-                    label=rf"$K={K}$, $J={CELLS[K]}$: $\tau={tau:g}$, $s={s:g}$")
-        ax.axhline(0, color=INK, lw=0.8)
-        ax.set_title(MODE_LABEL[mode] + rf", best cells at step {step}")
-        ax.set_xlabel("step")
-        ax.set_xlim(0, max_step)
-    axes[0].set_ylabel(r"val CE $-$ hard Top-512")
-    shared_legend(fig, axes)
-    save(fig, "fig_ts_best")
-    # absolute version
-    fig, axes = plt.subplots(1, 2, figsize=(7.4, 3.1), sharey=True)
-    for ax, mode in zip(axes, ("span", "b")):
-        for i, K in enumerate(HARD_KS):
-            d = series(cv, hard_of(K))
-            pts = [(st, v) for st, v in sorted(d.items()) if st <= max_step and st >= 500]
-            ax.plot(*zip(*pts), "-", color=shade(INK, 0.3 + 0.7 * (1 - i / (len(HARD_KS) - 1))),
-                    lw=0.9, label=rf"hard Top-{K}")
-        for K, color in ((32, MAGENTA), (256, YELLOW)):
-            if (mode, K) not in best:
-                continue
-            v, tau, s = best[(mode, K)]
-            d = series(cv, run_of(mode, tau, s, K))
-            pts = [(st, v) for st, v in sorted(d.items()) if st <= max_step and st >= 500]
-            ax.plot(*zip(*pts), "-", color=color, lw=1.6, marker="o", ms=2.4, mfc="white", mew=0.7,
-                    label=rf"$K={K}$, $J={CELLS[K]}$: $\tau={tau:g}$, $s={s:g}$")
-        ax.set_title(MODE_LABEL[mode] + rf", best cells at step {step}")
-        ax.set_xlabel("step")
-        ax.set_xlim(500, max_step)
-    axes[0].set_ylabel("val CE")
-    shared_legend(fig, axes)
-    save(fig, "fig_ts_best_abs")
+    for (mode, K), (v, tau, s) in sorted(best_cells(arm, modes=modes).items()):
+        h = series(cv, hard_of(K)).get(10000)
+        print(f"best {mode:5} K={K:>3}: tau={tau:g} s={s:g}  val {v:.4f}  ({v - h:+.4f} vs hard Top-{K})")
 
 
 def main():
     os.makedirs(OUT, exist_ok=True)
+    cv = curves()
     for mode in ("span", "b"):
         for K in CELLS:
-            fig_grid(mode, K)
-    fig_best()
-    print(f"{'mode':5} {'K':>4} {'tau':>5} {'s':>5} {'val CE':>8} {'- hard':>8} {'T_eff':>7} {'gamma':>7} {'b':>7}  div")
-    for mode, K, tau, s, v, dv, T, g, b, div in table():
-        f = lambda x, w=8, p=4: f"{x:>{w}.{p}f}" if isinstance(x, (int, float)) else f"{'-':>{w}}"
-        print(f"{mode:5} {K:>4} {tau:>5g} {s:>5g} {f(v)} {f(dv)} {f(T, 7, 3)} {f(g, 7, 3)} {f(b, 7, 3)}  {'yes' if div else ''}")
-    cv = curves()
-    for (mode, K), (v, tau, s) in sorted(best_cells().items()):
-        h = series(cv, hard_of(K)).get(10000)
-        print(f"best {mode:5} K={K:>3}: tau={tau:g} s={s:g}  val {v:.4f}  ({v - h:+.4f} vs hard Top-{K})")
+            fig_grid(mode, K, "pool")
+    fig_best("pool")
+    fig_best("pool", absolute=True)
+    print_table("pool", ("span", "b"))
+    if any(k.endswith("_fo") and k.startswith("ma_ts_") for k in cv):
+        for K in CELLS:
+            fig_grid("span", K, "fo")
+        fig_best("fo", modes=("span",))
+        fig_best("fo", modes=("span",), absolute=True)
+        print_table("fo", ("span",))
 
 
 if __name__ == "__main__":
