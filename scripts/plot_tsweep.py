@@ -119,11 +119,9 @@ def grid_panel(ax, cv, mode, K, max_step=10000, ref="hard"):
     pts = [(st, v - h[st]) for st, v in sorted(p.items()) if st in h and st <= max_step]
     if pts:
         ax.plot(*zip(*pts), ":", color=INK2, lw=1.0, label=rf"pool, $T=2$, $\gamma=1$ (reference)")
-    hk = series(cv, hard_of(K + CELLS[K]))
-    pts = [(st, v - h[st]) for st, v in sorted(hk.items()) if st in h and st <= max_step]
-    if pts:
-        ax.plot(*zip(*pts), "--", color=INK, lw=0.9, label=rf"hard Top-{K + CELLS[K]}")
-    ax.axhline(0, color=INK, lw=0.8)
+    # hard Top-(K+J) is left out on purpose: at K=32 it sits 0.17 below and
+    # would compress the grid into a strip; it appears in fig_ts_best.
+    ax.axhline(0, color=INK, lw=0.8, label=rf"hard Top-{K}")
     ax.set_xlabel("step")
     ax.set_ylabel(rf"val CE $-$ hard Top-{K}")
     ax.set_xlim(0, max_step)
@@ -131,10 +129,10 @@ def grid_panel(ax, cv, mode, K, max_step=10000, ref="hard"):
 
 def fig_grid(mode, K, max_step=10000):
     cv = curves()
-    fig, ax = plt.subplots(figsize=(5.2, 3.3))
+    fig, ax = plt.subplots(figsize=(6.6, 3.4))
     grid_panel(ax, cv, mode, K, max_step)
     ax.set_title(rf"$K={K}$, $J={CELLS[K]}$, {MODE_LABEL[mode]}, $\gamma=2sT/b$")
-    ax.legend(ncol=2, loc="upper right", fontsize=5.6)
+    ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=6.0)
     save(fig, f"fig_ts_{mode}_k{K}")
 
 
@@ -173,6 +171,18 @@ def best_cells(step=10000):
     return best
 
 
+def shared_legend(fig, axes):
+    """The hard ladder is common to both panels; the best cells differ per panel."""
+    h0, l0 = axes[0].get_legend_handles_labels()
+    h1, l1 = axes[1].get_legend_handles_labels()
+    hard = [(h, l) for h, l in zip(h0, l0) if l.startswith("hard")]
+    best0 = [(h, "span: " + l) for h, l in zip(h0, l0) if not l.startswith("hard")]
+    best1 = [(h, "b: " + l) for h, l in zip(h1, l1) if not l.startswith("hard")]
+    items = hard + best0 + best1
+    fig.legend([h for h, _ in items], [l for _, l in items], loc="lower center",
+               bbox_to_anchor=(0.5, -0.17), ncol=3, fontsize=6.0, frameon=False)
+
+
 def fig_best(max_step=10000, step=10000):
     cv = curves()
     best = best_cells(step)
@@ -198,8 +208,8 @@ def fig_best(max_step=10000, step=10000):
         ax.set_title(MODE_LABEL[mode] + rf", best cells at step {step}")
         ax.set_xlabel("step")
         ax.set_xlim(0, max_step)
-        ax.legend(loc="upper right", fontsize=5.8)
     axes[0].set_ylabel(r"val CE $-$ hard Top-512")
+    shared_legend(fig, axes)
     save(fig, "fig_ts_best")
     # absolute version
     fig, axes = plt.subplots(1, 2, figsize=(7.4, 3.1), sharey=True)
@@ -220,8 +230,8 @@ def fig_best(max_step=10000, step=10000):
         ax.set_title(MODE_LABEL[mode] + rf", best cells at step {step}")
         ax.set_xlabel("step")
         ax.set_xlim(500, max_step)
-        ax.legend(loc="upper right", fontsize=5.8)
     axes[0].set_ylabel("val CE")
+    shared_legend(fig, axes)
     save(fig, "fig_ts_best_abs")
 
 
