@@ -1,0 +1,14 @@
+# laplace_policy temperature campaign under the code residual (box vienna, 2026-10-08).
+# gpu|run_name|config|extra -- launched with scripts/launch_pinned.sh (ENTRY=scripts/train_guard.py),
+# full 20k-step schedule (max_steps untouched, no --stop-step), out_dir /workspace/runs.
+# Width mode relative_span (T = tau * (s_(K+1) - s_(K+J))); tau_0 per cell from the step-30
+# calibration probes configs/policy_cr/calibration/vi_cal_rs_*; the absolute-T probes vi_cal_k*
+# showed the exchange collapsing below 3% by step 200 at every grid T (see the report).
+0|vi_pol_rs_k32_j32_t0p8_const|configs/policy_cr/vi_pol_rs_k32_j32_t0p8_const.yaml|
+1|vi_pol_rs_k32_j32_t0p8_anneal|configs/policy_cr/vi_pol_rs_k32_j32_t0p8_anneal.yaml|
+2|vi_pol_rs_k32_j480_t0p16_const|configs/policy_cr/vi_pol_rs_k32_j480_t0p16_const.yaml|
+3|vi_pol_rs_k32_j480_t0p16_anneal|configs/policy_cr/vi_pol_rs_k32_j480_t0p16_anneal.yaml|
+4|vi_pol_rs_k128_j128_t0p72_const|configs/policy_cr/vi_pol_rs_k128_j128_t0p72_const.yaml|
+5|vi_pol_rs_k128_j128_t0p72_anneal|configs/policy_cr/vi_pol_rs_k128_j128_t0p72_anneal.yaml|
+6|vi_pol_rs_k256_j256_t0p67_const|configs/policy_cr/vi_pol_rs_k256_j256_t0p67_const.yaml|
+7|vi_pol_rs_k256_j256_t0p67_anneal|configs/policy_cr/vi_pol_rs_k256_j256_t0p67_anneal.yaml|

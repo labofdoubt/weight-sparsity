@@ -1,0 +1,16 @@
+vi_cal_k32_j32_t0p1|configs/policy_cr/calibration/vi_cal_k32_j32_t0p1.yaml|--stop-step 200 --train.log_every_steps=10
+vi_cal_k32_j480_t0p1|configs/policy_cr/calibration/vi_cal_k32_j480_t0p1.yaml|--stop-step 200 --train.log_every_steps=10
+vi_cal_k128_j128_t0p1|configs/policy_cr/calibration/vi_cal_k128_j128_t0p1.yaml|--stop-step 200 --train.log_every_steps=10
+vi_cal_k256_j256_t0p1|configs/policy_cr/calibration/vi_cal_k256_j256_t0p1.yaml|--stop-step 200 --train.log_every_steps=10
+vi_cal_k32_j32_t0p2|configs/policy_cr/calibration/vi_cal_k32_j32_t0p2.yaml|--stop-step 200 --train.log_every_steps=10
+vi_cal_k32_j480_t0p2|configs/policy_cr/calibration/vi_cal_k32_j480_t0p2.yaml|--stop-step 200 --train.log_every_steps=10
+vi_cal_k128_j128_t0p2|configs/policy_cr/calibration/vi_cal_k128_j128_t0p2.yaml|--stop-step 200 --train.log_every_steps=10
+vi_cal_k256_j256_t0p2|configs/policy_cr/calibration/vi_cal_k256_j256_t0p2.yaml|--stop-step 200 --train.log_every_steps=10
+vi_cal_k32_j32_t0p05|configs/policy_cr/calibration/vi_cal_k32_j32_t0p05.yaml|--stop-step 200 --train.log_every_steps=10
+vi_cal_k32_j480_t0p05|configs/policy_cr/calibration/vi_cal_k32_j480_t0p05.yaml|--stop-step 200 --train.log_every_steps=10
+vi_cal_k128_j128_t0p05|configs/policy_cr/calibration/vi_cal_k128_j128_t0p05.yaml|--stop-step 200 --train.log_every_steps=10
+vi_cal_k256_j256_t0p05|configs/policy_cr/calibration/vi_cal_k256_j256_t0p05.yaml|--stop-step 200 --train.log_every_steps=10
+vi_cal_k32_j32_t0p5|configs/policy_cr/calibration/vi_cal_k32_j32_t0p5.yaml|--stop-step 200 --train.log_every_steps=10
+vi_cal_k32_j480_t0p5|configs/policy_cr/calibration/vi_cal_k32_j480_t0p5.yaml|--stop-step 200 --train.log_every_steps=10
+vi_cal_k128_j128_t0p5|configs/policy_cr/calibration/vi_cal_k128_j128_t0p5.yaml|--stop-step 200 --train.log_every_steps=10
+vi_cal_k256_j256_t0p5|configs/policy_cr/calibration/vi_cal_k256_j256_t0p5.yaml|--stop-step 200 --train.log_every_steps=10
