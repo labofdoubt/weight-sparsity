@@ -21,6 +21,7 @@ to give a selection that the forward pass makes discontinuously.
 | `lapsum` | exact hard TopK | LapSum Top-(K+J) VJP at constant `T`, budget barrier `Σpᵢ = K` |
 | `rblapsum` | exact hard TopK | local kernel at the **hard rank boundary** `b = max(b₀, s_(K+1))` |
 | `rblapsum_sf` | `yᵢ = zᵢ·pᵢ` ("soft forward") | the gradient of that forward |
+| `laplace_policy` | exact hard TopK on a **sampled** support: Laplace noise on the Top-(K+J) scores, the `K` largest noisy scores kept, original values transmitted | hard-mask value gradient plus the likelihood-ratio (score-function) gradient of the sampled CE ([note](docs/laplace-policy-topk.md)) |
 
 The repo name is historical. The weight-sparsity subsystem (LTP, Continuous
 Sparsification, TopK weight masks) was **removed on 2026-09-28**, along with the
@@ -115,6 +116,9 @@ samples would not be comparable across runs once any dropout is enabled.
 | `perf/tokens_per_s`, `perf/ms_per_step`, `perf/tokens_seen` | throughput; `tokens_per_s` is global across ranks |
 | `val/ce`, `val/ppl` | validation loss, at `hard_inference` (so comparable across modes) |
 | `val_soft/ce` | `rblapsum_sf` only: the same batches through the soft forward |
+| `train_stochastic/ce`, `train_deterministic_probe/ce` | `laplace_policy` only: `train/ce` is the sampled-support CE (the alias says so); the probe is a periodic noise-off forward on the same training inputs, before the update |
+| `val_deterministic/ce`, `val_stochastic/ce`, `val_stochastic/mc_std` | `laplace_policy` only: `val/ce` stays the clean Top-K forward (alias `val_deterministic`); the stochastic pass samples the supports on the same windows, `train.policy_val_samples` draws, spread only from two draws on |
+| `policy/tau`, `policy/baseline`, `policy/support_term_diag` | `laplace_policy` only: the step's scheduled width parameter, the EMA baseline used, and the detached support term (a gradient diagnostic, not a loss) |
 | `val_final/ce` | the larger end-of-run evaluation (`train.final_val_batches`) |
 | `bottleneck/density`, `candidate_density` | `K/N` and `(K+J)/N` |
 | `bottleneck/temperature` | the constant `T` (flat by construction; logged so a run's own record carries it) |
@@ -125,6 +129,7 @@ samples would not be comparable across runs once any dropout is enabled.
 | `bottleneck/rb_boundary`, `rb_b_rank`, `rb_cap_active_frac` | rblapsum: the boundary, its rank, and how often the rank cap wins over `b₀` |
 | `bottleneck/rb_soft_mass` | `rblapsum_sf` only: `Σᵢ pᵢ`, the forward's soft L0 |
 | `bottleneck/rb_support_grad_norm`, `rb_common_mode`, `rb_kick_win`, `rb_boundary_grad_ratio` | rblapsum: size and structure of the support gradient `g_s` |
+| `bottleneck/policy_t_mean`, `policy_t_floor_frac`, `policy_gamma_mean`, `policy_exchange_frac`, `policy_overlap`, `policy_score_grad_rms`, `policy_collapsed_frac`, … | `laplace_policy`: the effective noise width and how often its floor binds, the support multiplier, the fraction of sampled members outside the clean Top-K, the RMS of the sampled location gradient `sign(r − u)/T`, perturbations that rounded away; also per gate as `bottleneck_policy_*/blocks.i` |
 | `bottleneck/grad_active`, `grad_inactive`, `grad_rank_bin0..7` | surrogate gradient magnitude on the active `K`, the exploratory `J`, and by candidate rank |
 | `bottleneck/feature_dead_frac`, `feature_usage_entropy`, `feature_usage_max` | **feature collapse — see [Diagnostics](#diagnostics)** |
 | `bottleneck_<key>/<layer>` | the same keys per layer, for the TensorBoard panels |
@@ -199,14 +204,22 @@ activation_bottleneck:
   k: 32                    # K, active in the forward pass
   j: 480                   # J, extra candidates that only receive gradient
   selection_mode: abs_topk # topk | abs_topk | gated_topk
-  surrogate_mode: rblapsum # hard | lapsum | rblapsum | rblapsum_sf
-  temperature: 1.0         # the one kernel/barrier bandwidth, in score units
+  surrogate_mode: rblapsum # hard | lapsum | rblapsum | rblapsum_sf | soft_ste | laplace_policy
+  temperature: 1.0         # the one kernel/barrier bandwidth, in score units (laplace_policy: tau_0)
   # --- rblapsum family ---
   rblapsum_boundary_grad_mode: null   # null -> detach (rblapsum) / through_rank_kappa (sf)
   rblapsum_boundary_floor: null       # b0; null -> 0.0, no floor
   rblapsum_support_scale: 1.0         # scales only the support-exchange term g_s
   rblapsum_rho_random_perm_prob_grad: 0.0   # signal-permutation ablation
   rblapsum_sf_value_grad: pool        # pool | support
+  # --- laplace_policy (see docs/laplace-policy-topk.md; configs/bn_laplace_policy_*.yaml) ---
+  policy_temperature_mode: absolute   # absolute | relative_b | relative_span (relative scales detached)
+  policy_temperature_schedule: constant   # constant | exponential (+ _final, _hold_steps, _anneal_steps)
+  policy_min_temperature: 1.0e-6      # numerical width floor, in score units
+  policy_center_scores: true          # centre the pool's scores before the noise (differentiable mean)
+  policy_baseline: ema                # none | ema (previous steps' mean CE; _decay, _initial)
+  policy_support_scale: 1.0           # gamma_0 on the selection gradient only; _mode constant |
+                                      # effective_temperature | scheduled_temperature, _temperature_ref, _max
   # --- shape and init ---
   post_norm: false         # an RMSNorm on each bottleneck's own output
   init_mode: default       # default | sqrt_k | sqrt_k_selection_corrected | unit_norm_dictionary
@@ -221,9 +234,12 @@ activation_bottleneck:
 ```
 
 Static validation covers the obviously impossible: `1 ≤ K < N`, `K+J ≤ N`, and
-`J ≥ 1` for every mode that has a surrogate (`hard` accepts `J = 0`, and
-ignores `J` beyond the diagnostics, which is why the archived hard runs carry a
-nominal `j`).
+`J ≥ 1` for every mode that has a surrogate (`hard` and `laplace_policy` accept
+`J = 0`; `hard` ignores `J` beyond the diagnostics, which is why the archived
+hard runs carry a nominal `j`, and `laplace_policy` with no possible exchange
+is the hard gate).  `train.policy_val_samples`, `policy_val_seed` and
+`policy_train_deterministic_every_steps` configure the `laplace_policy`
+evaluation.
 
 ## Activation bottleneck
 
@@ -276,7 +292,9 @@ per layer.
 
 Except under `rblapsum_sf`, the forward pass is exactly `K`-sparse no matter
 what `J` or the temperature are set to; the soft probabilities below are never
-used numerically in the forward pass.
+used numerically in the forward pass.  (`laplace_policy` is exactly `K`-sparse
+too, on a support sampled from the Top-(K+J) pool during training; see the
+[implementation note](docs/laplace-policy-topk.md).)
 
 ### Backward: LapSum over Top-(K+J)
 
@@ -594,6 +612,14 @@ All on synthetic data, no downloads.
   `through_rank` against autograd and the zero-sum property of
   `through_rank_kappa`), the soft forward and its value-gradient modes, and the
   permutation ablation's invariants (`ρ=0` bitwise identity, matched marginals).
+* `tests/test_laplace_policy.py` — the sampled-support gate (exactly `K`
+  inside the clean pool, original values, clean eval, explicit stochastic
+  eval), the density's detach rules, the two-candidate estimator against the
+  analytic Laplace-difference derivative and a two-gate chain against an
+  enumerated expected loss (Monte Carlo, tolerances from the measured standard
+  error), schedule / width / rescaling, the sequence-weighted loss, the EMA
+  baseline, paired validation, RNG + baseline checkpoint continuation, the
+  configuration contract, and an end-to-end training run with resume.
 * `tests/test_model.py`, `test_config.py` — architecture, init and logit scaling;
   config composition, CLI overrides, the shipped configs and the legacy migration.
 * `tests/test_decouple.py`, `test_md_init.py` — the decoupled optimizer's

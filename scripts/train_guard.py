@@ -7,7 +7,10 @@ loop changes -- the wrapper observes ``Logger.log``.
 
 Rules (all thresholds are flags):
 
-* a non-finite ``train/ce`` or ``val/ce`` aborts immediately;
+* a non-finite ``train/ce`` or ``val/ce`` aborts immediately (and, for
+  laplace_policy runs, a non-finite ``train_stochastic/ce``,
+  ``train_deterministic_probe/ce``, ``val_stochastic/ce`` or
+  ``val_deterministic/ce``);
 * ``train/ce`` above ``--ceiling`` (default 7.0) continuously for
   ``--ceiling-steps`` (default 300) aborts, but only after ``--min-step``
   (default 1500) so the early descent from ln(vocab) is exempt;
@@ -89,7 +92,12 @@ def main() -> None:
 
     def guarded_log(self, step, metrics, console=""):
         orig_log(self, step, metrics, console)
-        for key in ("train/ce", "val/ce"):
+        # laplace_policy logs its sampled / deterministic CEs under the extra
+        # keys; a non-finite value in any actual CE aborts (the support-term
+        # diagnostics are not CEs and are deliberately not watched)
+        for key in ("train/ce", "val/ce", "train_stochastic/ce",
+                    "train_deterministic_probe/ce", "val_stochastic/ce",
+                    "val_deterministic/ce"):
             v = metrics.get(key)
             if v is not None and not math.isfinite(v):
                 state["stop"] = ("diverged", step, f"{key} is non-finite ({v})")

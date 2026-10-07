@@ -323,8 +323,33 @@ class TrainConfig:
     # <out_dir> to overlay every run in one chart
     tensorboard: bool = True
 
+    # ---- laplace_policy evaluation (activation_bottleneck.surrogate_mode) -- #
+    # These three fields are read by the laplace_policy training branch only;
+    # under any other mode they must stay at their defaults.
+    # Stochastic support draws per validation: every draw is one extra forward
+    # per validation batch, evaluated with sampling on at the current
+    # scheduled temperature on the SAME deterministic windows as val/ce.  The
+    # Monte Carlo spread val_stochastic/mc_std is the std over the M
+    # whole-validation means and is only reported for M >= 2.
+    policy_val_samples: int = 1
+    # Seed of the dedicated evaluation noise generator, re-seeded at every
+    # validation so draws are comparable across checkpoints; independent of
+    # the training noise RNG, which validation never touches.
+    policy_val_seed: int = 1337
+    # Cadence of the deterministic training probe: a noise-off eval()/no_grad
+    # forward on the step's own training inputs before the optimizer update
+    # (one extra forward per probed micro-batch).  0 inherits log_every_steps,
+    # a positive value sets the cadence, -1 disables the probe.  Both
+    # validation CEs are always kept regardless of this setting.
+    policy_train_deterministic_every_steps: int = 0
+
     def __post_init__(self) -> None:
         self.betas = tuple(self.betas)  # type: ignore[assignment]
+        if int(self.policy_val_samples) < 1:
+            raise ValueError("policy_val_samples must be a positive integer")
+        if int(self.policy_train_deterministic_every_steps) < -1:
+            raise ValueError("policy_train_deterministic_every_steps must be -1, 0 "
+                             "or a positive integer")
         if self.micro_batch_size is None:
             self.micro_batch_size = self.batch_size
         if self.batch_size % self.micro_batch_size != 0:
@@ -404,6 +429,14 @@ class ActivationBottleneckConfig:
     #                No support (boundary-exchange) term, so every per-coordinate
     #                gain is <= 1 and nothing compounds along a code-residual
     #                carry (2026-10-05)
+    # laplace_policy -> hard forward on a SAMPLED support: every clean
+    #                Top(K+J) candidate score gets independent Laplace(0, T)
+    #                noise, the K largest noisy scores are kept and their
+    #                original values transmitted; the selection trains through
+    #                the likelihood-ratio estimator of the sampled CE (the
+    #                policy_* fields below; wsparse.bottleneck.laplace_policy).
+    #                Evaluation is clean deterministic Top-K unless sampling is
+    #                requested explicitly (train.policy_val_samples).
     surrogate_mode: str = "hard"
 
     # Stochastic support width (surrogate_mode="hard" only, training only): per
@@ -421,8 +454,68 @@ class ActivationBottleneckConfig:
 
     # Constant kernel/barrier temperature shared by the lapsum and rblapsum
     # modes (unified 2026-09-28; formerly fixed_temperature and
-    # rblapsum_temperature).  Deliberately not score-scaled.
+    # rblapsum_temperature).  Deliberately not score-scaled.  Under
+    # laplace_policy it is the INITIAL scheduled parameter tau_0 (score units
+    # in the absolute mode, dimensionless in the relative modes).
     temperature: float = 1.0
+
+    # ---- laplace_policy (surrogate_mode: laplace_policy) -------------------- #
+    # See wsparse.bottleneck.laplace_policy for the method.  Every field here
+    # is read by that mode only; a non-default value under another mode is an
+    # error (so nobody reads an annealing schedule into an RBLapSum run).
+    # Effective noise width per gate row, from the CLEAN uncentred scores:
+    #   absolute       T = max(policy_min_temperature, tau)
+    #   relative_b     T = max(..., tau * s_(K+1))              abs_topk only
+    #   relative_span  T = max(..., tau * (s_(K+1) - s_(K+J)))  needs j >= 2
+    # The relative widths are DETACHED (a frozen-scale partial gradient; the
+    # derivative through the activation-dependent scale is not implemented).
+    policy_temperature_mode: str = "absolute"
+    # tau(t) over the zero-based step index t of the LR schedule:
+    #   constant     tau(t) = temperature
+    #   exponential  tau(t) = tau_0 (tau_f / tau_0)^v, v = clip((t - h) / d, 0, 1)
+    # with tau_f = policy_temperature_final (positive, <= tau_0), h =
+    # policy_temperature_hold_steps, d = policy_temperature_anneal_steps > 0.
+    # In the relative modes the dimensionless multiplier is annealed and each
+    # row's detached scale is recomputed; no absolute trajectory is held.
+    policy_temperature_schedule: str = "constant"
+    policy_temperature_final: Optional[float] = None
+    policy_temperature_hold_steps: int = 0
+    policy_temperature_anneal_steps: int = 0
+    # Positive floor on the effective width, in score units: a numerical
+    # safeguard (no density at T = 0), not an annealing endpoint.  The gates
+    # log how often it binds (policy_t_floor_frac); a frequently binding floor
+    # breaks the "noise proportional to the scale" reading of the relative
+    # modes.
+    policy_min_temperature: float = 1.0e-6
+    # Centre the candidate scores within each row's pool before adding noise,
+    # u_i = s_i - mean_C(s), with a DIFFERENTIABLE mean.  The support law is
+    # unchanged (a common shift leaves rankings alone); the sampled score
+    # gradient is projected onto the zero-sum subspace of the pool.
+    policy_center_scores: bool = True
+    # Baseline B of the advantage (c_b - B): "none" (B = 0) or "ema", an EMA
+    # of the previous steps' mean CE, initialized at policy_baseline_initial
+    # (null -> log(vocab_size)), decay policy_baseline_decay in [0, 1), held
+    # fixed within a step and updated once per step from detached CE sums
+    # (all-reduced under DDP).  Never the same-batch mean.
+    policy_baseline: str = "ema"
+    policy_baseline_decay: float = 0.99
+    policy_baseline_initial: Optional[float] = None
+    # Multiplier gamma_a of the SELECTION (density) gradient only; the hard
+    # value path, the CE, the LR and the optimizer are never scaled by it.
+    #   constant               gamma = gamma_0
+    #   effective_temperature  gamma = gamma_0 T_a / T_ref   (cancels the sampled 1/T_a)
+    #   scheduled_temperature  gamma = gamma_0 tau(t) / tau_ref (cancels the annealed
+    #                          1/tau, keeps the inverse row scale of the relative modes)
+    # policy_support_temperature_ref is the positive reference (score units
+    # for effective_temperature, tau units for scheduled_temperature; unused
+    # for constant); policy_support_scale_max optionally caps gamma.  gamma_0 =
+    # 1 is the reference estimator; gamma_0 = 0 trains the value path only
+    # while the forward still samples.  Any gamma != 1 is an intentional
+    # modification of the gradient, not a variance reduction.
+    policy_support_scale: float = 1.0
+    policy_support_scale_mode: str = "constant"
+    policy_support_temperature_ref: float = 1.0
+    policy_support_scale_max: Optional[float] = None
 
 
     # ---- rblapsum (surrogate_mode: rblapsum | rblapsum_sf) ------------------ #
@@ -742,10 +835,10 @@ class ActivationBottleneckConfig:
                 "(topk | abs_topk | gated_topk)"
             )
         if self.surrogate_mode not in ("lapsum", "rblapsum", "rblapsum_sf", "hard",
-                                       "soft_ste"):
+                                       "soft_ste", "laplace_policy"):
             raise ValueError(
                 f"unknown surrogate_mode: {self.surrogate_mode} "
-                "(lapsum | rblapsum | rblapsum_sf | hard | soft_ste)"
+                "(lapsum | rblapsum | rblapsum_sf | hard | soft_ste | laplace_policy)"
             )
         if self.stochastic_width not in ("none", "uniform", "two_point", "geometric"):
             raise ValueError(
@@ -917,10 +1010,156 @@ class ActivationBottleneckConfig:
                     "it is not meant to be combined with code_residual")
             if not self.code_residual_scale > 0:
                 raise ValueError("code_residual_scale must be positive")
+        self._validate_policy_fields()
         # shape rules live with the gate so the module can be built standalone
         from .bottleneck.gate import validate_gate_shapes
 
         validate_gate_shapes(self.n_features, self.k, self.j, self.surrogate_mode)
+
+    #: the laplace_policy fields and their defaults (a non-default value under
+    #: another surrogate mode is rejected, see _validate_policy_fields)
+    _POLICY_DEFAULTS = {
+        "policy_temperature_mode": "absolute",
+        "policy_temperature_schedule": "constant",
+        "policy_temperature_final": None,
+        "policy_temperature_hold_steps": 0,
+        "policy_temperature_anneal_steps": 0,
+        "policy_min_temperature": 1.0e-6,
+        "policy_center_scores": True,
+        "policy_baseline": "ema",
+        "policy_baseline_decay": 0.99,
+        "policy_baseline_initial": None,
+        "policy_support_scale": 1.0,
+        "policy_support_scale_mode": "constant",
+        "policy_support_temperature_ref": 1.0,
+        "policy_support_scale_max": None,
+    }
+
+    def _validate_policy_fields(self) -> None:
+        """laplace_policy: reject unsupported combinations before any model runs.
+
+        Under every other mode the policy_* fields must be at their defaults:
+        a schedule or a baseline written into an RBLapSum config would be
+        silently ignored otherwise.
+        """
+        from .bottleneck.laplace_policy import (BASELINES, SCHEDULES, SUPPORT_SCALE_MODES,
+                                                TEMPERATURE_MODES)
+
+        if self.surrogate_mode != "laplace_policy":
+            changed = [name for name, default in self._POLICY_DEFAULTS.items()
+                       if getattr(self, name) != default]
+            if changed:
+                raise ValueError(
+                    f"{', '.join(changed)}: the policy_* fields apply to "
+                    f"surrogate_mode='laplace_policy' only, got {self.surrogate_mode!r}")
+            return
+
+        def finite(name, value, positive=False, nonnegative=False):
+            v = float(value)
+            if not math.isfinite(v):
+                raise ValueError(f"{name} must be finite, got {value!r}")
+            if positive and not v > 0:
+                raise ValueError(f"{name} must be positive, got {value!r}")
+            if nonnegative and not v >= 0:
+                raise ValueError(f"{name} must be >= 0, got {value!r}")
+            return v
+
+        if self.selection_mode not in ("topk", "abs_topk"):
+            raise ValueError(
+                "surrogate_mode='laplace_policy' supports selection_mode 'topk' and "
+                f"'abs_topk' only (not gated_topk), got {self.selection_mode!r}")
+        if self.stochastic_width != "none":
+            raise ValueError("stochastic_width is a different method (a sampled support "
+                             "WIDTH); it cannot be combined with laplace_policy")
+        if self.value_shift != "none":
+            raise ValueError("value_shift is not supported under laplace_policy: the "
+                             "transmitted values are the original encoder values")
+        if float(self.rblapsum_boundary_floor) != 0.0:
+            raise ValueError(
+                "laplace_policy keeps exactly K sampled members; a positive "
+                "rblapsum_boundary_floor (capped support) does not apply to it")
+        if not self.hard_inference:
+            raise ValueError(
+                "hard_inference=false has no meaning under laplace_policy (there is no "
+                "soft forward); request stochastic validation with "
+                "train.policy_val_samples instead")
+        if self.rblapsum_surrogate_scope != "pool":
+            raise ValueError(
+                f"rblapsum_surrogate_scope={self.rblapsum_surrogate_scope!r} is RBLapSum "
+                "routing; laplace_policy requires the default 'pool'")
+        rb_defaults = {
+            "rblapsum_boundary_grad_mode": "detach", "rblapsum_support_scale": 1.0,
+            "rblapsum_rho_random_perm_prob_grad": 0.0, "rblapsum_relative_temperature": False,
+            "rblapsum_kernel_width": "fixed", "rblapsum_support_strength": None,
+            "rblapsum_center_tokens": False, "rblapsum_sf_value_grad": "pool",
+            "rblapsum_carry_decay": 1.0,
+        }
+        stray = [n for n, d in rb_defaults.items() if getattr(self, n) != d]
+        if stray:
+            raise ValueError(
+                f"{', '.join(stray)}: RBLapSum settings do not alter laplace_policy; "
+                "leave them at their defaults")
+        if self.policy_temperature_mode not in TEMPERATURE_MODES:
+            raise ValueError(
+                f"unknown policy_temperature_mode: {self.policy_temperature_mode!r} "
+                f"({' | '.join(TEMPERATURE_MODES)})")
+        exchangeable = self.j > 0 and self.k < self.n_features
+        if (exchangeable and self.policy_temperature_mode == "relative_b"
+                and self.selection_mode != "abs_topk"):
+            raise ValueError(
+                "policy_temperature_mode='relative_b' scales the width by the rank "
+                "boundary s_(K+1), which is nonnegative under abs_topk only")
+        if exchangeable and self.policy_temperature_mode == "relative_span" and self.j < 2:
+            raise ValueError(
+                "policy_temperature_mode='relative_span' uses s_(K+1) - s_(K+J), which "
+                "is identically zero for j=1; set j >= 2")
+        tau0 = finite("temperature", self.temperature, positive=True)
+        if self.policy_temperature_schedule not in SCHEDULES:
+            raise ValueError(
+                f"unknown policy_temperature_schedule: {self.policy_temperature_schedule!r} "
+                f"({' | '.join(SCHEDULES)})")
+        hold = int(self.policy_temperature_hold_steps)
+        anneal = int(self.policy_temperature_anneal_steps)
+        if hold < 0:
+            raise ValueError("policy_temperature_hold_steps must be >= 0")
+        if anneal < 0:
+            raise ValueError("policy_temperature_anneal_steps must be >= 0")
+        if self.policy_temperature_schedule == "exponential":
+            if self.policy_temperature_final is None:
+                raise ValueError("the exponential schedule needs policy_temperature_final")
+            tau_f = finite("policy_temperature_final", self.policy_temperature_final,
+                           positive=True)
+            if tau_f > tau0:
+                raise ValueError(
+                    f"policy_temperature_final={tau_f} must be <= temperature={tau0}: "
+                    "the schedule anneals downward")
+            if anneal <= 0:
+                raise ValueError("the exponential schedule needs "
+                                 "policy_temperature_anneal_steps > 0")
+        else:
+            if (self.policy_temperature_final is not None or hold != 0 or anneal != 0):
+                raise ValueError(
+                    "policy_temperature_final / _hold_steps / _anneal_steps belong to "
+                    "policy_temperature_schedule='exponential'; the constant schedule "
+                    "keeps temperature throughout")
+        finite("policy_min_temperature", self.policy_min_temperature, positive=True)
+        if self.policy_baseline not in BASELINES:
+            raise ValueError(f"unknown policy_baseline: {self.policy_baseline!r} "
+                             f"({' | '.join(BASELINES)})")
+        decay = finite("policy_baseline_decay", self.policy_baseline_decay, nonnegative=True)
+        if not decay < 1.0:
+            raise ValueError("policy_baseline_decay must be in [0, 1)")
+        if self.policy_baseline_initial is not None:
+            finite("policy_baseline_initial", self.policy_baseline_initial)
+        finite("policy_support_scale", self.policy_support_scale, nonnegative=True)
+        if self.policy_support_scale_mode not in SUPPORT_SCALE_MODES:
+            raise ValueError(
+                f"unknown policy_support_scale_mode: {self.policy_support_scale_mode!r} "
+                f"({' | '.join(SUPPORT_SCALE_MODES)})")
+        finite("policy_support_temperature_ref", self.policy_support_temperature_ref,
+               positive=True)
+        if self.policy_support_scale_max is not None:
+            finite("policy_support_scale_max", self.policy_support_scale_max, positive=True)
 
 
 # --------------------------------------------------------------------------- #

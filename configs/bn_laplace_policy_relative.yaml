@@ -1,0 +1,48 @@
+# Laplace-policy hard Top-K, RELATIVE-SPAN noise width with a rescaled
+# selection gradient.  Same architecture as bn_laplace_policy_absolute.yaml.
+# Per gate row the noise width is tau(t) * (s_(K+1) - s_(K+J)), the score
+# interval the J candidates occupy, with that scale DETACHED (a frozen-scale
+# partial gradient, not the full derivative of the activation-dependent-noise
+# objective), and the selection gradient is multiplied by
+#     gamma = gamma_0 * tau(t) / tau_ref,   capped at policy_support_scale_max,
+# which cancels the annealed 1/tau factor of the sampled score gradient but
+# keeps the inverse row scale.  gamma != 1 is a deliberate modification: this
+# is NOT the unbiased expected-CE gradient.  To cancel the complete sampled
+# 1/T factor instead, use policy_support_scale_mode: effective_temperature
+# with a reference width in score units.  Coefficients are illustrative.
+_base_:
+  - model/mid80.yaml
+  - train/default.yaml
+
+train:
+  run_name: bn_laplace_policy_relative
+  compile: false
+  policy_val_samples: 2
+  policy_val_seed: 1337
+  policy_train_deterministic_every_steps: 0
+
+activation_bottleneck:
+  enabled: true
+  layers: all
+  placement: residual_out
+  n_features: 1536
+  k: 32
+  j: 480
+  selection_mode: abs_topk
+  surrogate_mode: laplace_policy
+  # tau_0, dimensionless in the relative modes (fraction of the pool span)
+  temperature: 0.5
+  policy_temperature_mode: relative_span
+  policy_temperature_schedule: exponential
+  policy_temperature_final: 0.05
+  policy_temperature_hold_steps: 1000
+  policy_temperature_anneal_steps: 17000
+  policy_min_temperature: 1.0e-6
+  policy_center_scores: true
+  policy_baseline: ema
+  policy_baseline_decay: 0.99
+  policy_support_scale: 0.1
+  policy_support_scale_mode: scheduled_temperature
+  policy_support_temperature_ref: 0.5
+  policy_support_scale_max: 0.1
+  init_mode: sqrt_k_selection_corrected

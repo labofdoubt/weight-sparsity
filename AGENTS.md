@@ -160,6 +160,15 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
   support scale <= 0.3; the default backward multiplies the support terms along the carry and collapses (§9).
 - **`rblapsum_sf` logs two losses:** `val/ce` is the hard Top-K forward,
   `val_soft/ce` the soft forward it trains (§9).
+- **`laplace_policy` logs two CEs as well:** `train/ce` is the SAMPLED-support
+  training CE (alias `train_stochastic/ce`), `val/ce` the clean deterministic
+  Top-K forward (alias `val_deterministic/ce`), `val_stochastic/ce` the paired
+  sampled validation; `best_val_ce` is deterministic.  Its `temperature` is
+  the initial tau of a schedule (`policy_temperature_*`), so read `policy/tau`
+  for the width a step used; `policy/support_term_diag` is a gradient
+  diagnostic, not a loss.  Resume only from the run's own checkpoint: the
+  baseline and the per-rank noise RNG live in its `policy_state` payload and
+  a different world size is rejected (§9, docs/laplace-policy-topk.md).
 - **rblapsum stability:** read Pi per block together with `n_eff`, never
   averaged over blocks (§9b).
 - **Keep `train.compile=False`.** A graph break around the hand-written gate

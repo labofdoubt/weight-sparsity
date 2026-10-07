@@ -27,6 +27,9 @@ import torch
 import torch.nn as nn
 
 from .lapsum import lapsum_barrier_sorted, lapsum_probs, laplace_cdf
+from .laplace_policy import (SUPPORT_SCALE_MODES, TEMPERATURE_MODES, PolicyRecord,
+                             at_least_float32, effective_width, laplace_log_density,
+                             sample_laplace, support_multiplier)
 from .rblapsum import (GRAD_MODES, SURROGATE_SCOPES, VALUE_GRAD_MODES, carry_scope,
                        kernel_width, rblapsum_carry_gate, rblapsum_gate, rblapsum_sf_gate,
                        relative_kernel_width, strength_scale)
@@ -64,6 +67,13 @@ class AdaptiveLapSumTopKGate(nn.Module):
         value_shift_lambda: float = 0.0,
         stochastic_width: str = "none",
         stochastic_width_param: float = 0.5,
+        policy_temperature_mode: str = "absolute",
+        policy_min_temperature: float = 1e-6,
+        policy_center_scores: bool = True,
+        policy_support_scale: float = 1.0,
+        policy_support_scale_mode: str = "constant",
+        policy_support_temperature_ref: float = 1.0,
+        policy_support_scale_max=None,
     ):
         super().__init__()
         validate_gate_shapes(n_features, k, j, surrogate_mode)
@@ -90,10 +100,11 @@ class AdaptiveLapSumTopKGate(nn.Module):
             raise ValueError(
                 f"unknown selection_mode: {selection_mode!r} (topk | abs_topk | gated_topk)"
             )
-        if surrogate_mode not in ("lapsum", "rblapsum", "rblapsum_sf", "hard", "soft_ste"):
+        if surrogate_mode not in ("lapsum", "rblapsum", "rblapsum_sf", "hard", "soft_ste",
+                                  "laplace_policy"):
             raise ValueError(
                 f"unknown surrogate_mode: {surrogate_mode!r} "
-                "(lapsum | rblapsum | rblapsum_sf | hard | soft_ste)"
+                "(lapsum | rblapsum | rblapsum_sf | hard | soft_ste | laplace_policy)"
             )
         if temperature <= 0:
             raise ValueError("temperature must be positive")
@@ -218,6 +229,49 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self.log_diagnostics = bool(log_diagnostics)
         self.hard_inference = bool(hard_inference)
 
+        # ---- laplace_policy (see .laplace_policy) ---------------------------- #
+        # The configured `temperature` is tau_0; `policy_tau` is the RUNTIME
+        # scheduled value the controller sets per step (a plain attribute, so
+        # the dumped config keeps the original schedule).  `_policy_settings`
+        # is the temporary per-forward request (sample override, collector,
+        # generator) that TransformerLM.forward installs and restores; None
+        # means "sample iff training, record nothing".
+        if policy_temperature_mode not in TEMPERATURE_MODES:
+            raise ValueError(f"unknown policy_temperature_mode: {policy_temperature_mode!r}")
+        if policy_support_scale_mode not in SUPPORT_SCALE_MODES:
+            raise ValueError(
+                f"unknown policy_support_scale_mode: {policy_support_scale_mode!r}")
+        self.policy_temperature_mode = policy_temperature_mode
+        self.policy_min_temperature = float(policy_min_temperature)
+        self.policy_center_scores = bool(policy_center_scores)
+        self.policy_support_scale = float(policy_support_scale)
+        self.policy_support_scale_mode = policy_support_scale_mode
+        self.policy_support_temperature_ref = float(policy_support_temperature_ref)
+        self.policy_support_scale_max = (None if policy_support_scale_max is None
+                                         else float(policy_support_scale_max))
+        self.policy_tau = float(temperature)
+        self._policy_settings = None
+        # j = 0 or k = n_features: no exchange is possible, so the gate is the
+        # ordinary hard Top-K with no noise and no density term
+        self.policy_fixed = self.j == 0 or self.trivial
+        if surrogate_mode == "laplace_policy":
+            if selection_mode not in ("topk", "abs_topk"):
+                raise ValueError("surrogate_mode='laplace_policy' supports selection_mode "
+                                 "'topk' and 'abs_topk' only")
+            if not self.policy_min_temperature > 0:
+                raise ValueError("policy_min_temperature must be positive")
+            if not self.policy_support_scale >= 0:
+                raise ValueError("policy_support_scale must be >= 0")
+            if not self.policy_support_temperature_ref > 0:
+                raise ValueError("policy_support_temperature_ref must be positive")
+            if not self.policy_fixed:
+                if policy_temperature_mode == "relative_b" and selection_mode != "abs_topk":
+                    raise ValueError("policy_temperature_mode='relative_b' needs abs_topk "
+                                     "(a nonnegative rank boundary)")
+                if policy_temperature_mode == "relative_span" and self.j < 2:
+                    raise ValueError("policy_temperature_mode='relative_span' needs j >= 2 "
+                                     "(for j=1 the span s_(K+1) - s_(K+J) is zero)")
+
         # EMA of how often each of the N features is selected, for the
         # dead-feature diagnostics below.  Zero-initialized and bias-corrected
         # on read (as in Adam): seeding it at the uniform rate instead would
@@ -310,6 +364,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
 
         if self.surrogate_mode in ("rblapsum", "rblapsum_sf", "soft_ste"):
             return self._rblapsum(scores, value)
+        if self.surrogate_mode == "laplace_policy":
+            return self._laplace_policy(scores, value)
 
         cand_scores, cand_idx = torch.topk(
             scores, self.m, dim=-1, largest=True, sorted=True
@@ -372,6 +428,131 @@ class AdaptiveLapSumTopKGate(nn.Module):
         if self.log_diagnostics:
             self._record(detached, b, t, p.detach(), solver_diag)
         return value * mask
+
+    # ---- laplace_policy -------------------------------------------------------- #
+    def policy_sampling(self) -> bool:
+        """Whether this forward samples the support (laplace_policy).
+
+        The per-forward settings' ``sample`` wins when given; otherwise the
+        gate samples iff it is in ``train()`` mode.  Deliberately independent
+        of ``torch.is_grad_enabled()``: a stochastic validation runs in
+        ``eval()`` under ``no_grad()`` with ``sample=True``.
+        """
+        if self.policy_fixed:
+            return False
+        settings = self._policy_settings
+        if settings is not None and settings.sample is not None:
+            return bool(settings.sample)
+        return bool(self.training)
+
+    def _laplace_policy(self, scores: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+        """Sampled exactly-K support over the clean Top(K+J) pool (laplace_policy).
+
+        Ordinary gather / mask / scatter autograd for the values (the sampled
+        hard-mask gradient), differentiable gathered scores for the density
+        term, which goes to the forward's collector when one is installed and
+        grad is enabled.  Nothing here calls the RBLapSum machinery.
+        """
+        settings = self._policy_settings
+        cand_scores, cand_idx = torch.topk(scores, self.m, dim=-1, largest=True, sorted=True)
+        if not self.policy_sampling():
+            # clean deterministic Top-K: evaluation, generation, the probes,
+            # and the fixed geometries (j = 0, k = n)
+            hard_mask = torch.zeros_like(scores).scatter(-1, cand_idx[..., : self.k], 1.0)
+            if self.log_diagnostics and self.training:
+                self._record_usage(hard_mask)
+                self._record_hard(cand_scores.to(self.solver_dtype).detach())
+            return value * hard_mask
+
+        k, j = self.k, self.j
+        # scores in >= float32 WITH their autograd path (the pool indices are
+        # discrete; the gathered scores are what the density differentiates)
+        score_c = at_least_float32(cand_scores)
+        value_c = torch.gather(value, -1, cand_idx)
+        with torch.no_grad():
+            t_row, floor_binding, raw_scale = effective_width(
+                self.policy_temperature_mode, self.policy_tau, score_c, k, j,
+                self.policy_min_temperature)
+        u = score_c - score_c.mean(-1, keepdim=True) if self.policy_center_scores else score_c
+        generator = settings.generator if settings is not None else None
+        eps = sample_laplace(u.shape, t_row, generator=generator, dtype=u.dtype,
+                             device=u.device)
+        # the realized noisy scores: detached, and used BOTH for the ranking
+        # and for the density (all K+J coordinates, selected or not)
+        r = (u.detach() + eps).detach()
+        selected = torch.topk(r, k, dim=-1, largest=True, sorted=False).indices
+        mask_c = torch.zeros_like(r).scatter(-1, selected, 1.0)
+        y_c = value_c * mask_c.to(value_c.dtype)
+        y = torch.zeros_like(value).scatter(-1, cand_idx, y_c)
+
+        collector = settings.collector if settings is not None else None
+        gamma = support_multiplier(self.policy_support_scale_mode, self.policy_support_scale,
+                                   t_row, self.policy_tau, self.policy_support_temperature_ref,
+                                   self.policy_support_scale_max)
+        diag: Dict[str, torch.Tensor] = {}
+        if self.log_diagnostics:
+            with torch.no_grad():
+                diag = self._policy_diag(score_c.detach(), r, u.detach(), t_row, floor_binding,
+                                         raw_scale, gamma, mask_c, y,
+                                         laplace_log_density(r, u.detach(), t_row))
+            if self.training:
+                mask_full = torch.zeros_like(scores).scatter(
+                    -1, cand_idx, mask_c.to(scores.dtype))
+                self._record_usage(mask_full)
+                self._forward_diag = diag
+        if collector is not None and torch.is_grad_enabled():
+            log_prob = laplace_log_density(r, u, t_row)  # shape = scores.shape[:-1]
+            collector.add(PolicyRecord(
+                gate=self, log_prob=gamma.squeeze(-1) * log_prob, diag=diag,
+                r=r if collector.keep_samples else None,
+                cand_idx=cand_idx.detach() if collector.keep_samples else None))
+        return y
+
+    @torch.no_grad()
+    def _policy_diag(self, score_c, r, u, t_row, floor_binding, raw_scale, gamma, mask_c, y,
+                     log_prob) -> Dict[str, torch.Tensor]:
+        """Detached per-gate statistics of one sampled forward (laplace_policy).
+
+        Everything is computed from what was actually sampled -- no CDF
+        probabilities borrowed from RBLapSum -- and the location-gradient
+        statistics use the analytic row formula ``sign(r - u) / T`` (projected
+        onto the zero-sum subspace when the scores are centred), so no second
+        backward is run for them.  Score-space signals, not parameter gradients.
+        """
+        k = self.k
+        h = torch.sign(r - u) / t_row                       # raw location gradient
+        h_used = h - h.mean(-1, keepdim=True) if self.policy_center_scores else h
+        g_used = gamma * h_used                            # what the loss actually scales
+        in_clean_topk = mask_c[..., :k]                     # sampled members at clean rank < K
+        exchanged = k - in_clean_topk.sum(-1)
+        span = score_c[..., k:k + 1] - score_c[..., k + self.j - 1:k + self.j]
+        finite = (torch.isfinite(score_c).all() & torch.isfinite(t_row).all()
+                  & torch.isfinite(log_prob).all())
+        d = {
+            "active_count": mask_c.sum(-1).mean(),
+            "output_nonzero_count": (y != 0).sum(-1).to(torch.float32).mean(),
+            "candidate_count": torch.tensor(float(self.m), device=r.device),
+            "policy_tau": torch.tensor(float(self.policy_tau), device=r.device),
+            "policy_t_mean": t_row.mean(), "policy_t_min": t_row.min(),
+            "policy_t_max": t_row.max(),
+            "policy_t_floor_frac": floor_binding.to(torch.float32).mean(),
+            "policy_scale_mean": raw_scale.mean(),
+            "policy_span_zero_frac": (span == 0).to(torch.float32).mean(),
+            "policy_gamma_mean": gamma.mean(), "policy_gamma_min": gamma.min(),
+            "policy_gamma_max": gamma.max(),
+            "policy_exchange_frac": exchanged.mean() / k,
+            "policy_overlap": in_clean_topk.sum(-1).mean() / k,
+            "score_gap": (score_c[..., k - 1] - score_c[..., k]).mean(),
+            "score_span": (score_c[..., k - 1] - score_c[..., -1]).mean(),
+            "policy_pool_span": span.mean(),
+            "policy_logp_mean": log_prob.mean(),
+            "policy_collapsed_frac": (r == u).to(torch.float32).mean(),
+            "policy_score_grad_rms_raw": h.pow(2).mean().sqrt(),
+            "policy_score_grad_rms": g_used.pow(2).mean().sqrt(),
+            "policy_zero_sum_residual": h_used.sum(-1).abs().mean(),
+            "policy_nonfinite": (~finite).to(torch.float32),
+        }
+        return {key: val.detach() for key, val in d.items()}
 
     # ---- stochastic support width --------------------------------------------- #
     def _sample_width(self, scores: torch.Tensor) -> torch.Tensor:
@@ -657,10 +838,15 @@ class AdaptiveLapSumTopKGate(nn.Module):
             shift = f", value_shift=fixed({self.value_shift_lambda:.4g})"
         elif self.value_shift == "energy":
             shift = ", value_shift=energy"
+        policy = ""
+        if self.surrogate_mode == "laplace_policy":
+            policy = (f", policy=({self.policy_temperature_mode}, "
+                      f"center={self.policy_center_scores}, "
+                      f"gamma={self.policy_support_scale:g}/{self.policy_support_scale_mode})")
         return (
             f"n_features={self.n_features}, k={self.k}, j={self.j}, "
             f"mode={self.selection_mode}, surrogate={self.surrogate_mode}, "
-            f"temperature={self.temperature:g}{shift}"
+            f"temperature={self.temperature:g}{shift}{policy}"
         )
 
 
@@ -675,9 +861,11 @@ def validate_gate_shapes(
     A hard mask never solves a barrier, so two geometries that are degenerate
     for the surrogates are meaningful there: ``j = 0`` (no candidates beyond
     the support) and ``k = n_features`` (every feature active -- a *trivial*
-    bottleneck isolating the projection pair's parameter cost).
+    bottleneck isolating the projection pair's parameter cost).  laplace_policy
+    shares the hard rules: with no possible exchange it bypasses noise and
+    density and IS the hard gate.
     """
-    if surrogate_mode == "hard":
+    if surrogate_mode in ("hard", "laplace_policy"):
         if not 1 <= k <= n_features:
             raise ValueError(
                 f"require 1 <= k <= n_features, got k={k}, n_features={n_features}"

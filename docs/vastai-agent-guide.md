@@ -672,6 +672,49 @@ gradient of that forward.  Things an agent must know:
   content does not; actives keep u*p, forward unchanged).  sf-only; any other
   mode rejects a non-default value.
 
+### `laplace_policy`: sampled supports, likelihood-ratio selection gradient (added 2026-10-08)
+
+`surrogate_mode: "laplace_policy"` keeps the clean Top(K+J) pool, adds
+independent Laplace(0, T) noise to every candidate score, keeps the K largest
+noisy scores and transmits their ORIGINAL values: every training forward is a
+hard, exactly-K forward on a sampled support.  The selection trains through the
+likelihood-ratio estimator of the sampled CE (`wsparse.bottleneck.laplace_policy`,
+spec in `docs/laplace-policy-topk-implementation.md`, implementation note in
+`docs/laplace-policy-topk.md`).  Traps:
+
+- **Two CEs.** `train/ce` is the sampled-support CE (alias
+  `train_stochastic/ce`); `train_deterministic_probe/ce` a periodic noise-off
+  forward on the same inputs (dropout off, so a probe, not a controlled pair);
+  `val/ce` stays the clean deterministic Top-K forward (alias
+  `val_deterministic/ce`), `val_stochastic/ce` the paired sampled validation
+  (`train.policy_val_samples` draws, `mc_std` only from two draws on).
+  `best_val_ce`, `val_final/ce` and checkpoint metrics are deterministic.
+- **`temperature` is tau_0, not the width a step used.**
+  `policy_temperature_schedule: exponential` anneals it (hold, then a
+  geometric anneal to `policy_temperature_final`), and in the `relative_b` /
+  `relative_span` modes it multiplies a per-row, DETACHED activation scale.
+  `policy/tau` and `bottleneck/policy_t_mean` are what the step used; the
+  dumped `config.yaml` keeps tau_0.  Never shorten `train.max_steps`: the
+  schedule is indexed by the LR schedule's step.
+- **`policy/support_term_diag` is not a loss.** It is the detached value of
+  the support term (sum of log densities times advantages, hundreds to
+  thousands in magnitude); the backward bracket it enters is zero-valued by
+  construction.  `train_guard.py` watches the CE keys only.
+- **The pre-clip gradient norm grows as T shrinks** (the sampled score
+  gradient is `sign(r - u) / T` per candidate).  Keep `grad_clip`; look at
+  `bottleneck/policy_score_grad_rms` and `policy_t_floor_frac` before reading
+  a large `train/grad_norm` as divergence.
+- **Resume from the run's own checkpoint.** The EMA baseline and every rank's
+  noise generator state are in the `policy_state` payload; a checkpoint
+  without it (another mode's run) is rejected, as is a different world size.
+  `load_for_inference` ignores the payload and returns the model in `eval()`,
+  i.e. with clean supports.
+- **Rejected combinations** (config time): `gated_topk`, `stochastic_width`,
+  `value_shift`, a positive `rblapsum_boundary_floor`, any non-default
+  RBLapSum knob or scope, `hard_inference: false`; `relative_span` needs
+  `j >= 2`, `relative_b` needs `abs_topk`; the `policy_*` fields must stay at
+  their defaults under every other mode.
+
 ### `rblapsum_rho_random_perm_prob_grad`: the permutation ablation (added 2026-09-27)
 
 Hard-forward `rblapsum` only.  Each training backward, per (token, block) row,

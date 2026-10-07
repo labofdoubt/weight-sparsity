@@ -1,0 +1,51 @@
+# Laplace-policy hard Top-K, ABSOLUTE noise width (reference estimator).
+# Architecture, data and optimizer are bn_hard.yaml's; only the gate's
+# training rule differs.  Every forward keeps exactly K of the clean Top(K+J)
+# candidates, chosen by Laplace-noised scores, and transmits their original
+# values; the selection trains through the likelihood-ratio estimator of the
+# sampled CE (wsparse.bottleneck.laplace_policy, docs/laplace-policy-topk.md).
+# The schedule anneals the absolute width from 0.5 to 0.05 (score units) over
+# the inherited 20k steps: a starting configuration, not a tuned one.  With
+# gamma = 1 (constant) the gradient is the unbiased estimator of the expected
+# sampled CE at each step's temperature.
+_base_:
+  - model/mid80.yaml
+  - train/default.yaml
+
+train:
+  run_name: bn_laplace_policy_absolute
+  compile: false
+  # paired validation: val/ce is the clean Top-K forward, val_stochastic/ce
+  # the mean of two sampled draws on the same windows (one extra forward per
+  # validation batch per draw)
+  policy_val_samples: 2
+  policy_val_seed: 1337
+  # noise-off probe on the step's own training inputs at log cadence
+  policy_train_deterministic_every_steps: 0
+
+activation_bottleneck:
+  enabled: true
+  layers: all
+  placement: residual_out
+  n_features: 1536
+  k: 32
+  j: 480
+  selection_mode: abs_topk
+  surrogate_mode: laplace_policy
+  # tau_0, in score units for the absolute mode
+  temperature: 0.5
+  policy_temperature_mode: absolute
+  policy_temperature_schedule: exponential
+  policy_temperature_final: 0.05
+  policy_temperature_hold_steps: 1000
+  policy_temperature_anneal_steps: 17000
+  policy_min_temperature: 1.0e-6
+  policy_center_scores: true
+  policy_baseline: ema
+  policy_baseline_decay: 0.99
+  policy_support_scale: 1.0
+  policy_support_scale_mode: constant
+  # stream placement: see the note in bn_hard.yaml.  Calibrated for CLEAN
+  # Top-K value statistics; random exchange at large T lowers the transmitted
+  # energy somewhat, which the per-block diagnostics show.
+  init_mode: sqrt_k_selection_corrected

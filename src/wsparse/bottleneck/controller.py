@@ -101,9 +101,38 @@ class ActivationBottleneckController:
             self._install()
 
     def set_step(self, step: int) -> float:
-        """No-op kept for probe compatibility: temperatures are constants now."""
-        del step
-        return 0.0
+        """Apply the step's schedules.  Only laplace_policy has one: its
+        scheduled tau(step) is written to every policy gate's ``policy_tau``
+        (the configured ``temperature`` stays tau_0 for the dumped config) and
+        returned.  Every other mode's temperature is a constant and this
+        returns 0.0, as before.  ``train()`` calls it before the ``on_step``
+        probe and before any micro-batch; a resume recomputes tau from the
+        restored step; validation and probes never advance it.
+        """
+        gates = self.policy_gates
+        if not gates:
+            return 0.0
+        from .laplace_policy import scheduled_tau
+        cfg = self.cfg
+        tau = scheduled_tau(int(step), float(cfg.temperature),
+                            cfg.policy_temperature_schedule, cfg.policy_temperature_final,
+                            int(cfg.policy_temperature_hold_steps),
+                            int(cfg.policy_temperature_anneal_steps))
+        for gate in gates:
+            gate.policy_tau = tau
+        return tau
+
+    @property
+    def policy_gates(self) -> list:
+        """The installed laplace_policy gates (empty under every other mode)."""
+        return [layer.gate for _, layer in self.layers
+                if layer.gate.surrogate_mode == "laplace_policy"]
+
+    @property
+    def policy_active(self) -> bool:
+        """True when at least one gate samples its support and so emits a
+        density term: the trainer's switch for the laplace_policy branch."""
+        return any(not g.policy_fixed for g in self.policy_gates)
 
 
     def _install(self) -> None:
@@ -143,6 +172,9 @@ class ActivationBottleneckController:
         if getattr(cfg, "code_residual", False):
             self._install_code_residual(indices, len(blocks))
         self._restore_decoder_scale(d_model)
+        # the model's forward installs per-forward policy settings on these;
+        # a plain attribute (like code_residual), so state_dicts are unchanged
+        self.model.policy_gates = self.policy_gates
 
     def _restore_decoder_scale(self, d_model: int) -> None:
         """Set ``g_D`` from the model config at install time.

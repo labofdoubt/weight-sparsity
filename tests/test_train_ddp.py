@@ -109,6 +109,88 @@ def test_guard_stop_step_subprocess(tmp_path):
     assert summary["stopped_at"] <= 5
 
 
+def test_guard_stop_step_subprocess_laplace_policy(tmp_path):
+    """The guard's new CE keys and --stop-step under the sampled-support mode."""
+    data = make_data(tmp_path)
+    cfg = load_config(None, tiny_overrides(
+        data, str(tmp_path / "runs"),
+        **{"activation_bottleneck.surrogate_mode": "laplace_policy",
+           "activation_bottleneck.rblapsum_boundary_grad_mode": "detach",
+           "activation_bottleneck.temperature": 0.5,
+           "train.policy_val_samples": 2, "train.checkpoint_every_steps": 3}))
+    cfg_path = str(tmp_path / "pol.yaml")
+    cfg.dump(cfg_path)
+    r = subprocess.run(
+        [sys.executable, os.path.join(REPO, "scripts", "train_guard.py"),
+         "--config", cfg_path, "--stop-step", "4"],
+        capture_output=True, text=True, timeout=600,
+        env={**os.environ, "PYTHONPATH": os.path.join(REPO, "src")})
+    assert r.returncode == 0, r.stderr[-2000:]
+    run_dir = tmp_path / "runs" / "tiny"
+    assert (run_dir / "stopped.json").exists(), r.stdout[-2000:]
+    rows = [json.loads(l) for l in open(run_dir / "metrics.jsonl")]
+    assert any("val_stochastic/ce" in row and "val/ce" in row for row in rows)
+    assert any("train_deterministic_probe/ce" in row for row in rows)
+    payload = torch.load(run_dir / "latest.pt", weights_only=False)
+    assert "policy_state" in payload and payload["policy_state"]["world_size"] == 1
+
+
+@pytest.mark.skipif(os.environ.get("WSPARSE_DDP_TEST") != "1",
+                    reason="spawns torchrun; set WSPARSE_DDP_TEST=1 (run on the training box)")
+@pytest.mark.skipif(not torch.distributed.is_available(), reason="no torch.distributed")
+def test_two_process_gloo_ddp_laplace_policy(tmp_path):
+    """laplace_policy under DDP: the baseline all-reduce every step, the
+    per-rank noise RNG gathered into the checkpoint on every rank, gradient
+    accumulation, the paired validation on rank 0, and a resume at the same
+    world size (a different world size is rejected)."""
+    data = make_data(tmp_path)
+    out = str(tmp_path / "runs")
+    extra = {"activation_bottleneck.surrogate_mode": "laplace_policy",
+             "activation_bottleneck.rblapsum_boundary_grad_mode": "detach",
+             "activation_bottleneck.temperature": 0.5,
+             "activation_bottleneck.policy_temperature_schedule": "exponential",
+             "activation_bottleneck.policy_temperature_final": 0.1,
+             "activation_bottleneck.policy_temperature_anneal_steps": 6,
+             "train.policy_val_samples": 2, "train.checkpoint_every_steps": 3}
+
+    def launch(max_steps, resume):
+        overrides = tiny_overrides(data, out, **extra,
+                                   **{"train.max_steps": max_steps, "train.resume": resume})
+        runner = tmp_path / f"runner_{max_steps}.py"
+        runner.write_text(
+            "import sys\n"
+            f"sys.path.insert(0, {os.path.join(REPO, 'src')!r})\n"
+            "from wsparse.config import load_config\n"
+            "from wsparse.train import train\n"
+            f"cfg = load_config(None, {overrides!r})\n"
+            "s = train(cfg)\n"
+            "print('RANK-DONE', s.get('val/ce'))\n")
+        return subprocess.run(
+            [sys.executable, "-m", "torch.distributed.run", "--standalone",
+             "--nproc_per_node", "2", str(runner)],
+            capture_output=True, text=True, timeout=900,
+            env={**os.environ, "PYTHONPATH": os.path.join(REPO, "src")})
+
+    r = launch(6, "")
+    assert r.returncode == 0, (r.stdout[-1500:], r.stderr[-1500:])
+    run_dir = tmp_path / "runs" / "tiny"
+    payload = torch.load(run_dir / "latest.pt", weights_only=False)
+    ps = payload["policy_state"]
+    assert ps["world_size"] == 2 and len(ps["generator_states"]) == 2 and ps["updates"] == 6
+    assert not torch.equal(ps["generator_states"][0], ps["generator_states"][1])
+    rows = [json.loads(l) for l in open(run_dir / "metrics.jsonl")]
+    assert any("val_stochastic/mc_std" in row for row in rows)
+    r = launch(9, "auto")
+    assert r.returncode == 0, (r.stdout[-1500:], r.stderr[-1500:])
+    rows = [json.loads(l) for l in open(run_dir / "metrics.jsonl")]
+    assert max(row["step"] for row in rows) == 9
+    # a single process cannot resume a 2-rank policy state
+    cfg = load_config(None, tiny_overrides(data, out, **extra,
+                                           **{"train.max_steps": 12, "train.resume": "auto"}))
+    with pytest.raises(ValueError, match="world size"):
+        train(cfg)
+
+
 @pytest.mark.skipif(os.environ.get("WSPARSE_DDP_TEST") != "1",
                     reason="spawns torchrun; set WSPARSE_DDP_TEST=1 (run on the training box)")
 @pytest.mark.skipif(not torch.distributed.is_available(), reason="no torch.distributed")

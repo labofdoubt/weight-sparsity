@@ -11,6 +11,7 @@ import glob
 import json
 import math
 import os
+import statistics
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -23,6 +24,8 @@ from .data import build_streams, load_meta
 from .model import build_model
 from .optim import build_optimizer, count_parameter_groups, lr_at, set_lr
 from .bottleneck import ActivationBottleneckController, apply_activation_bottleneck
+from .bottleneck.laplace_policy import (PolicyForwardSettings, PolicyTrainingState,
+                                        make_generator, policy_backward_loss)
 from .bottleneck.rblapsum import first_order_backward
 from .utils import Logger, autocast_context, human, resolve_device, resolve_dtype, set_seed
 
@@ -78,6 +81,77 @@ def evaluate(
     return {"ce": ce, "ppl": math.exp(min(20.0, ce))}
 
 
+@torch.no_grad()
+def evaluate_stochastic(
+    model,
+    stream,
+    batch_size: int,
+    batches: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    samples: int,
+    seed: int,
+) -> Dict[str, float]:
+    """laplace_policy: the paired stochastic validation.
+
+    The SAME deterministic windows ``evaluate`` reads, in ``eval()`` mode
+    (dropout off), with support sampling switched on explicitly at the
+    current scheduled temperature.  ``samples`` whole-validation draws, each
+    one extra forward per batch; ``ce`` is the mean of the draw means and
+    ``mc_std`` their sample standard deviation, reported only for two or more
+    draws (a single draw has no measured spread).  The noise comes from a
+    dedicated generator seeded with ``seed`` at every call, so the draws are
+    comparable across checkpoints and the training RNG is never touched.
+    Runs the unwrapped model: a rank-0-only forward must not enter DDP.
+    """
+    base = unwrap_model(model)
+    was_training = base.training
+    base.eval()
+    settings = PolicyForwardSettings(sample=True, generator=make_generator(device, seed))
+    stride = batch_size * (stream.seq_len + 1)
+    draws: List[float] = []
+    try:
+        for _ in range(max(1, int(samples))):
+            losses = []
+            for i in range(batches):
+                x, y = stream.batch(batch_size, device, deterministic_offset=i * stride)
+                with autocast_context(device, dtype):
+                    _, loss = base(x, y, policy=settings)
+                losses.append(loss.float().item())
+            draws.append(sum(losses) / max(1, len(losses)))
+    finally:
+        base.train(was_training)
+    ce = sum(draws) / len(draws)
+    out = {"ce": ce, "ppl": math.exp(min(20.0, ce)), "samples": float(len(draws))}
+    if len(draws) >= 2:
+        out["mc_std"] = statistics.stdev(draws)
+    return out
+
+
+@torch.no_grad()
+def deterministic_probe(base_model, batches, device: torch.device, dtype: torch.dtype) -> float:
+    """laplace_policy: noise-off CE on cached training inputs, before the update.
+
+    ``eval()`` mode (so dropout is off: with nonzero dropout this is a probe,
+    not a controlled measurement of the support noise alone) and ``no_grad``,
+    on the unwrapped model, sampling explicitly disabled.  Mode is restored
+    in ``finally``; the training RNG, the baseline and the usage statistics
+    (recorded in training mode only) are untouched.
+    """
+    was_training = base_model.training
+    base_model.eval()
+    settings = PolicyForwardSettings(sample=False)
+    total = 0.0
+    try:
+        for x, y in batches:
+            with autocast_context(device, dtype):
+                _, loss = base_model(x, y, policy=settings)
+            total += loss.float().item()
+    finally:
+        base_model.train(was_training)
+    return total / max(1, len(batches))
+
+
 # --------------------------------------------------------------------------- #
 # checkpointing
 # --------------------------------------------------------------------------- #
@@ -127,6 +201,11 @@ def load_for_inference(path: str, device: str = "cpu"):
     )
     model.load_state_dict(payload["model"])
     model.to(device)
+    # Weights and config only: the optional policy_state payload (baseline,
+    # noise RNG) is a training resume's business.  eval() so a laplace_policy
+    # model answers with clean deterministic supports by default; a probe that
+    # wants train()-mode behaviour sets it explicitly, as the probes do.
+    model.eval()
     return model, cfg, bottleneck
 
 
@@ -270,6 +349,34 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
 
     weight_params = [p for p in model.parameters()]
 
+    # laplace_policy: trainer-side state -- the EMA baseline and the per-rank
+    # training noise generator (seeded independently of everything else, so
+    # logging and validation can never shift the training noise path)
+    policy: Optional[PolicyTrainingState] = None
+    policy_settings: Optional[PolicyForwardSettings] = None
+    det_every = 0
+    if bottleneck.enabled and bottleneck.policy_active:
+        pc = cfg.activation_bottleneck
+        initial = (math.log(cfg.model.vocab_size) if pc.policy_baseline_initial is None
+                   else float(pc.policy_baseline_initial))
+        policy = PolicyTrainingState(pc.policy_baseline, pc.policy_baseline_decay, initial,
+                                     device, seed=cfg.train.seed + 104729 * rank + 1)
+        policy_settings = PolicyForwardSettings(sample=True, generator=policy.generator)
+        det_every = int(cfg.train.policy_train_deterministic_every_steps)
+        if det_every == 0:
+            det_every = int(cfg.train.log_every_steps)
+        print(f"[train] laplace_policy: T mode {pc.policy_temperature_mode}, schedule "
+              f"{pc.policy_temperature_schedule} from tau_0={pc.temperature:g}"
+              + (f" to {pc.policy_temperature_final:g} (hold {pc.policy_temperature_hold_steps}, "
+                 f"anneal {pc.policy_temperature_anneal_steps})"
+                 if pc.policy_temperature_schedule == "exponential" else "")
+              + f", baseline {pc.policy_baseline} (B_0={policy.baseline:.4f}), "
+              f"gamma {pc.policy_support_scale:g}/{pc.policy_support_scale_mode}, "
+              f"centre={pc.policy_center_scores}; val draws {cfg.train.policy_val_samples}, "
+              f"deterministic training probe "
+              + (f"every {det_every} steps (one extra noise-off forward per micro-batch)"
+                 if det_every > 0 else "off"))
+
     run_dir = os.path.join(cfg.train.out_dir, cfg.train.run_name)
     if is_main:
         logger = Logger(
@@ -301,6 +408,19 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         model.load_state_dict(payload["model"])
         optimizer.load_state_dict(payload["optimizer"])
         start_step = int(payload["step"])
+        if policy is not None:
+            # A laplace_policy resume must restore its baseline and noise RNG
+            # states; silently re-initializing them mid-anneal would change
+            # the run.  Continuing from the weights of another run is a fresh
+            # training, not a resume.
+            if "policy_state" not in payload:
+                raise ValueError(
+                    f"{resume_path} carries no policy_state (baseline, noise RNG); it was "
+                    "not saved by a laplace_policy run of this version.  Resume such a "
+                    "run from its own checkpoint, or start a fresh run without train.resume")
+            policy.load_state_dict(payload["policy_state"], rank, world)
+            print(f"[train] restored laplace_policy state: baseline {policy.baseline:.4f} "
+                  f"after {policy.updates} updates, noise RNG of rank {rank}")
         print(f"[train] resumed from {resume_path} at step {start_step}")
 
     if world > 1:
@@ -359,10 +479,21 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
     running_ce, running_n = 0.0, 0
     best_val = float("inf")
     last_metrics: Dict[str, float] = {}
+    # laplace_policy running statistics (reset at every log)
+    pol_support, pol_adv_sum, pol_adv_sq, pol_adv_n = 0.0, 0.0, 0.0, 0
+    probe_det, probe_sto, probe_n = 0.0, 0.0, 0
+    policy_tau = 0.0
+    baseline_used = 0.0
+    internal_stop: Optional[str] = None
 
     for step in range(start_step, cfg.train.max_steps):
         lr = lr_at(step, cfg.train)
         set_lr(optimizer, lr)
+        # the only schedule here is laplace_policy's tau(step); every other
+        # mode's temperature is constant and this returns 0.0 without touching
+        # anything.  Before on_step and before any micro-batch, so the probe
+        # and the whole step see the same value.
+        policy_tau = bottleneck.set_step(step)
 
         if on_step is not None:
             # Deliberately before zero_grad: a probe that runs a backward of its
@@ -374,28 +505,87 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
 
         optimizer.zero_grad(set_to_none=True)
         ce_sum = 0.0
-        for _ in range(accum):
-            x, y = train_stream.batch(micro_bs, device)
-            with autocast_context(device, dtype):
-                _, ce = model(x, y)
-            micro = ce
-            ce_sum += ce.detach().float().item()
-            if first_order_anchor is not None:
-                first_order_backward(scaler.scale(micro / accum), first_order_anchor)
-            else:
-                scaler.scale(micro / accum).backward()
+        step1 = step + 1
+        if policy is None:
+            for _ in range(accum):
+                x, y = train_stream.batch(micro_bs, device)
+                with autocast_context(device, dtype):
+                    _, ce = model(x, y)
+                micro = ce
+                ce_sum += ce.detach().float().item()
+                if first_order_anchor is not None:
+                    first_order_backward(scaler.scale(micro / accum), first_order_anchor)
+                else:
+                    scaler.scale(micro / accum).backward()
+        else:
+            # ---- laplace_policy -------------------------------------------- #
+            # One stochastic forward per micro-batch with the loss details; the
+            # computational loss is CE + [support - stopgrad(support)], so its
+            # value is the sampled CE and its gradient adds the selection term.
+            # The baseline is the previous step's value for every micro-batch.
+            baseline_used = policy.baseline
+            probe_due = det_every > 0 and (step1 % det_every == 0 or step1 == 1)
+            cached: List[Tuple[torch.Tensor, torch.Tensor]] = []
+            for _ in range(accum):
+                x, y = train_stream.batch(micro_bs, device)
+                with autocast_context(device, dtype):
+                    out = model(x, y, return_loss_details=True, policy=policy_settings)
+                if out.policy_log_prob is None:
+                    raise RuntimeError(
+                        "laplace_policy: the forward returned no policy density terms "
+                        "although the gates sample; refusing to train the value gradient "
+                        "alone (the gates ran without a collector or without grad)")
+                loss, support, adv = policy_backward_loss(
+                    out.ce, out.seq_ce, out.seq_valid, out.policy_log_prob, baseline_used)
+                # one host sync per micro-batch for every detached statistic
+                stats = torch.stack([
+                    out.ce.detach().float(), out.ce_tokens.detach().sum().float(),
+                    out.seq_valid.sum().float(), support.float(), adv.sum().float(),
+                    (adv * adv).sum().float()]).tolist()
+                ce_sum += stats[0]
+                policy.accumulate(stats[1], int(round(stats[2])))
+                pol_support += stats[3]
+                pol_adv_sum += stats[4]
+                pol_adv_sq += stats[5]
+                pol_adv_n += adv.numel()
+                if probe_due:
+                    cached.append((x, y))  # integer tokens only, no graph
+                scaler.scale(loss / accum).backward()
+                del out, loss, support, adv
+            if not math.isfinite(ce_sum):
+                internal_stop = f"non-finite sampled training CE at step {step1}"
+            if probe_due:
+                det_ce = deterministic_probe(unwrap_model(model), cached, device, dtype)
+                cached.clear()
+                probe_det += det_ce
+                probe_sto += ce_sum / accum
+                probe_n += 1
+                if not math.isfinite(det_ce):
+                    internal_stop = internal_stop or (
+                        f"non-finite deterministic probe CE at step {step1}")
 
         grad_norm = torch.tensor(0.0)
         if cfg.train.grad_clip > 0:
             scaler.unscale_(optimizer)
             grad_norm = torch.nn.utils.clip_grad_norm_(weight_params, cfg.train.grad_clip)
-        scaler.step(optimizer)
-        scaler.update()
+        if (policy is not None and internal_stop is None and not scaler.is_enabled()
+                and not math.isfinite(float(grad_norm))):
+            internal_stop = f"non-finite gradient norm at step {step1}"
+        if internal_stop is None:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            # a step from non-finite values would only corrupt the parameters
+            # the checkpoint below may save; the coordinated stop ends the run
+            optimizer.zero_grad(set_to_none=True)
+        if policy is not None:
+            # the once-per-step baseline update, from detached statistics of
+            # every micro-batch and (a collective) every rank
+            policy.finish_step(world)
 
         ce_mean = ce_sum / accum
         running_ce += ce_mean
         running_n += 1
-        step1 = step + 1
 
         if step1 % cfg.train.log_every_steps == 0 or step1 == 1:
             dt = time.time() - t0
@@ -410,15 +600,45 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 "perf/ms_per_step": 1000 * dt / running_n,
                 "perf/tokens_seen": step1 * tokens_per_step,
             }
-            bn = bottleneck.stats()
+            # laplace_policy: per-gate statistics, not only the block average
+            bn = bottleneck.stats(per_layer=policy is not None)
             metrics.update(bn)
             metrics["train/loss"] = metrics["train/ce"]
+            if policy is not None:
+                # train/ce IS the sampled-support CE; the explicit alias makes
+                # the comparison with the deterministic probe unambiguous
+                metrics["train_stochastic/ce"] = metrics["train/ce"]
+                metrics["train_stochastic/ppl"] = metrics["train/ppl"]
+                if probe_n:
+                    gap = (probe_sto - probe_det) / probe_n
+                    metrics["train_deterministic_probe/ce"] = probe_det / probe_n
+                    metrics["train_deterministic_probe/ppl"] = math.exp(
+                        min(20.0, probe_det / probe_n))
+                    metrics["train_deterministic_probe/paired_stochastic_ce"] = (
+                        probe_sto / probe_n)
+                    metrics["train_deterministic_probe/gap"] = gap
+                metrics["policy/tau"] = policy_tau
+                metrics["policy/baseline"] = baseline_used
+                if pol_adv_n:
+                    metrics["policy/advantage_mean"] = pol_adv_sum / pol_adv_n
+                    metrics["policy/advantage_rms"] = math.sqrt(pol_adv_sq / pol_adv_n)
+                # the detached value of L_support: a gradient diagnostic (its
+                # scale is set by the log densities), NOT an objective, never
+                # a perplexity
+                metrics["policy/support_term_diag"] = pol_support / max(1, running_n * accum)
+                metrics["policy/nonfinite"] = 1.0 if internal_stop else 0.0
 
             line = (
                 f"step {step1:>6}/{cfg.train.max_steps} | loss {metrics['train/loss']:.4f} "
                 f"| ce {metrics['train/ce']:.4f} | ppl {metrics['train/ppl']:7.2f} "
                 f"| lr {lr:.2e}"
             )
+            if policy is not None:
+                line += f" | tau {policy_tau:.3g} | B {baseline_used:.3f}"
+                if "train_deterministic_probe/ce" in metrics:
+                    line += f" | det {metrics['train_deterministic_probe/ce']:.4f}"
+                if "bottleneck/policy_exchange_frac" in bn:
+                    line += f" | xchg {bn['bottleneck/policy_exchange_frac']:.3f}"
             if "bottleneck/temperature" in bn:
                 line += f" | t {bn['bottleneck/temperature']:.3g}"
                 if "bottleneck/budget_residual" in bn:
@@ -440,6 +660,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             logger.log(step1, metrics, console=line)
             last_metrics = metrics
             running_ce, running_n = 0.0, 0
+            pol_support, pol_adv_sum, pol_adv_sq, pol_adv_n = 0.0, 0.0, 0.0, 0
+            probe_det, probe_sto, probe_n = 0.0, 0.0, 0
 
         if cfg.train.validate_every_steps and (
             step1 % cfg.train.validate_every_steps == 0 or step1 == cfg.train.max_steps
@@ -447,6 +669,17 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             val = evaluate(model, val_stream, micro_bs, cfg.train.val_batches, device, dtype)
             metrics = {"val/ce": val["ce"], "val/ppl": val["ppl"]}
             line = f"step {step1:>6} | val ce {val['ce']:.4f} | val ppl {val['ppl']:.2f}"
+            if policy is not None:
+                # val/ce above is the clean deterministic Top-K forward (as in
+                # every other mode); the paired stochastic pass samples the
+                # supports on the same windows, dropout off in both
+                sto = evaluate_stochastic(
+                    model, val_stream, micro_bs, cfg.train.val_batches, device, dtype,
+                    cfg.train.policy_val_samples, cfg.train.policy_val_seed)
+                metrics.update(policy_val_metrics("val", val, sto))
+                line += f" | sto ce {sto['ce']:.4f}"
+                if "mc_std" in sto:
+                    line += f" (+-{sto['mc_std']:.4f}, {int(sto['samples'])} draws)"
             if (bottleneck.enabled
                     and cfg.activation_bottleneck.surrogate_mode == "rblapsum_sf"):
                 # val/ce above used the hard Top-K forward (hard_inference), so
@@ -483,19 +716,33 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                     "\n\n".join(f"**{i}.** {t}" for i, t in enumerate(texts, 1)),
                 )
 
-        if cfg.train.checkpoint_every_steps and (
-            step1 % cfg.train.checkpoint_every_steps == 0 or step1 == cfg.train.max_steps
-        ) and is_main:
+        ckpt_due = bool(cfg.train.checkpoint_every_steps) and (
+            step1 % cfg.train.checkpoint_every_steps == 0 or step1 == cfg.train.max_steps)
+        policy_payload = None
+        if ckpt_due and policy is not None:
+            # every rank's noise generator state travels with the checkpoint;
+            # the gather is a collective, so it runs on ALL ranks, outside the
+            # rank-0-only save below
+            states = [policy.generator.get_state().cpu()]
+            if world > 1:
+                gathered: List[Any] = [None] * world
+                dist.all_gather_object(gathered, states[0])
+                states = gathered
+            policy_payload = policy.state_dict(states)
+        if ckpt_due and is_main:
             base = unwrap_model(model)
             path = os.path.join(run_dir, f"ckpt_step{step1}.pt")
-            save_checkpoint(path, cfg, base, optimizer, step1, extra={"metrics": last_metrics})
+            extra: Dict[str, Any] = {"metrics": last_metrics}
+            if policy_payload is not None:
+                extra["policy_state"] = policy_payload
+            save_checkpoint(path, cfg, base, optimizer, step1, extra=extra)
             save_checkpoint(
                 os.path.join(run_dir, "latest.pt"),
                 cfg,
                 base,
                 optimizer,
                 step1,
-                extra={"metrics": last_metrics},
+                extra=extra,
             )
             prune_old_checkpoints(run_dir, cfg.train.keep_last_checkpoints)
             print(f"[ckpt] saved {path}")
@@ -505,6 +752,10 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         # step.  Under DDP an exception on one rank would hang the others in
         # the next gradient all-reduce; this flag is the supported way out.
         stop_reason = should_stop() if should_stop is not None else None
+        if internal_stop is not None:
+            # non-finite values in the laplace_policy step: the same coordinated
+            # path as the guards, never an exception on one rank
+            stop_reason = stop_reason or internal_stop
         if world > 1:
             flag = torch.tensor(
                 [1 if stop_reason else 0],
@@ -529,12 +780,17 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         # validation, run once at the end (skipped when a guard stopped the run)
         fv = evaluate(model, val_stream, micro_bs,
                       cfg.train.final_val_batches, device, dtype)
-        logger.log(cfg.train.max_steps,
-                   {"val_final/ce": fv["ce"], "val_final/ppl": fv["ppl"]},
-                   console=(f"final validation ({cfg.train.final_val_batches} "
-                            f"batches) | ce {fv['ce']:.4f} | ppl {fv['ppl']:.2f}"))
-        last_metrics["val_final/ce"] = fv["ce"]
-        last_metrics["val_final/ppl"] = fv["ppl"]
+        final = {"val_final/ce": fv["ce"], "val_final/ppl": fv["ppl"]}
+        console = (f"final validation ({cfg.train.final_val_batches} "
+                   f"batches) | ce {fv['ce']:.4f} | ppl {fv['ppl']:.2f}")
+        if policy is not None:
+            sto = evaluate_stochastic(
+                model, val_stream, micro_bs, cfg.train.final_val_batches, device, dtype,
+                cfg.train.policy_val_samples, cfg.train.policy_val_seed)
+            final.update(policy_val_metrics("val_final", fv, sto))
+            console += f" | sto ce {sto['ce']:.4f}"
+        logger.log(cfg.train.max_steps, final, console=console)
+        last_metrics.update(final)
 
     logger.close()
     summary = {"best_val_ce": best_val, **last_metrics}
@@ -546,6 +802,25 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         if ddp_initialized_here:
             dist.destroy_process_group()
     return summary
+
+
+def policy_val_metrics(prefix: str, det: Dict[str, float], sto: Dict[str, float]
+                       ) -> Dict[str, float]:
+    """laplace_policy validation keys beside ``<prefix>/ce``.
+
+    ``<prefix>_deterministic/ce`` is an explicit alias of the clean Top-K CE,
+    ``<prefix>_stochastic/ce`` the Monte Carlo mean with sampling on,
+    ``/samples`` the number of draws, ``/mc_std`` their spread (two or more
+    draws only), ``/gap`` stochastic minus deterministic.  ``best_val_ce``,
+    checkpoints and summaries keep referring to the deterministic CE.
+    """
+    out = {f"{prefix}_deterministic/ce": det["ce"], f"{prefix}_deterministic/ppl": det["ppl"],
+           f"{prefix}_stochastic/ce": sto["ce"], f"{prefix}_stochastic/ppl": sto["ppl"],
+           f"{prefix}_stochastic/samples": sto["samples"],
+           f"{prefix}_stochastic/gap": sto["ce"] - det["ce"]}
+    if "mc_std" in sto:
+        out[f"{prefix}_stochastic/mc_std"] = sto["mc_std"]
+    return out
 
 
 def usage_figure(usage: Dict[str, "torch.Tensor"], k: int, n_features: int):

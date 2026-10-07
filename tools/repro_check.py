@@ -84,6 +84,12 @@ def main() -> None:
     ap.add_argument("--data-dir", default="/workspace/data/tinystories")
     ap.add_argument("--out", default="")
     ap.add_argument("--steps", type=int, default=60)
+    # "cuda" is the reference setting; "cpu" runs the same oracle on a box
+    # without a GPU (slower, and the digests are only comparable between runs
+    # on the same device type)
+    ap.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
+    ap.add_argument("--out-dir", default="/tmp/repro",
+                    help="where the oracle's run directory is created")
     ap.add_argument("--compare", nargs=2)
     args = ap.parse_args()
     if args.compare:
@@ -95,7 +101,7 @@ def main() -> None:
     from wsparse.data import build_streams
 
     torch.use_deterministic_algorithms(True, warn_only=True)
-    run_dir = f"/tmp/repro/repro_{args.mode}"
+    run_dir = os.path.join(args.out_dir, f"repro_{args.mode}")
     shutil.rmtree(run_dir, ignore_errors=True)
 
     ov = {
@@ -114,7 +120,7 @@ def main() -> None:
         "activation_bottleneck.bias": "false",
         "activation_bottleneck.init_mode": "sqrt_k_selection_corrected",
         "activation_bottleneck.log_diagnostics": "true",
-        "train.device": "cuda", "train.dtype": "float32",
+        "train.device": args.device, "train.dtype": "float32",
         "train.seed": 1337, "train.batch_size": 8,
         "train.micro_batch_size": 8, "train.max_steps": args.steps,
         "train.lr": 3e-4, "train.warmup_steps": 10,
@@ -123,7 +129,7 @@ def main() -> None:
         "train.checkpoint_every_steps": args.steps,  # final step only
         "train.keep_last_checkpoints": 1,
         "train.sample_every_steps": 0, "train.tensorboard": "false",
-        "train.out_dir": "/tmp/repro", "train.run_name": f"repro_{args.mode}",
+        "train.out_dir": args.out_dir, "train.run_name": f"repro_{args.mode}",
     }
 
     probe_cfg = load_config(None, [])
@@ -194,7 +200,8 @@ def main() -> None:
     apply_activation_bottleneck(model, cfg2.activation_bottleneck,
                                 max_steps=cfg2.train.max_steps)
     model.load_state_dict(payload["model"])
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if args.device == "cuda" and torch.cuda.is_available()
+                          else "cpu")
     model.to(device).eval()
     x, y = (t.to(device) for t in probe["batch"])
     with torch.no_grad():

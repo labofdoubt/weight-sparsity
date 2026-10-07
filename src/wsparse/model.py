@@ -7,13 +7,44 @@ embeddings, pre-norm residual blocks, fused QKV projection and SDPA attention.
 from __future__ import annotations
 
 import math
-from typing import Optional, Tuple
+from contextlib import nullcontext
+from dataclasses import replace
+from typing import List, NamedTuple, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from .config import DEFAULT_STD_EMBEDDING, ModelConfig
+
+
+class LossDetails(NamedTuple):
+    """``TransformerLM.forward(..., return_loss_details=True)``.
+
+    The opt-in interface of the laplace_policy trainer: the unreduced CE and
+    per-sequence costs the likelihood-ratio loss needs, plus the policy
+    density terms the gates recorded during THIS forward.  A tuple, so a DDP
+    wrapper that traverses outputs sees every graph-bearing tensor.
+
+    ``ce`` is ``sum_bt ell_bt / N_valid`` (the ordinary reduction), ``ce_tokens``
+    the float32 ``[B, T]`` token CE with ignored targets at 0, ``valid`` their
+    mask, ``seq_ce`` each sequence's mean CE (``[B]``, 0 where it has no valid
+    target), ``seq_valid`` its valid-target count.  ``policy_log_prob`` is the
+    gamma-weighted log density summed over every sampled gate instance and
+    position of each sequence (``[B]``, differentiable), ``None`` when no gate
+    sampled or grad was disabled; ``policy_records`` are the per-invocation
+    records (detached diagnostics; the log-density graphs live in them too,
+    so drop the result after ``backward``).
+    """
+
+    logits: torch.Tensor
+    ce: torch.Tensor
+    ce_tokens: torch.Tensor
+    valid: torch.Tensor
+    seq_ce: torch.Tensor
+    seq_valid: torch.Tensor
+    policy_log_prob: Optional[torch.Tensor]
+    policy_records: List
 
 
 class RMSNorm(nn.Module):
@@ -289,11 +320,27 @@ class TransformerLM(nn.Module):
 
     # ---- forward ---------------------------------------------------------- #
     def forward(
-        self, idx: torch.Tensor, targets: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        self, idx: torch.Tensor, targets: Optional[torch.Tensor] = None,
+        return_loss_details: bool = False, policy=None,
+    ):
+        """``(logits, loss)`` -- or a :class:`LossDetails` with
+        ``return_loss_details=True`` (needs ``targets``).
+
+        ``policy`` is an optional ``PolicyForwardSettings`` for the
+        laplace_policy gates (sample override, noise generator, collector),
+        installed on them for this forward only and restored in ``finally``.
+        With ``return_loss_details`` a forward-scoped collector is opened for
+        the gates' density terms (unless the settings bring one) and closed
+        when the forward ends, so DDP sees the resulting graph among the
+        returned tensors and nothing survives the call.  The default two-result
+        path is the exact old computation: the unreduced float32 CE is only
+        formed in the opt-in branch.
+        """
         B, T = idx.shape
         if T > self.cfg.max_seq_len:
             raise ValueError(f"sequence length {T} exceeds max_seq_len={self.cfg.max_seq_len}")
+        if return_loss_details and targets is None:
+            raise ValueError("return_loss_details=True needs targets")
         x = self.tok_emb(idx)
         if self.embed_scale != 1.0:
             x = x * self.embed_scale
@@ -301,17 +348,46 @@ class TransformerLM(nn.Module):
             pos = torch.arange(T, device=idx.device)
             x = x + self.pos_emb(pos)[None]
         x = self.emb_dropout(x)
-        # set by the bottleneck controller under code_residual; absent
-        # otherwise, so plain models keep their state_dict and forward
-        if getattr(self, "code_residual", False):
-            x = self._code_residual_stack(x)
-        else:
-            for block in self.blocks:
-                x = block(x)
+        collector = None
+        ctx = nullcontext()
+        if return_loss_details or policy is not None:
+            # imported here: wsparse.bottleneck imports this module
+            from .bottleneck.laplace_policy import (PolicyCollector, PolicyForwardSettings,
+                                                    policy_forward, policy_gates)
+            gates = policy_gates(self)
+            settings = policy if policy is not None else PolicyForwardSettings()
+            if return_loss_details and gates:
+                if settings.collector is None:
+                    settings = replace(settings, collector=PolicyCollector())
+                collector = settings.collector
+            ctx = policy_forward(gates, settings)
+        try:
+            with ctx:
+                # set by the bottleneck controller under code_residual; absent
+                # otherwise, so plain models keep their state_dict and forward
+                if getattr(self, "code_residual", False):
+                    x = self._code_residual_stack(x)
+                else:
+                    for block in self.blocks:
+                        x = block(x)
+        finally:
+            if collector is not None:
+                collector.close()
         x = self.norm_f(x)
         logits = self.lm_head(x)
         if self.logit_mult != 1.0:
             logits = logits * self.logit_mult
+        if return_loss_details:
+            from .bottleneck.laplace_policy import sequence_costs
+            flat = F.cross_entropy(
+                logits.view(-1, logits.size(-1)).float(), targets.reshape(-1),
+                ignore_index=-100, reduction="none")
+            valid = targets != -100
+            ce_tokens = torch.where(valid, flat.view(B, T), flat.new_zeros(()))
+            ce, seq_ce, seq_valid = sequence_costs(ce_tokens, valid)
+            records = list(collector.records) if collector is not None else []
+            log_prob = collector.sequence_log_prob() if collector is not None else None
+            return LossDetails(logits, ce, ce_tokens, valid, seq_ce, seq_valid, log_prob, records)
         loss = None
         if targets is not None:
             loss = F.cross_entropy(

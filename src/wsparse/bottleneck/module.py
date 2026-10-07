@@ -90,6 +90,13 @@ def effective_backward_support(cfg) -> float:
     k, j = int(cfg.k), int(cfg.j)
     if cfg.surrogate_mode == "hard":
         return float(k)  # j is inert in the backward, diagnostics only
+    if cfg.surrogate_mode == "laplace_policy":
+        # The decoder's input is a sampled hard support of exactly K values,
+        # so its value Jacobian has K active coordinates; the gate's own
+        # policy term branches off through the scores, not through a
+        # K+J-valued decoder input.  This sizes the decoder's init / g_D only;
+        # it is not an RMS calibration of the complete policy gradient.
+        return float(k)
     return float(k + j)
 
 
@@ -188,6 +195,14 @@ class SparseTopKBottleneck(nn.Module):
                 else critical_shift(int(cfg.k), self.n_features)),
             stochastic_width=getattr(cfg, "stochastic_width", "none"),
             stochastic_width_param=getattr(cfg, "stochastic_width_param", 0.5),
+            policy_temperature_mode=getattr(cfg, "policy_temperature_mode", "absolute"),
+            policy_min_temperature=getattr(cfg, "policy_min_temperature", 1e-6),
+            policy_center_scores=getattr(cfg, "policy_center_scores", True),
+            policy_support_scale=getattr(cfg, "policy_support_scale", 1.0),
+            policy_support_scale_mode=getattr(cfg, "policy_support_scale_mode", "constant"),
+            policy_support_temperature_ref=getattr(
+                cfg, "policy_support_temperature_ref", 1.0),
+            policy_support_scale_max=getattr(cfg, "policy_support_scale_max", None),
         )
         self.init_mode = getattr(cfg, "init_mode", "default")
         if self.init_mode in _RENAMED_INIT_MODES:
