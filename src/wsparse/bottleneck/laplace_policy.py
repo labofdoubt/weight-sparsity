@@ -61,6 +61,13 @@ TEMPERATURE_MODES = ("absolute", "relative_b", "relative_span")
 SCHEDULES = ("constant", "exponential")
 SUPPORT_SCALE_MODES = ("constant", "effective_temperature", "scheduled_temperature")
 BASELINES = ("none", "ema")
+#: selection-gradient estimators (policy_estimator); see RaoBlackwellSelect
+ESTIMATORS = ("likelihood_ratio", "rao_blackwell")
+#: which downstream gradient the Rao-Blackwell swap difference is linearized with
+RB_SCOPES = ("full", "first_order")
+#: relative widths: frozen-scale partial gradient, or the scores normalized by
+#: the (differentiable) activation scale so the selection is exactly scale-free
+WIDTH_GRADIENTS = ("frozen", "through")
 
 #: version of the optional ``policy_state`` checkpoint payload
 POLICY_STATE_VERSION = 1
@@ -156,6 +163,84 @@ def support_multiplier(mode: str, gamma0: float, t_row: torch.Tensor, tau: float
 # --------------------------------------------------------------------------- #
 # sampling and density
 # --------------------------------------------------------------------------- #
+
+
+class RaoBlackwellSelect(torch.autograd.Function):
+    """The sampled hard support with the Rao-Blackwellized selection gradient.
+
+    Forward: ``y_c = value_c * mask_c``, the sampled exactly-K support the
+    caller drew from the noisy scores ``r = u + eps`` (unchanged from the
+    likelihood-ratio path).
+
+    Backward, per row and pool member ``i``, with ``g = dL/dy_c``::
+
+        value      dL/dvalue_i = g_i m_i                                  (hard mask)
+        selection  dL/du_i     = gamma p_T(theta_i - u_i) (g_i v_i - g_j v_j)
+
+    ``theta_i`` is the K-th largest noisy score among the OTHER members --
+    ``r_(K+1)`` when ``i`` is selected, ``r_(K)`` when it is not -- and ``j``
+    its owner, the member ``i`` swaps with.  Given every other member's noise,
+    ``i`` is selected iff ``u_i + eps_i > theta_i``, so with the Laplace
+    density ``p_T(x) = exp(-|x| / T) / (2T)``::
+
+        E[(L - B) sign(eps_i) / T | eps_{-i}] = p_T(theta_i - u_i) (L(i in, j out) - L(i out, j in)):
+
+    the conditional expectation, over the member's own noise only, of the
+    likelihood-ratio sample -- a Rao-Blackwellization; the baseline drops out
+    and members far from the threshold contribute ``~exp(-|theta - u| / T)``
+    instead of ``+-1 / T``.  The single-swap loss difference is taken to first
+    order from the backpropagated gradient at the sampled support,
+    ``g_i v_i - g_j v_j`` (``v`` the signed transmitted values).
+
+    ``first_order`` (``policy_rb_scope``): linearize with the gradient that
+    reached the gate along hard paths only (the ``FIRST_ORDER`` hard pass of
+    ``wsparse.bottleneck.rblapsum``), so no product of selection terms forms
+    along a carry; otherwise the total incoming ``g`` is used.  ``gate``
+    receives backward-pass diagnostics in its ``_grad_sink``.
+    """
+
+    @staticmethod
+    def forward(ctx, u, value_c, mask_c, r, t_row, gamma, first_order, gate):  # type: ignore[override]
+        ctx.save_for_backward(u.detach(), value_c.detach(), mask_c, r, t_row, gamma)
+        ctx.first_order = bool(first_order)
+        ctx.g_hard = None
+        ctx.gate = gate
+        return value_c * mask_c.to(value_c.dtype)
+
+    @staticmethod
+    def backward(ctx, g):  # type: ignore[override]
+        u, v, m, r, t, gamma = ctx.saved_tensors
+        grad_v = g * m.to(g.dtype)
+        g_sel = g
+        if ctx.first_order:
+            from .rblapsum import FIRST_ORDER  # rblapsum is imported by gate.py too
+            if FIRST_ORDER.phase == "hard":
+                ctx.g_hard = g.detach()
+                return None, grad_v, None, None, None, None, None, None
+            if ctx.g_hard is not None:
+                g_sel = ctx.g_hard
+        sel = m > 0
+        big = torch.finfo(r.dtype).max
+        r_k, j_k = torch.where(sel, r, torch.full_like(r, big)).min(-1, keepdim=True)
+        r_k1, j_k1 = torch.where(sel, torch.full_like(r, -big), r).max(-1, keepdim=True)
+        theta = torch.where(sel, r_k1, r_k)
+        partner = torch.where(sel, j_k1.expand_as(r), j_k.expand_as(r))
+        gain = at_least_float32(g_sel) * at_least_float32(v)
+        delta = gain - gain.gather(-1, partner)
+        dens = torch.exp(-(theta - u).abs() / t) / (2.0 * t)
+        grad_u = gamma * dens * delta
+        gate = ctx.gate
+        if gate is not None and getattr(gate, "log_diagnostics", False):
+            with torch.no_grad():
+                selfgain = dens * at_least_float32(v).abs()
+                gate._grad_sink = {
+                    "policy_rb_score_grad_rms": grad_u.pow(2).mean().sqrt(),
+                    # the diagonal gain d(grad u_i)/d(g_i) = gamma p |v_i|: above 1
+                    # a member's gradient grows when it passes this gate
+                    "policy_rb_selfgain_rowmax": (gamma * selfgain).amax(-1).mean(),
+                    "policy_rb_value_grad_rms": grad_v.float().pow(2).mean().sqrt(),
+                }
+        return grad_u.to(u.dtype), grad_v, None, None, None, None, None, None
 
 
 def at_least_float32(x: torch.Tensor) -> torch.Tensor:

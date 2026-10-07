@@ -203,6 +203,9 @@ class SparseTopKBottleneck(nn.Module):
             policy_support_temperature_ref=getattr(
                 cfg, "policy_support_temperature_ref", 1.0),
             policy_support_scale_max=getattr(cfg, "policy_support_scale_max", None),
+            policy_estimator=getattr(cfg, "policy_estimator", "likelihood_ratio"),
+            policy_rb_scope=getattr(cfg, "policy_rb_scope", "full"),
+            policy_width_gradient=getattr(cfg, "policy_width_gradient", "frozen"),
         )
         self.init_mode = getattr(cfg, "init_mode", "default")
         if self.init_mode in _RENAMED_INIT_MODES:

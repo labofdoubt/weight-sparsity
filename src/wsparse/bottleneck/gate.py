@@ -27,7 +27,8 @@ import torch
 import torch.nn as nn
 
 from .lapsum import lapsum_barrier_sorted, lapsum_probs, laplace_cdf
-from .laplace_policy import (SUPPORT_SCALE_MODES, TEMPERATURE_MODES, PolicyRecord,
+from .laplace_policy import (ESTIMATORS, RB_SCOPES, WIDTH_GRADIENTS, RaoBlackwellSelect,
+                             SUPPORT_SCALE_MODES, TEMPERATURE_MODES, PolicyRecord,
                              at_least_float32, effective_width, laplace_log_density,
                              sample_laplace, support_multiplier)
 from .rblapsum import (GRAD_MODES, SURROGATE_SCOPES, VALUE_GRAD_MODES, carry_scope,
@@ -74,6 +75,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
         policy_support_scale_mode: str = "constant",
         policy_support_temperature_ref: float = 1.0,
         policy_support_scale_max=None,
+        policy_estimator: str = "likelihood_ratio",
+        policy_rb_scope: str = "full",
+        policy_width_gradient: str = "frozen",
     ):
         super().__init__()
         validate_gate_shapes(n_features, k, j, surrogate_mode)
@@ -251,6 +255,15 @@ class AdaptiveLapSumTopKGate(nn.Module):
                                          else float(policy_support_scale_max))
         self.policy_tau = float(temperature)
         self._policy_settings = None
+        if policy_estimator not in ESTIMATORS:
+            raise ValueError(f"unknown policy_estimator: {policy_estimator!r}")
+        if policy_rb_scope not in RB_SCOPES:
+            raise ValueError(f"unknown policy_rb_scope: {policy_rb_scope!r}")
+        if policy_width_gradient not in WIDTH_GRADIENTS:
+            raise ValueError(f"unknown policy_width_gradient: {policy_width_gradient!r}")
+        self.policy_estimator = policy_estimator
+        self.policy_rb_scope = policy_rb_scope
+        self.policy_width_gradient = policy_width_gradient
         # j = 0 or k = n_features: no exchange is possible, so the gate is the
         # ordinary hard Top-K with no noise and no density term
         self.policy_fixed = self.j == 0 or self.trivial
@@ -474,6 +487,20 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 self.policy_temperature_mode, self.policy_tau, score_c, k, j,
                 self.policy_min_temperature)
         u = score_c - score_c.mean(-1, keepdim=True) if self.policy_center_scores else score_c
+        t_score = t_row  # the width in score units, for the diagnostics
+        if self.policy_width_gradient == "through" and self.policy_temperature_mode != "absolute":
+            # Exactly scale-free selection: the noise of width tau acts on the
+            # scores divided by the activation scale a (differentiable), the
+            # same forward as T = tau * a, but the gradient now includes the
+            # derivative through a, so a common rescaling of the scores has no
+            # selection gradient (the frozen-scale rule pushes it).
+            if self.policy_temperature_mode == "relative_b":
+                a = score_c[..., k:k + 1]
+            else:
+                a = score_c[..., k:k + 1] - score_c[..., k + j - 1:k + j]
+            a = a.clamp_min(self.policy_min_temperature)
+            u = u / a
+            t_row = torch.full_like(t_row, max(self.policy_min_temperature, self.policy_tau))
         generator = settings.generator if settings is not None else None
         eps = sample_laplace(u.shape, t_row, generator=generator, dtype=u.dtype,
                              device=u.device)
@@ -482,19 +509,28 @@ class AdaptiveLapSumTopKGate(nn.Module):
         r = (u.detach() + eps).detach()
         selected = torch.topk(r, k, dim=-1, largest=True, sorted=False).indices
         mask_c = torch.zeros_like(r).scatter(-1, selected, 1.0)
-        y_c = value_c * mask_c.to(value_c.dtype)
-        y = torch.zeros_like(value).scatter(-1, cand_idx, y_c)
-
         collector = settings.collector if settings is not None else None
         gamma = support_multiplier(self.policy_support_scale_mode, self.policy_support_scale,
-                                   t_row, self.policy_tau, self.policy_support_temperature_ref,
+                                   t_score, self.policy_tau, self.policy_support_temperature_ref,
                                    self.policy_support_scale_max)
+        rao_blackwell = (self.policy_estimator == "rao_blackwell" and torch.is_grad_enabled()
+                         and collector is not None)
+        if rao_blackwell:
+            # the selection gradient comes from the Rao-Blackwellized backward of
+            # this Function; the density record below is kept (diagnostics, the
+            # trainer's contract) with zero weight
+            y_c = RaoBlackwellSelect.apply(u, value_c, mask_c, r, t_row, gamma,
+                                           self.policy_rb_scope == "first_order", self)
+        else:
+            y_c = value_c * mask_c.to(value_c.dtype)
+        y = torch.zeros_like(value).scatter(-1, cand_idx, y_c)
         diag: Dict[str, torch.Tensor] = {}
         if self.log_diagnostics:
             with torch.no_grad():
                 diag = self._policy_diag(score_c.detach(), r, u.detach(), t_row, floor_binding,
                                          raw_scale, gamma, mask_c, y,
-                                         laplace_log_density(r, u.detach(), t_row))
+                                         laplace_log_density(r, u.detach(), t_row),
+                                         t_score=t_score)
             if self.training:
                 mask_full = torch.zeros_like(scores).scatter(
                     -1, cand_idx, mask_c.to(scores.dtype))
@@ -502,15 +538,16 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 self._forward_diag = diag
         if collector is not None and torch.is_grad_enabled():
             log_prob = laplace_log_density(r, u, t_row)  # shape = scores.shape[:-1]
+            weight = gamma.squeeze(-1) * (0.0 if rao_blackwell else 1.0)
             collector.add(PolicyRecord(
-                gate=self, log_prob=gamma.squeeze(-1) * log_prob, diag=diag,
+                gate=self, log_prob=weight * log_prob, diag=diag,
                 r=r if collector.keep_samples else None,
                 cand_idx=cand_idx.detach() if collector.keep_samples else None))
         return y
 
     @torch.no_grad()
     def _policy_diag(self, score_c, r, u, t_row, floor_binding, raw_scale, gamma, mask_c, y,
-                     log_prob) -> Dict[str, torch.Tensor]:
+                     log_prob, t_score=None) -> Dict[str, torch.Tensor]:
         """Detached per-gate statistics of one sampled forward (laplace_policy).
 
         Everything is computed from what was actually sampled -- no CDF
@@ -533,8 +570,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
             "output_nonzero_count": (y != 0).sum(-1).to(torch.float32).mean(),
             "candidate_count": torch.tensor(float(self.m), device=r.device),
             "policy_tau": torch.tensor(float(self.policy_tau), device=r.device),
-            "policy_t_mean": t_row.mean(), "policy_t_min": t_row.min(),
-            "policy_t_max": t_row.max(),
+            "policy_t_mean": (t_row if t_score is None else t_score).mean(),
+            "policy_t_min": (t_row if t_score is None else t_score).min(),
+            "policy_t_max": (t_row if t_score is None else t_score).max(),
             "policy_t_floor_frac": floor_binding.to(torch.float32).mean(),
             "policy_scale_mean": raw_scale.mean(),
             "policy_span_zero_frac": (span == 0).to(torch.float32).mean(),

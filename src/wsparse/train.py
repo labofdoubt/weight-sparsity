@@ -442,6 +442,9 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
     # embedding before every ordinary one (wsparse.bottleneck.rblapsum)
     first_order_anchor = None
     if any(str(getattr(m, "rblapsum_surrogate_scope", "")).startswith("first_order")
+           or (getattr(m, "surrogate_mode", "") == "laplace_policy"
+               and getattr(m, "policy_estimator", "") == "rao_blackwell"
+               and getattr(m, "policy_rb_scope", "") == "first_order")
            for m in unwrap_model(model).modules()):
         if world > 1:
             raise ValueError("rblapsum_surrogate_scope='first_order' is single-process only")
@@ -550,7 +553,11 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 pol_adv_n += adv.numel()
                 if probe_due:
                     cached.append((x, y))  # integer tokens only, no graph
-                scaler.scale(loss / accum).backward()
+                if first_order_anchor is not None:
+                    # rao_blackwell, policy_rb_scope=first_order: a hard pass first
+                    first_order_backward(scaler.scale(loss / accum), first_order_anchor)
+                else:
+                    scaler.scale(loss / accum).backward()
                 del out, loss, support, adv
             if not math.isfinite(ce_sum):
                 internal_stop = f"non-finite sampled training CE at step {step1}"

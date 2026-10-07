@@ -516,6 +516,24 @@ class ActivationBottleneckConfig:
     policy_support_scale_mode: str = "constant"
     policy_support_temperature_ref: float = 1.0
     policy_support_scale_max: Optional[float] = None
+    # Selection-gradient estimator (wsparse.bottleneck.laplace_policy):
+    #   likelihood_ratio  the sequence-level score-function estimator above
+    #   rao_blackwell     its conditional expectation over each pool member's own
+    #                     noise: gamma * p_T(theta_i - u_i) * (g_i v_i - g_j v_j),
+    #                     the crossing density at the member's threshold times the
+    #                     first-order loss difference of the single swap it controls
+    #                     (no baseline, no advantage; RaoBlackwellSelect)
+    # policy_rb_scope (rao_blackwell only): ``full`` linearizes the swap with the
+    # total downstream gradient, ``first_order`` with the hard-path gradient (a
+    # second backward pass, single process only), so selection terms never
+    # multiply along a carry.
+    # policy_width_gradient (relative widths only): ``frozen`` is the frozen-scale
+    # partial gradient above; ``through`` divides the scores by the activation
+    # scale a (differentiable) and draws noise of width tau -- the same forward,
+    # with the exact gradient of a scale-free selection.
+    policy_estimator: str = "likelihood_ratio"
+    policy_rb_scope: str = "full"
+    policy_width_gradient: str = "frozen"
 
 
     # ---- rblapsum (surrogate_mode: rblapsum | rblapsum_sf) ------------------ #
@@ -1033,6 +1051,9 @@ class ActivationBottleneckConfig:
         "policy_support_scale_mode": "constant",
         "policy_support_temperature_ref": 1.0,
         "policy_support_scale_max": None,
+        "policy_estimator": "likelihood_ratio",
+        "policy_rb_scope": "full",
+        "policy_width_gradient": "frozen",
     }
 
     def _validate_policy_fields(self) -> None:
@@ -1160,6 +1181,22 @@ class ActivationBottleneckConfig:
                positive=True)
         if self.policy_support_scale_max is not None:
             finite("policy_support_scale_max", self.policy_support_scale_max, positive=True)
+        from .bottleneck.laplace_policy import ESTIMATORS, RB_SCOPES, WIDTH_GRADIENTS
+        if self.policy_estimator not in ESTIMATORS:
+            raise ValueError(f"unknown policy_estimator: {self.policy_estimator!r} "
+                             f"({' | '.join(ESTIMATORS)})")
+        if self.policy_rb_scope not in RB_SCOPES:
+            raise ValueError(f"unknown policy_rb_scope: {self.policy_rb_scope!r} "
+                             f"({' | '.join(RB_SCOPES)})")
+        if self.policy_rb_scope != "full" and self.policy_estimator != "rao_blackwell":
+            raise ValueError("policy_rb_scope applies to policy_estimator='rao_blackwell' only")
+        if self.policy_width_gradient not in WIDTH_GRADIENTS:
+            raise ValueError(f"unknown policy_width_gradient: {self.policy_width_gradient!r} "
+                             f"({' | '.join(WIDTH_GRADIENTS)})")
+        if self.policy_width_gradient == "through" and self.policy_temperature_mode == "absolute":
+            raise ValueError("policy_width_gradient='through' needs a relative width "
+                             "(relative_b | relative_span): an absolute width has no "
+                             "activation scale to differentiate")
 
 
 # --------------------------------------------------------------------------- #
