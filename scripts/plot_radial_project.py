@@ -39,10 +39,13 @@ def read_run(run_dir: str):
 
 
 def smooth(y, w):
+    """Centred moving average of odd width (a trailing one lags by w/2 rows)."""
+    w = max(1, w | 1)
     if len(y) < w:
         return y
     c = np.convolve(y, np.ones(w) / w, mode="valid")
-    return np.concatenate([np.full(w - 1, np.nan), c])
+    pad = (w - 1) // 2
+    return np.concatenate([np.full(pad, np.nan), c, np.full(pad, np.nan)])
 
 
 def panel(ax, runs, window, compare="proj"):
@@ -55,7 +58,7 @@ def panel(ax, runs, window, compare="proj"):
             lab = ("with radial projection" if r["proj"] else "without (reference)")
         if len(r["train"]):
             ax.plot(r["train"][:, 0], smooth(r["train"][:, 1], window), color=COLORS[tag],
-                    lw=0.8, alpha=0.35)
+                    lw=0.8, alpha=0.35, label=f"{lab}: training CE, centred {window}-row mean")
         if len(r["val"]):
             ax.plot(r["val"][:, 0], r["val"][:, 1], "-o", color=COLORS[tag], ms=4, lw=1.4,
                     label=f"{lab}: val CE {r['val'][-1, 1]:.4f} at step {int(r['val'][-1, 0])}")
@@ -90,7 +93,7 @@ def main() -> None:
             bs = {int(s): float(r["b"][np.argmin(np.abs(r["b"][:, 0] - s)), 1]) for s in steps} if len(r["b"]) else {}
             print(f"{r['name']}: val CE " + ", ".join(f"{int(s)}: {v:.4f}" for s, v in r["val"])
                   + "  |  b " + ", ".join(f"{s}: {v:.2f}" for s, v in bs.items()))
-    axes[0].set_ylabel("validation CE (markers), training CE smoothed (faint)")
+    axes[0].set_ylabel("CE (validation: markers; training: faint, smoothed)")
     fig.tight_layout()
     out = os.path.join(args.out, args.name)
     fig.savefig(out, dpi=140, bbox_inches="tight")
