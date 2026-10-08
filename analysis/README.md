@@ -47,11 +47,12 @@ One fixed batch (`deterministic_offset`) is reused for every checkpoint and
 every run, so a difference between two cells is a difference in the model and
 never in the data.
 
-Under `code_residual` it also writes `<run>.carry.npy` (same shape): the
+Under `code_residual` it also writes `<run>.code_residual.npy` (same shape): the
 K-sparse code gate `l` received from gate `l-1`, zero at `l = 0`. The score at
 gate `l >= 1` is `carry + alpha * E_l Delta_l`, so `score - carry` is the
 block's own encoded contribution. The viewer's two code-residual panels (below)
-need it; datasets extracted before 2026-10-08 lack it and show a note instead.
+need it; datasets extracted before 2026-10-08 lack it and show a note instead,
+and `--code-residual-only` adds it to such a dataset without redoing the rest.
 
 ## 2. Early training, without keeping checkpoints
 

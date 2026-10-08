@@ -67,10 +67,10 @@ SWAPS_DIR = os.environ.get("SWAPS_DIR", "/workspace/analysis/swaps")
 #   ckpt  -- one array per run, the 2k..20k checkpoint ladder
 #   probe -- three arrays per run (score + the two gradients), steps 0..1000
 GRAD_ARRAYS = ("g_ztilde", "g_z")
-# code_residual ladders also carry "<run>.carry.npy": the K-sparse code gate l
+# code_residual ladders also carry "<run>.code_residual.npy": the K-sparse code gate l
 # received from gate l-1 (zero at l = 0), so score - carry is the block's own
 # encoded contribution.  A sidecar like the gradients, never a dataset.
-SIDECAR_ARRAYS = GRAD_ARRAYS + ("carry",)
+SIDECAR_ARRAYS = GRAD_ARRAYS + ("code_residual",)
 # "surr" is not stored: it is dL/dz - M * dL/d~z computed per cell, the support
 # term alone (the gate's backward is M * g + S^T(.), so subtracting the hard
 # path leaves S^T(.): zero outside Top(K+J), the eviction term on TopK, the
@@ -1388,7 +1388,7 @@ st.plotly_chart(fig2, width="stretch", theme=None)
 CARRY_COLOR, UPDATE_COLOR = "#4a3aa7", "#eda100"
 if bool(meta.get("code_residual", False)):
     st.markdown("#### The code residual at this cell")
-    if "carry" not in arrays:
+    if "code_residual" not in arrays:
         st.caption("The carried code was not recorded for this dataset (extracted "
                    "before 2026-10-08); re-run extract_bottleneck_scores.py to add "
                    "the carried-code panel.")
@@ -1397,7 +1397,7 @@ if bool(meta.get("code_residual", False)):
                    "output E_0 (x_0 + \u0394_0), so the score here *is* the "
                    "update. Pick a block \u2265 1 for the carried-code panel.")
     else:
-        cvec = np.asarray(arrays["carry"][ci, li, bi, ti], dtype=np.float64)
+        cvec = np.asarray(arrays["code_residual"][ci, li, bi, ti], dtype=np.float64)
         uvec = signed - cvec
         c_abs, u_abs = np.abs(cvec) / denom, np.abs(uvec) / denom
         csup = cvec != 0                       # the carried support (k indices)

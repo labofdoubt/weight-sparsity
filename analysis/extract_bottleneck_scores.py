@@ -32,11 +32,17 @@ Output, one per run:
     <out-dir>/<run>.g_z.npy       dL/dz at the gate's input, through the surrogate
     <out-dir>/<run>.json          steps, layer labels, k, j, token ids, val CE
 
-Under ``code_residual`` a fourth array is written, ``<run>.carry.npy``: the
+Under ``code_residual`` a fourth array is written, ``<run>.code_residual.npy``: the
 K-sparse code that gate ``l`` received from gate ``l-1`` (block 0 carries
 nothing, so its slice is zero).  The score at gate ``l >= 1`` is
 ``carry + alpha * E_l Delta_l``, so ``score - carry`` is the block's own
 contribution and the viewer can put the two on one axis.
+
+``--code-residual-only`` adds that array to a dataset extracted before it existed: it
+reads ``<out-dir>/<run>.json``, checks that the checkpoint list and the fixed
+batch are the ones the dataset was made from, runs an eval forward per
+checkpoint, writes ``<run>.code_residual.npy`` and lists it in the JSON.  The scores
+and gradients already on disk are not touched.
 
 With ``--grads`` (the default since 2026-10-05) every checkpoint also runs one
 forward + backward on the fixed batch in ``train()`` mode and float32 -- the
@@ -115,7 +121,12 @@ def main() -> None:
     ap.add_argument("--grads", dest="grads", action="store_true", default=True,
                     help="also record dL/d~z and dL/dz at every checkpoint (default)")
     ap.add_argument("--no-grads", dest="grads", action="store_false")
+    ap.add_argument("--code-residual-only", action="store_true",
+                    help="only add <run>.code_residual.npy to an existing dataset in --out-dir")
     args = ap.parse_args()
+    if args.code_residual_only:
+        code_residual_only(args)
+        return
 
     run = os.path.basename(args.ckpt_dir.rstrip("/"))
     ckpts = sorted(glob.glob(os.path.join(args.ckpt_dir, "ckpt_step*.pt")), key=checkpoint_step)
@@ -165,7 +176,7 @@ def main() -> None:
     carry_arr = None
     if code_res:
         carry_arr = np.lib.format.open_memmap(
-            os.path.join(args.out_dir, f"{run}.carry.npy"), mode="w+",
+            os.path.join(args.out_dir, f"{run}.code_residual.npy"), mode="w+",
             dtype=np.float32, shape=arr.shape)
 
     val_ce = []
@@ -286,12 +297,12 @@ def main() -> None:
         array_shape=list(arr.shape),
         arrays={"score": os.path.basename(out_path),
                 **({g: f"{run}.{g}.npy" for g in GRAD_NAMES} if args.grads else {}),
-                **({"carry": f"{run}.carry.npy"} if code_res else {})},
+                **({"code_residual": f"{run}.code_residual.npy"} if code_res else {})},
         rblapsum_surrogate_scope=str(getattr(cfg.activation_bottleneck,
                                              "rblapsum_surrogate_scope", "pool")),
         code_residual=code_res,
         code_residual_scale=float(getattr(cfg.activation_bottleneck, "code_residual_scale", 1.0)),
-        carry_note=("carry[c, l] is the K-sparse code gate l received from gate l-1 "
+        code_residual_note=("code_residual[c, l] is the K-sparse code gate l received from gate l-1 "
                     "(zero at l = 0); score - carry is the block's own encoded "
                     "contribution alpha * E_l Delta_l" if code_res else None),
         grads_mode=("train-mode float32 forward+backward on the fixed batch; "
@@ -304,6 +315,84 @@ def main() -> None:
     with open(os.path.join(args.out_dir, f"{run}.json"), "w") as f:
         json.dump(meta, f, indent=2)
     print(f"wrote {out_path} {arr.shape} and {run}.json")
+
+
+def code_residual_only(args) -> None:
+    """Add the carried-code array to a dataset that was extracted without it."""
+    run = os.path.basename(args.ckpt_dir.rstrip("/"))
+    ckpts = sorted(glob.glob(os.path.join(args.ckpt_dir, "ckpt_step*.pt")), key=checkpoint_step)
+    if not ckpts:
+        raise SystemExit(f"no ckpt_step*.pt under {args.ckpt_dir}")
+    steps = [checkpoint_step(p) for p in ckpts]
+    meta_path = os.path.join(args.out_dir, f"{run}.json")
+    if not os.path.exists(meta_path):
+        raise SystemExit(f"--code-residual-only needs an existing dataset: {meta_path} not found")
+    meta = json.load(open(meta_path))
+    device = torch.device(args.device)
+
+    model, cfg, _ = load_for_inference(ckpts[0], device=str(device))
+    if not bool(getattr(cfg.activation_bottleneck, "code_residual", False)):
+        raise SystemExit(f"{run} is not a code_residual run; nothing to add")
+    seq_len = int(cfg.data.seq_len)
+    n_pos = min(int(args.positions), seq_len)
+    stream = TokenStream(os.path.join(args.data_dir, f"{args.split}.bin"), seq_len, seed=0)
+    idx, targets = stream.batch(args.batch, device, deterministic_offset=args.offset)
+    # the array must line up cell for cell with the scores already on disk
+    for key, want in (("steps", steps), ("batch", int(args.batch)), ("n_pos", n_pos),
+                      ("split", args.split), ("offset", int(args.offset)),
+                      ("token_ids", idx[:, :n_pos].cpu().numpy().tolist())):
+        if meta.get(key) != want:
+            raise SystemExit(f"{run}: dataset {key} differs from this invocation "
+                             f"({str(meta.get(key))[:80]} vs {str(want)[:80]})")
+    bottlenecks = find_bottlenecks(model, cfg)
+    n_feat = int(cfg.activation_bottleneck.n_features)
+    if meta.get("layer_labels") != [lbl for lbl, _ in bottlenecks]:
+        raise SystemExit(f"{run}: bottleneck labels differ from the dataset's")
+    print(f"run={run}  ckpts={len(ckpts)}  code_residual only")
+
+    out_path = os.path.join(args.out_dir, f"{run}.code_residual.npy")
+    carry_arr = np.lib.format.open_memmap(
+        out_path, mode="w+", dtype=np.float32,
+        shape=(len(ckpts), len(bottlenecks), int(args.batch), n_pos, n_feat))
+    for ci, path in enumerate(ckpts):
+        if ci > 0:
+            model, cfg, _ = load_for_inference(path, device=str(device))
+            bottlenecks = find_bottlenecks(model, cfg)
+        codes: dict = {}
+        handles = [mod.gate.register_forward_hook(
+            lambda module, inputs, output, li=li: codes.__setitem__(li, output.detach()))
+            for li, (_, mod) in enumerate(bottlenecks)]
+        # the forward is hard in both modes, so the eval-mode code is the one the
+        # training forward carried; no backward is needed for the carry
+        model.eval()
+        with torch.no_grad():
+            model(idx, targets)
+        for h in handles:
+            h.remove()
+        carry_arr[ci, 0] = 0.0
+        for li in range(1, len(bottlenecks)):
+            a = codes.get(li - 1)
+            if a is None or a.shape != (args.batch, seq_len, n_feat):
+                raise RuntimeError(f"{path}: code of bottleneck {li - 1} missing or misshaped")
+            carry_arr[ci, li] = a[:, :n_pos, :].float().cpu().numpy()
+        print(f"  [{ci + 1}/{len(ckpts)}] step {steps[ci]:>6}")
+        codes.clear()
+        del model
+        torch.cuda.empty_cache() if device.type == "cuda" else None
+    carry_arr.flush()
+
+    meta["arrays"] = {**meta.get("arrays", {"score": meta.get("array")}),
+                      "code_residual": os.path.basename(out_path)}
+    meta["code_residual"] = True
+    meta["code_residual_scale"] = float(getattr(cfg.activation_bottleneck, "code_residual_scale", 1.0))
+    meta["code_residual_note"] = ("code_residual[c, l] is the K-sparse code gate l received from gate l-1 "
+                          "(zero at l = 0); score - carry is the block's own encoded "
+                          "contribution alpha * E_l Delta_l; added with --code-residual-only")
+    tmp = meta_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(meta, f, indent=2)
+    os.replace(tmp, meta_path)
+    print(f"wrote {out_path} {carry_arr.shape} and updated {run}.json")
 
 
 if __name__ == "__main__":
