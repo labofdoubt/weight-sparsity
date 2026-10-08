@@ -530,7 +530,10 @@ class ActivationBottleneckConfig:
     # policy_width_gradient (relative widths only): ``frozen`` is the frozen-scale
     # partial gradient above; ``through`` divides the scores by the activation
     # scale a (differentiable) and draws noise of width tau -- the same forward,
-    # with the exact gradient of a scale-free selection.
+    # with the exact gradient of a scale-free selection; ``project`` keeps the
+    # frozen-scale gradient but removes its component along the centred pool scores
+    # (the exact gradient has none: the selection is invariant to a common rescaling),
+    # the minimum-norm correction, without the span's two-coordinate noise.
     policy_estimator: str = "likelihood_ratio"
     policy_rb_scope: str = "full"
     policy_width_gradient: str = "frozen"
@@ -1202,8 +1205,10 @@ class ActivationBottleneckConfig:
             raise ValueError("policy_rb_samples must be >= 1")
         if int(self.policy_rb_samples) != 1 and self.policy_estimator != "rao_blackwell":
             raise ValueError("policy_rb_samples applies to policy_estimator='rao_blackwell' only")
-        if self.policy_width_gradient == "through" and self.policy_temperature_mode == "absolute":
-            raise ValueError("policy_width_gradient='through' needs a relative width "
+        if (self.policy_width_gradient in ("through", "project")
+                and self.policy_temperature_mode == "absolute"):
+            raise ValueError(f"policy_width_gradient={self.policy_width_gradient!r} needs a "
+                             "relative width "
                              "(relative_b | relative_span): an absolute width has no "
                              "activation scale to differentiate")
 

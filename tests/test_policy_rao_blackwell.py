@@ -172,6 +172,7 @@ def test_scale_free_width_gives_no_gradient_along_a_common_rescaling():
         return float((g_sel * z.detach()).sum(-1).mean())
 
     assert abs(radial("through")) < 1e-9
+    assert abs(radial("project")) < 1e-9
     assert abs(radial("frozen")) > 1e-3
 
 

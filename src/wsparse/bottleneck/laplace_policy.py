@@ -65,9 +65,10 @@ BASELINES = ("none", "ema")
 ESTIMATORS = ("likelihood_ratio", "rao_blackwell")
 #: which downstream gradient the Rao-Blackwell swap difference is linearized with
 RB_SCOPES = ("full", "first_order")
-#: relative widths: frozen-scale partial gradient, or the scores normalized by
-#: the (differentiable) activation scale so the selection is exactly scale-free
-WIDTH_GRADIENTS = ("frozen", "through")
+#: relative widths: frozen-scale partial gradient; the scores normalized by the
+#: (differentiable) activation scale so the selection is exactly scale-free; or the
+#: frozen gradient with its component along the centred scores removed
+WIDTH_GRADIENTS = ("frozen", "through", "project")
 
 #: version of the optional ``policy_state`` checkpoint payload
 POLICY_STATE_VERSION = 1
@@ -163,6 +164,35 @@ def support_multiplier(mode: str, gamma0: float, t_row: torch.Tensor, tau: float
 # --------------------------------------------------------------------------- #
 # sampling and density
 # --------------------------------------------------------------------------- #
+
+
+class ProjectScaleFree(torch.autograd.Function):
+    """Identity forward; the backward removes, per row, the gradient's component
+    along the centred pool scores ``u``.
+
+    The relative widths make the sampled support invariant to a common shift of
+    the pool scores (centring) and to a common rescaling (T scales with them), so
+    the exact selection gradient is orthogonal to both ``1`` and ``u`` (Euler's
+    identity for a function homogeneous of degree 0).  The frozen-scale gradient
+    is not orthogonal to ``u``: it pushes the scale, which the width then
+    follows.  Applied to the scores of the selection path only, after the
+    centring's zero-sum projection, this is the minimum-norm correction that
+    restores the identity (``policy_width_gradient: project``); the forward and
+    the value path are untouched.
+    """
+
+    @staticmethod
+    def forward(ctx, x, u):  # type: ignore[override]
+        ctx.save_for_backward(u.detach())
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, g):  # type: ignore[override]
+        (u,) = ctx.saved_tensors
+        uf = at_least_float32(u)
+        gf = at_least_float32(g)
+        coef = (gf * uf).sum(-1, keepdim=True) / (uf * uf).sum(-1, keepdim=True).clamp_min(1e-30)
+        return (gf - coef * uf).to(g.dtype), None
 
 
 class RaoBlackwellSelect(torch.autograd.Function):

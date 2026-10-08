@@ -27,7 +27,8 @@ import torch
 import torch.nn as nn
 
 from .lapsum import lapsum_barrier_sorted, lapsum_probs, laplace_cdf
-from .laplace_policy import (ESTIMATORS, RB_SCOPES, WIDTH_GRADIENTS, RaoBlackwellSelect,
+from .laplace_policy import (ESTIMATORS, RB_SCOPES, WIDTH_GRADIENTS, ProjectScaleFree,
+                             RaoBlackwellSelect,
                              SUPPORT_SCALE_MODES, TEMPERATURE_MODES, PolicyRecord,
                              at_least_float32, effective_width, laplace_log_density,
                              sample_laplace, support_multiplier)
@@ -490,6 +491,11 @@ class AdaptiveLapSumTopKGate(nn.Module):
             t_row, floor_binding, raw_scale = effective_width(
                 self.policy_temperature_mode, self.policy_tau, score_c, k, j,
                 self.policy_min_temperature)
+        if self.policy_width_gradient == "project" and self.policy_temperature_mode != "absolute":
+            # the selection path's score gradient loses its component along the
+            # centred scores (ProjectScaleFree): no push on the scale the width follows
+            centred = (score_c - score_c.mean(-1, keepdim=True)).detach()
+            score_c = ProjectScaleFree.apply(score_c, centred)
         u = score_c - score_c.mean(-1, keepdim=True) if self.policy_center_scores else score_c
         t_score = t_row  # the width in score units, for the diagnostics
         if self.policy_width_gradient == "through" and self.policy_temperature_mode != "absolute":
