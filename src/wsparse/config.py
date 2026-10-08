@@ -534,6 +534,10 @@ class ActivationBottleneckConfig:
     policy_estimator: str = "likelihood_ratio"
     policy_rb_scope: str = "full"
     policy_width_gradient: str = "frozen"
+    # rao_blackwell: number of pool-noise draws the conditional estimator averages
+    # over (1 = the forward's own draw; R > 1 adds R - 1 draws that only re-rank
+    # the pool in the backward, same linearization point)
+    policy_rb_samples: int = 1
 
 
     # ---- rblapsum (surrogate_mode: rblapsum | rblapsum_sf) ------------------ #
@@ -1054,6 +1058,7 @@ class ActivationBottleneckConfig:
         "policy_estimator": "likelihood_ratio",
         "policy_rb_scope": "full",
         "policy_width_gradient": "frozen",
+        "policy_rb_samples": 1,
     }
 
     def _validate_policy_fields(self) -> None:
@@ -1193,6 +1198,10 @@ class ActivationBottleneckConfig:
         if self.policy_width_gradient not in WIDTH_GRADIENTS:
             raise ValueError(f"unknown policy_width_gradient: {self.policy_width_gradient!r} "
                              f"({' | '.join(WIDTH_GRADIENTS)})")
+        if int(self.policy_rb_samples) < 1:
+            raise ValueError("policy_rb_samples must be >= 1")
+        if int(self.policy_rb_samples) != 1 and self.policy_estimator != "rao_blackwell":
+            raise ValueError("policy_rb_samples applies to policy_estimator='rao_blackwell' only")
         if self.policy_width_gradient == "through" and self.policy_temperature_mode == "absolute":
             raise ValueError("policy_width_gradient='through' needs a relative width "
                              "(relative_b | relative_span): an absolute width has no "

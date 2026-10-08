@@ -102,6 +102,10 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
      watcher. If `rclone -v` shows `network is unreachable` for IPv6 addresses,
      put `RCLONE_BIND=0.0.0.0` in front of every rclone command and watcher (§5).
    - Always `rclone copy`, never `sync`.
+   - A box can be replaced at any moment. A result you will need later goes to
+     Drive when it is produced (`rclone copy /workspace/analysis $A`), not at the
+     next watcher cycle: a box destroyed mid-cycle lost five minutes of probe
+     output on 2026-10-08.
 8. **Analysis viewer**, only if this box serves it: restore `analysis_<name>`
    and install the streamlit service per `analysis/README.md` §10; tunnel
    `-L 8501:localhost:8501`.

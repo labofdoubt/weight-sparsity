@@ -9,7 +9,8 @@ For every run directory given (or matched by ``--glob``) reads ``config.json``,
   train   [step, sampled train/ce, noise-off probe CE, grad norm, tau,
            baseline, advantage mean, advantage rms]                 (every --every steps)
   blocks  {key: [[step, [value per block]], ...]} for the per-gate keys
-          exchange, overlap, t_mean, span, score_grad_rms, score_grad_rms_raw
+          exchange, overlap, t_mean, span, score_grad_rms, score_grad_rms_raw, and
+          (rao_blackwell) rb_grad, rb_selfgain
                                                                     (every --every steps)
   clip    [window end, share of logged steps with grad norm > clip, median norm]
           over consecutive --clip-window step windows (every logged step)
@@ -31,7 +32,10 @@ import statistics
 BLOCK_KEYS = {"exchange": "policy_exchange_frac", "overlap": "policy_overlap",
               "t_mean": "policy_t_mean", "span": "policy_pool_span",
               "score_grad_rms": "policy_score_grad_rms",
-              "score_grad_rms_raw": "policy_score_grad_rms_raw"}
+              "score_grad_rms_raw": "policy_score_grad_rms_raw",
+              # rao_blackwell backward (gate._grad_sink): realized selection gradient
+              "rb_grad": "policy_rb_score_grad_rms",
+              "rb_selfgain": "policy_rb_selfgain_rowmax"}
 
 
 def blocks(row: dict, key: str) -> list:

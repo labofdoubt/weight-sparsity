@@ -128,10 +128,18 @@ def main() -> None:
         gs = torch.autograd.grad(scalar, plist, retain_graph=retain, allow_unused=True)
         return [torch.zeros_like(p) if g is None else g.detach().float() for g, p in zip(gs, plist)]
 
-    def set_estimator(est, scope="full"):
+    def set_estimator(est, scope="full", width=None, samples=1):
         for gte in gates:
             gte.policy_estimator = est
             gte.policy_rb_scope = scope
+            gte.policy_width_gradient = width or bn.policy_width_gradient
+            gte.policy_rb_samples = samples
+
+    # Rao-Blackwell variants: name -> (scope, width gradient, pool draws)
+    variants = {"rb": ("full", None, 1), "rbfo": ("first_order", None, 1),
+                "rbfo_through": ("first_order", "through", 1),
+                "rbfo_through_r8": ("first_order", "through", 8),
+                "rbfo_r8": ("first_order", None, 8)}
 
     # clean value gradient (sampling off)
     set_estimator("likelihood_ratio")
@@ -188,10 +196,12 @@ def main() -> None:
             sup = (w * (out.seq_ce.detach() - B) * out.policy_log_prob.float()).sum()
             accumulate("lr", grads_of(sup, retain=False))
         del out
-        for e, scope in (("rb", "full"), ("rbfo", "first_order")):
+        for e, (scope, width, samples) in variants.items():
             if e not in ests:
                 continue
-            set_estimator("rao_blackwell", scope)
+            if width == "through" and bn.policy_temperature_mode == "absolute":
+                continue
+            set_estimator("rao_blackwell", scope, width, samples)
             settings = PolicyForwardSettings(sample=True, generator=make_generator(device, seed))
             with autocast_context(device, dtype):
                 out = model(x, y, return_loss_details=True, policy=settings)
@@ -208,7 +218,8 @@ def main() -> None:
         del g_val
         if (m + 1) % 16 == 0:
             print(f"[probe] {m + 1}/{args.draws} draws")
-    set_estimator(bn.policy_estimator, bn.policy_rb_scope)
+    set_estimator(bn.policy_estimator, bn.policy_rb_scope, bn.policy_width_gradient,
+                  bn.policy_rb_samples)
 
     # ---- statistics ---------------------------------------------------------- #
     M = args.draws
@@ -258,7 +269,8 @@ def main() -> None:
         n1 = math.sqrt(sum(float(s.pow(2).sum()) for s in acc[e1]["sum"]))
         n2 = math.sqrt(sum(float(s.pow(2).sum()) for s in acc[e2]["sum"]))
         return num / max(1e-30, n1 * n2)
-    for e1, e2 in (("lr", "rb"), ("lr", "rbfo"), ("rb", "rbfo")):
+    for e1, e2 in (("lr", "rb"), ("lr", "rbfo"), ("rb", "rbfo"), ("rbfo", "rbfo_r8"),
+                   ("rbfo_through", "rbfo_through_r8"), ("rbfo", "rbfo_through")):
         if e1 in ests and e2 in ests:
             report[f"cos_mean_{e1}_{e2}"] = cos_means(e1, e2)
 

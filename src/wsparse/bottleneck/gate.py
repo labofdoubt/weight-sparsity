@@ -78,6 +78,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         policy_estimator: str = "likelihood_ratio",
         policy_rb_scope: str = "full",
         policy_width_gradient: str = "frozen",
+        policy_rb_samples: int = 1,
     ):
         super().__init__()
         validate_gate_shapes(n_features, k, j, surrogate_mode)
@@ -264,6 +265,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self.policy_estimator = policy_estimator
         self.policy_rb_scope = policy_rb_scope
         self.policy_width_gradient = policy_width_gradient
+        if int(policy_rb_samples) < 1:
+            raise ValueError("policy_rb_samples must be >= 1")
+        self.policy_rb_samples = int(policy_rb_samples)
         # j = 0 or k = n_features: no exchange is possible, so the gate is the
         # ordinary hard Top-K with no noise and no density term
         self.policy_fixed = self.j == 0 or self.trivial
@@ -519,8 +523,16 @@ class AdaptiveLapSumTopKGate(nn.Module):
             # the selection gradient comes from the Rao-Blackwellized backward of
             # this Function; the density record below is kept (diagnostics, the
             # trainer's contract) with zero weight
+            rb_seed = 0
+            if self.policy_rb_samples > 1:
+                # the backward's further draws: a seed taken from the training
+                # generator, so they are fresh every forward and reproducible
+                rb_seed = int(torch.randint(0, 2 ** 62, (1,), generator=generator,
+                                            device=generator.device if generator is not None
+                                            else u.device).item())
             y_c = RaoBlackwellSelect.apply(u, value_c, mask_c, r, t_row, gamma,
-                                           self.policy_rb_scope == "first_order", self)
+                                           self.policy_rb_scope == "first_order", self,
+                                           self.policy_rb_samples, rb_seed)
         else:
             y_c = value_c * mask_c.to(value_c.dtype)
         y = torch.zeros_like(value).scatter(-1, cand_idx, y_c)

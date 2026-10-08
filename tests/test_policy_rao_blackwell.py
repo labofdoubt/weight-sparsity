@@ -74,6 +74,19 @@ def test_rao_blackwell_matches_likelihood_ratio_in_expectation_for_a_linear_loss
         (se_lr[pool] * math.sqrt(400_000)).median())
 
 
+def test_averaging_over_further_pool_draws_keeps_the_mean_and_lowers_the_variance():
+    torch.manual_seed(0)
+    z0 = torch.randn(16, dtype=torch.float64)
+    w = torch.randn(16, dtype=torch.float64)
+    g1, se1 = mc_gradient("rao_blackwell", z0, w, 40_000, 1)
+    g8, se8 = mc_gradient("rao_blackwell", z0, w, 40_000, 3, policy_rb_samples=8)
+    gl, sel = mc_gradient("likelihood_ratio", z0, w, 400_000, 2)
+    pool = se1 > 0
+    z = ((g8 - gl)[pool] / torch.sqrt(se8 ** 2 + sel ** 2)[pool]).abs()
+    assert float(z.max()) < 4.5, z
+    assert float((se8[pool] / se1[pool]).median()) < 0.8
+
+
 def test_backward_is_the_crossing_density_times_the_single_swap_gain():
     torch.manual_seed(3)
     gate = gate_of(policy_center_scores=False)

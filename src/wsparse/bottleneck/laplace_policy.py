@@ -197,15 +197,38 @@ class RaoBlackwellSelect(torch.autograd.Function):
     ``wsparse.bottleneck.rblapsum``), so no product of selection terms forms
     along a carry; otherwise the total incoming ``g`` is used.  ``gate``
     receives backward-pass diagnostics in its ``_grad_sink``.
+
+    ``samples = R > 1`` (``policy_rb_samples``) also averages over the OTHER
+    members' noise: R - 1 further pool-noise draws (a generator seeded from
+    ``seed``) give further thresholds and partners for every member, and the
+    density-weighted swap gains are averaged with the forward's own draw at the
+    same linearization point ``g``.  For a loss linear in the output this is the
+    same expectation with less variance; it re-ranks the pool only, no network.
     """
 
     @staticmethod
-    def forward(ctx, u, value_c, mask_c, r, t_row, gamma, first_order, gate):  # type: ignore[override]
+    def forward(ctx, u, value_c, mask_c, r, t_row, gamma, first_order, gate,  # type: ignore[override]
+                samples=1, seed=0):
         ctx.save_for_backward(u.detach(), value_c.detach(), mask_c, r, t_row, gamma)
         ctx.first_order = bool(first_order)
         ctx.g_hard = None
         ctx.gate = gate
+        ctx.samples = int(samples)
+        ctx.seed = int(seed)
         return value_c * mask_c.to(value_c.dtype)
+
+    @staticmethod
+    def _selection(r, u, t, gain, k):
+        """Density-weighted single-swap gain of every member for one noise draw."""
+        sel_idx = torch.topk(r, k, dim=-1).indices
+        sel = torch.zeros_like(r, dtype=torch.bool).scatter(-1, sel_idx, True)
+        big = torch.finfo(r.dtype).max
+        r_k, j_k = torch.where(sel, r, torch.full_like(r, big)).min(-1, keepdim=True)
+        r_k1, j_k1 = torch.where(sel, torch.full_like(r, -big), r).max(-1, keepdim=True)
+        theta = torch.where(sel, r_k1, r_k)
+        partner = torch.where(sel, j_k1.expand_as(r), j_k.expand_as(r))
+        dens = torch.exp(-(theta - u).abs() / t) / (2.0 * t)
+        return dens * (gain - gain.gather(-1, partner)), dens
 
     @staticmethod
     def backward(ctx, g):  # type: ignore[override]
@@ -216,19 +239,21 @@ class RaoBlackwellSelect(torch.autograd.Function):
             from .rblapsum import FIRST_ORDER  # rblapsum is imported by gate.py too
             if FIRST_ORDER.phase == "hard":
                 ctx.g_hard = g.detach()
-                return None, grad_v, None, None, None, None, None, None
+                return None, grad_v, None, None, None, None, None, None, None, None
             if ctx.g_hard is not None:
                 g_sel = ctx.g_hard
-        sel = m > 0
-        big = torch.finfo(r.dtype).max
-        r_k, j_k = torch.where(sel, r, torch.full_like(r, big)).min(-1, keepdim=True)
-        r_k1, j_k1 = torch.where(sel, torch.full_like(r, -big), r).max(-1, keepdim=True)
-        theta = torch.where(sel, r_k1, r_k)
-        partner = torch.where(sel, j_k1.expand_as(r), j_k.expand_as(r))
+        k = int((m > 0).sum(-1).flatten()[0]) if m.numel() else 0
         gain = at_least_float32(g_sel) * at_least_float32(v)
-        delta = gain - gain.gather(-1, partner)
-        dens = torch.exp(-(theta - u).abs() / t) / (2.0 * t)
-        grad_u = gamma * dens * delta
+        acc, dens = RaoBlackwellSelect._selection(r, u, t, gain, k)
+        if ctx.samples > 1:
+            gen = torch.Generator(device=u.device)
+            gen.manual_seed(ctx.seed)
+            for _ in range(ctx.samples - 1):
+                eps = sample_laplace(u.shape, t, generator=gen, dtype=u.dtype, device=u.device)
+                a_m, _ = RaoBlackwellSelect._selection(u + eps, u, t, gain, k)
+                acc = acc + a_m
+            acc = acc / ctx.samples
+        grad_u = gamma * acc
         gate = ctx.gate
         if gate is not None and getattr(gate, "log_diagnostics", False):
             with torch.no_grad():
@@ -240,7 +265,7 @@ class RaoBlackwellSelect(torch.autograd.Function):
                     "policy_rb_selfgain_rowmax": (gamma * selfgain).amax(-1).mean(),
                     "policy_rb_value_grad_rms": grad_v.float().pow(2).mean().sqrt(),
                 }
-        return grad_u.to(u.dtype), grad_v, None, None, None, None, None, None
+        return grad_u.to(u.dtype), grad_v, None, None, None, None, None, None, None, None
 
 
 def at_least_float32(x: torch.Tensor) -> torch.Tensor:

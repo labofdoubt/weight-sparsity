@@ -206,6 +206,7 @@ class SparseTopKBottleneck(nn.Module):
             policy_estimator=getattr(cfg, "policy_estimator", "likelihood_ratio"),
             policy_rb_scope=getattr(cfg, "policy_rb_scope", "full"),
             policy_width_gradient=getattr(cfg, "policy_width_gradient", "frozen"),
+            policy_rb_samples=getattr(cfg, "policy_rb_samples", 1),
         )
         self.init_mode = getattr(cfg, "init_mode", "default")
         if self.init_mode in _RENAMED_INIT_MODES:
