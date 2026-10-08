@@ -33,6 +33,7 @@ def read_run(run_dir: str):
     b = [(r["step"], r["bottleneck/rb_boundary"]) for r in rows if "bottleneck/rb_boundary" in r]
     return dict(name=os.path.basename(run_dir.rstrip("/")), k=ab["k"], j=ab["j"],
                 proj=bool(ab.get("rblapsum_radial_project", False)),
+                clip=float(cfg["train"].get("grad_clip", 0.0)),
                 tau=ab["temperature"], s=ab.get("rblapsum_support_strength"),
                 train=np.array(tr), val=np.array(va), b=np.array(b))
 
@@ -44,10 +45,14 @@ def smooth(y, w):
     return np.concatenate([np.full(w - 1, np.nan), c])
 
 
-def panel(ax, runs, window):
-    for r in runs:
-        tag = "proj" if r["proj"] else "base"
-        lab = ("with radial projection" if r["proj"] else "without (reference)")
+def panel(ax, runs, window, compare="proj"):
+    for n, r in enumerate(runs):
+        if compare == "clip":
+            tag = "base" if 0 < r["clip"] <= 10 else "proj"
+            lab = (f"grad clip {r['clip']:g}" if 0 < r["clip"] <= 10 else "no gradient clipping")
+        else:
+            tag = "proj" if r["proj"] else "base"
+            lab = ("with radial projection" if r["proj"] else "without (reference)")
         if len(r["train"]):
             ax.plot(r["train"][:, 0], smooth(r["train"][:, 1], window), color=COLORS[tag],
                     lw=0.8, alpha=0.35)
@@ -56,7 +61,8 @@ def panel(ax, runs, window):
                     label=f"{lab}: val CE {r['val'][-1, 1]:.4f} at step {int(r['val'][-1, 0])}")
     r0 = runs[0]
     ax.set_title(f"K = {r0['k']}, J = {r0['j']}  ·  first-order, span rule tau = {r0['tau']}, "
-                 f"s = {r0['s']}", fontsize=10)
+                 f"s = {r0['s']}" + ("  ·  radial projection on" if compare == "clip" else ""),
+                 fontsize=10)
     ax.set_xlabel("step"); ax.grid(alpha=0.3); ax.legend(fontsize=8)
 
 
@@ -66,13 +72,16 @@ def main() -> None:
     ap.add_argument("--k256", nargs=2, required=True, metavar=("BASE", "PROJ"))
     ap.add_argument("--window", type=int, default=10, help="training-CE smoothing, in log rows")
     ap.add_argument("--ymax", type=float, default=None)
+    ap.add_argument("--compare", default="proj", choices=("proj", "clip"),
+                    help="what the two runs of a panel differ in: the projection, or the clip")
+    ap.add_argument("--name", default="radial_project_ce.png")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.2))
     for ax, dirs in zip(axes, (args.k32, args.k256)):
         runs = [read_run(d) for d in dirs]
-        panel(ax, runs, args.window)
+        panel(ax, runs, args.window, args.compare)
         if args.ymax:
             lo = min(r["val"][:, 1].min() for r in runs if len(r["val"]))
             ax.set_ylim(lo - 0.05, args.ymax)
@@ -83,7 +92,7 @@ def main() -> None:
                   + "  |  b " + ", ".join(f"{s}: {v:.2f}" for s, v in bs.items()))
     axes[0].set_ylabel("validation CE (markers), training CE smoothed (faint)")
     fig.tight_layout()
-    out = os.path.join(args.out, "radial_project_ce.png")
+    out = os.path.join(args.out, args.name)
     fig.savefig(out, dpi=140, bbox_inches="tight")
     print(out)
 
