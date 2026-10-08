@@ -423,3 +423,47 @@ def test_support_scale_scales_only_the_support_term():
     # and scale 0 leaves a nonzero task path that differs from the full one
     assert g0.abs().sum() > 0
     assert not torch.allclose(g0, g1)
+
+
+# ---- rblapsum_radial_project --------------------------------------------- #
+
+def test_radial_project_removes_only_the_radial_component():
+    """With the projection on, the support term has no component along the
+    centred pool scores; what it removes is exactly that component, the hard
+    path and everything off the pool are untouched."""
+    torch.manual_seed(0)
+    k, j, n = 3, 4, 16
+    a = torch.randn(4, n) * 2
+    up = torch.randn(4, n)
+    g_off = make_gate(mode="through_rank_kappa", k=k, j=j, n=n)
+    g_on = AdaptiveLapSumTopKGate(
+        n_features=n, k=k, j=j, selection_mode="abs_topk", surrogate_mode="rblapsum",
+        rblapsum_boundary_grad_mode="through_rank_kappa", rblapsum_boundary_floor=0.0,
+        temperature=1.0, rblapsum_radial_project=True, log_diagnostics=True)
+    s_off = z_support_grad(g_off, a, up)          # value space, support term only
+    s_on = z_support_grad(g_on, a, up)
+    cs, ci = torch.topk(a.abs(), k + j, dim=-1, largest=True, sorted=True)
+    sbar = cs - cs.mean(-1, keepdim=True)
+    sgn = torch.sign(a)
+    off_pool = torch.gather(sgn * s_off, -1, ci)  # score space, on the pool
+    on_pool = torch.gather(sgn * s_on, -1, ci)
+    assert off_pool.norm() > 0
+    # no radial component left
+    assert (on_pool * sbar).sum(-1).abs().max() < 1e-5 * off_pool.norm()
+    # and the removed part is the radial projection of the original term
+    coef = (sbar * off_pool).sum(-1, keepdim=True) / (sbar * sbar).sum(-1, keepdim=True)
+    assert torch.allclose(off_pool - on_pool, coef * sbar, atol=1e-6)
+    # nothing outside the pool in either case
+    outside = torch.ones_like(a).scatter(-1, ci, 0.0)
+    assert (s_on * outside).abs().max() == 0 and (s_off * outside).abs().max() == 0
+    # the forward is unchanged
+    assert torch.equal(g_on(a), g_off(a))
+
+
+def test_radial_project_config_validation():
+    with pytest.raises(ValueError):
+        bn_cfg(surrogate_mode="hard", rblapsum_radial_project=True)
+    with pytest.raises(ValueError):
+        bn_cfg(rblapsum_radial_project=True, rblapsum_surrogate_scope="update")
+    cfg = bn_cfg(rblapsum_radial_project=True, rblapsum_surrogate_scope="first_order")
+    assert cfg.rblapsum_radial_project

@@ -330,9 +330,13 @@ class _RBLapSumGate(torch.autograd.Function):
                 cap_active, sink, supp_scale=1.0,
                 perm_rho=0.0, members=0,
                 relative_t=False, cand_idx=None,
-                n_features=0, first_order=False):  # type: ignore[override]
+                n_features=0, first_order=False,
+                radial_project=False):  # type: ignore[override]
         ctx.save_for_backward(value_c, active_c, score_c, sign_c, b, cap_active,
                               cand_idx)
+        # rblapsum_radial_project: remove the support term's component along
+        # the centred pool scores in the backward
+        ctx.radial_project = bool(radial_project)
         ctx.n_features = int(n_features)
         # t and supp_scale may be per-row tensors (rblapsum_kernel_width,
         # rblapsum_support_strength); they are detached inputs either way
@@ -365,7 +369,7 @@ class _RBLapSumGate(torch.autograd.Function):
             if FIRST_ORDER.phase == "hard":
                 # the hard pass: keep the hard-path gradient, pass back m * g
                 ctx.hard_upstream = grad_y.detach()
-                return (grad_value,) + (None,) * 16
+                return (grad_value,) + (None,) * 17
             if ctx.hard_upstream is not None:
                 # the total pass: one support term per gate, from the hard path
                 # (a jump at this gate times exact Jacobians elsewhere), never
@@ -375,9 +379,16 @@ class _RBLapSumGate(torch.autograd.Function):
         g_s = support_term(g_up, value_c, active_c, score_c, sign_c, b, t, mode_id, k,
                            cap_active, ctx.supp_scale, ctx.perm_rho, ctx.members,
                            cand_idx, ctx.n_features, ctx.sink)
+        if ctx.radial_project:
+            # g_s <- g_s - (<sbar, g_s> / ||sbar||^2) sbar, sbar the centred pool
+            # scores of the row: the surrogate keeps its action on the ordering
+            # and loses its push on the pool's spread
+            sbar = (score_c - score_c.mean(dim=-1, keepdim=True)).to(g_s.dtype)
+            coef = (sbar * g_s).sum(dim=-1, keepdim=True) / (sbar * sbar).sum(
+                dim=-1, keepdim=True).clamp_min(torch.finfo(g_s.dtype).tiny)
+            g_s = g_s - coef * sbar
         grad_value = grad_value + sign_c * g_s
-        return (grad_value, None, None, None, None, None, None, None, None, None,
-                None, None, None, None, None, None, None)
+        return (grad_value,) + (None,) * 17
 
 
 class _RBLapSumSFGate(torch.autograd.Function):
@@ -513,7 +524,7 @@ def rblapsum_sf_gate(value_c, p_c, active_c, score_c, sign_c, b, t, mode, k,
 def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
                   cap_active, sink=None, supp_scale=1.0, perm_rho=0.0,
                   members="pool", relative_t=False, cand_idx=None, n_features=0,
-                  first_order=False):
+                  first_order=False, radial_project=False):
     """Apply the rank-boundary support gate; see :class:`_RBLapSumGate`.
 
     ``value_c`` (signed z at the sorted Top(K+J) candidates) carries gradient;
@@ -535,7 +546,7 @@ def rblapsum_gate(value_c, active_c, score_c, sign_c, b, t, mode, k,
         supp_scale.detach() if isinstance(supp_scale, torch.Tensor) else float(supp_scale),
         float(perm_rho), _MEMBERS_ID[members], bool(relative_t),
         None if cand_idx is None else cand_idx.detach(), int(n_features),
-        bool(first_order),
+        bool(first_order), bool(radial_project),
     )
 
 

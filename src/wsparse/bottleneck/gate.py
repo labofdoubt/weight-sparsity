@@ -59,6 +59,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         rblapsum_relative_temperature: bool = False,
         rblapsum_kernel_width: str = "fixed",
         rblapsum_support_strength=None,
+        rblapsum_radial_project: bool = False,
         rblapsum_center_tokens: bool = False,
         rblapsum_carry_decay: float = 1.0,
         barrier_solver_tol: float = 1e-6,
@@ -173,6 +174,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 and surrogate_mode != "rblapsum":
             raise ValueError("rblapsum_kernel_width / rblapsum_support_strength apply to "
                              "surrogate_mode='rblapsum' only")
+        # see ActivationBottleneckConfig.rblapsum_radial_project
+        self.rblapsum_radial_project = bool(rblapsum_radial_project)
+        if self.rblapsum_radial_project and surrogate_mode != "rblapsum":
+            raise ValueError("rblapsum_radial_project applies to surrogate_mode='rblapsum' only")
         # see ActivationBottleneckConfig.rblapsum_center_tokens
         if rblapsum_center_tokens and surrogate_mode != "rblapsum":
             raise ValueError(
@@ -754,7 +759,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
                                           and self.training else None),
                                 n_features=self.n_features,
                                 first_order=self.rblapsum_surrogate_scope.startswith(
-                                    "first_order"))
+                                    "first_order"),
+                                radial_project=self.rblapsum_radial_project)
         y = torch.zeros_like(value).scatter(-1, cand_idx, y_c.to(value.dtype))
         if alpha != 1.0:
             y = y / alpha

@@ -683,6 +683,14 @@ class ActivationBottleneckConfig:
     # T it is not (b falls ~3x over 20k steps).  rblapsum (pool and inactive
     # scopes) only.
     rblapsum_support_strength: Optional[float] = None
+    # Project the radial component out of the support term (surrogate_mode=
+    # "rblapsum", pool / inactive / first_order scopes): per token, with
+    # sbar = s - mean(s) over the Top(K+J) pool scores, the backward replaces
+    # the support term g_s by g_s - (<sbar, g_s> / ||sbar||^2) sbar, so the
+    # surrogate no longer pushes the pool's score spread up or down and acts
+    # only on the ordering.  Experiment knob for the score-scale drift of the
+    # relative-width runs (2026-10-08); the hard path is untouched.
+    rblapsum_radial_project: bool = False
 
     # Token-centered support term (surrogate_mode="rblapsum" only): per gate
     # and feature, the mean over the micro-batch's tokens of the support term
@@ -991,6 +999,13 @@ class ActivationBottleneckConfig:
             raise ValueError(
                 "rblapsum_kernel_width applies to the hard-forward "
                 f"surrogate_mode='rblapsum' only, got {self.surrogate_mode!r}")
+        if self.rblapsum_radial_project:
+            if self.surrogate_mode != "rblapsum":
+                raise ValueError("rblapsum_radial_project applies to surrogate_mode='rblapsum' only")
+            if self.rblapsum_surrogate_scope not in ("pool", "inactive",
+                                                     "first_order", "first_order_inactive"):
+                raise ValueError("rblapsum_radial_project applies to the pool, inactive and "
+                                 f"first_order scopes only, got {self.rblapsum_surrogate_scope!r}")
         if self.rblapsum_support_strength is not None:
             if self.surrogate_mode != "rblapsum":
                 raise ValueError("rblapsum_support_strength applies to surrogate_mode='rblapsum' only")
