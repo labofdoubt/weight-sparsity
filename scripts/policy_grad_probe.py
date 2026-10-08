@@ -137,6 +137,7 @@ def main() -> None:
 
     # Rao-Blackwell variants: name -> (scope, width gradient, pool draws)
     variants = {"rb": ("full", None, 1), "rbfo": ("first_order", None, 1),
+                "rbfo_project": ("first_order", "project", 1),
                 "rbfo_through": ("first_order", "through", 1),
                 "rbfo_through_r8": ("first_order", "through", 8),
                 "rbfo_r8": ("first_order", None, 8)}
@@ -199,7 +200,7 @@ def main() -> None:
         for e, (scope, width, samples) in variants.items():
             if e not in ests:
                 continue
-            if width == "through" and bn.policy_temperature_mode == "absolute":
+            if width in ("through", "project") and bn.policy_temperature_mode == "absolute":
                 continue
             set_estimator("rao_blackwell", scope, width, samples)
             settings = PolicyForwardSettings(sample=True, generator=make_generator(device, seed))
@@ -270,7 +271,8 @@ def main() -> None:
         n2 = math.sqrt(sum(float(s.pow(2).sum()) for s in acc[e2]["sum"]))
         return num / max(1e-30, n1 * n2)
     for e1, e2 in (("lr", "rb"), ("lr", "rbfo"), ("rb", "rbfo"), ("rbfo", "rbfo_r8"),
-                   ("rbfo_through", "rbfo_through_r8"), ("rbfo", "rbfo_through")):
+                   ("rbfo_through", "rbfo_through_r8"), ("rbfo", "rbfo_through"),
+                   ("rbfo_project", "rbfo_through"), ("rbfo_project", "rbfo")):
         if e1 in ests and e2 in ests:
             report[f"cos_mean_{e1}_{e2}"] = cos_means(e1, e2)
 
