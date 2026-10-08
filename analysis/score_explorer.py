@@ -1421,9 +1421,10 @@ if bool(meta.get("code_residual", False)):
                   help="per carried coordinate, the block's contribution relative to "
                        "what it received. Below 1 the carry dominates the score at "
                        "that index; above 1 the block rewrites it.")
-        m4.metric("carried kept in TopK", f"{n_kept} / {n_c}",
-                  help="how many of the carried coordinates survive this gate's "
-                       "TopK. The others were evicted here (their circle is faint).")
+        m4.metric("carried: kept / evicted", f"{n_kept} / {n_c - n_kept}",
+                  help=f"of the {n_c} carried coordinates, how many survive this "
+                       "gate's TopK (opaque circles) and how many it evicts "
+                       "(faint circles).")
         m5.metric("update mass on the support", f"{u_on / u_all:.3f}" if u_all > 0 else "n/a",
                   help="||u_S|| / ||u|| with S the carried support: the share of the "
                        "update's Euclidean norm that lands on coordinates already in "
@@ -1462,14 +1463,16 @@ if bool(meta.get("code_residual", False)):
                             opacity=np.where(csup[uidx], 0.95, 0.45),
                             line=dict(width=0.5, color=UPDATE_COLOR)),
                 text=[hover_cr(i) for i in uidx], hoverinfo="text"))
-        cidx = np.where(csup & (c_abs >= hl_min))[0]
-        if cidx.size:
+        for sel_c, name_c, op_c, w_c in (
+                (csup & kept, f"carried code c_{li}, kept in TopK: {n_kept}", 1.0, 2.0),
+                (csup & ~kept, f"carried code c_{li}, evicted here: {n_c - n_kept}", 0.35, 1.0)):
+            cidx = np.where(sel_c & (c_abs >= hl_min))[0]
+            if not cidx.size:
+                continue
             fig2b.add_trace(go.Scattergl(
-                x=c_abs[cidx], y=jt[cidx], mode="markers",
-                name=f"carried code  c_{li}  (from gate {li - 1})",
-                marker=dict(size=10, color=CARRY_COLOR,
-                            opacity=np.where(kept[cidx], 1.0, 0.35),
-                            line=dict(width=np.where(kept[cidx], 2.0, 1.0), color=INK)),
+                x=c_abs[cidx], y=jt[cidx], mode="markers", name=name_c,
+                marker=dict(size=10, color=CARRY_COLOR, opacity=op_c,
+                            line=dict(width=w_c, color=INK)),
                 text=[hover_cr(i) for i in cidx], hoverinfo="text"))
         # the gate's edges on the score c + u, coloured like the bands they
         # close: blue for the TopK edge (K | K+1), orange for the pool edge
@@ -1487,9 +1490,11 @@ if bool(meta.get("code_residual", False)):
                                  font=dict(size=11, color=col))
         fig2b.update_layout(
             hovermode="closest", hoverdistance=12,
-            **banner("Carried code vs. this block's update on the half-line "
-                     "(same jitter as above, so each grey segment is horizontal: "
-                     "one index, carried value to update)", 250, legend=True),
+            **banner(f"Carried code (from gate {li - 1}) vs. this block's update on "
+                     f"the half-line  \u00b7  {n_kept} of {n_c} carried kept, "
+                     f"{n_c - n_kept} evicted  \u00b7  same jitter as above, so each "
+                     "grey segment is horizontal: one index, carried value to update",
+                     250, legend=True),
         )
         fig2b.update_xaxes(type="log" if log_y else "linear", title=score_label,
                            range=hl_r, gridcolor=GRID, zeroline=False, linecolor=GRID,
@@ -1523,7 +1528,14 @@ if bool(meta.get("code_residual", False)):
                 else:
                     break
         reach = surv == len(later)
-        ranks = np.arange(1, k + 1)
+        sort_sv = st.checkbox(
+            "Sort by blocks survived", value=False, key="sv_sort",
+            help="Off: bars in this gate's |score| order (rank 1 = largest). On: "
+                 "longest-surviving first, ties kept in rank order.")
+        # pos[n] = the bar position of the feature at rank n+1
+        perm = (np.lexsort((np.arange(k), -surv)) if sort_sv else np.arange(k))
+        pos = np.empty(k, dtype=int); pos[perm] = np.arange(1, k + 1)
+        ranks = pos
         hover_sv = [
             (f"feature {i}<br>rank {n_i + 1} at block {li}<br>{score_label} {val[i]:.4g}"
              f"<br>blocks survived {surv[n_i]}"
@@ -1543,9 +1555,13 @@ if bool(meta.get("code_residual", False)):
                             **banner(f"Blocks each TopK feature of gate {li} survives "
                                      f"before eviction (max {len(later)} = gates "
                                      f"{li + 1}..{L - 1})", 300, legend=True))
-        tick = dict(tickvals=ranks, ticktext=[str(i) for i in top_now]) if k <= 64 else {}
-        fig2c.update_xaxes(title=(f"TopK of gate {li}, ranked by |score| "
-                                  + ("(label = feature index)" if k <= 64 else "(hover for the feature index)")),
+        tick = (dict(tickvals=np.arange(1, k + 1), ticktext=[str(top_now[n]) for n in perm])
+                if k <= 64 else {})
+        fig2c.update_xaxes(title=(f"TopK of gate {li}, "
+                                  + ("sorted by blocks survived, then by |score|" if sort_sv
+                                     else "ranked by |score| (1 = largest)")
+                                  + ("  (label = feature index)" if k <= 64
+                                     else "  (hover for the feature index)")),
                            gridcolor=GRID, zeroline=False, linecolor=GRID, **tick)
         fig2c.update_yaxes(title="later gates that keep it", gridcolor=GRID,
                            zeroline=False, linecolor=GRID, dtick=1)
