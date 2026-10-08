@@ -47,6 +47,12 @@ One fixed batch (`deterministic_offset`) is reused for every checkpoint and
 every run, so a difference between two cells is a difference in the model and
 never in the data.
 
+Under `code_residual` it also writes `<run>.carry.npy` (same shape): the
+K-sparse code gate `l` received from gate `l-1`, zero at `l = 0`. The score at
+gate `l >= 1` is `carry + alpha * E_l Delta_l`, so `score - carry` is the
+block's own encoded contribution. The viewer's two code-residual panels (below)
+need it; datasets extracted before 2026-10-08 lack it and show a note instead.
+
 ## 2. Early training, without keeping checkpoints
 
 `checkpoint_every_steps` is 2000, so steps 0..1000 have no saved weights, and
@@ -158,6 +164,15 @@ On the vast.ai box it runs as a supervisor service on `127.0.0.1:8501`
 ```bash
 ssh -p <port> root@<host> -L 8501:localhost:8501
 ```
+
+For `code_residual` datasets (hard gates included) the score page adds two
+panels after the half-line: the carried code against the block's update on the
+same axis, each carried index joined to its update by a grey segment, with the
+carried/update medians, their ratio, and how many carried coordinates this
+gate's TopK keeps; and, for the selected gate's TopK, how many consecutive later
+gates keep each feature before evicting it (features still active at the last
+gate are marked as never evicted). Neither panel is drawn for stream-carried
+runs, where every gate re-encodes the decoded stream.
 
 `j` is forced to 0 for `surrogate_mode=hard` runs: their config still carries a
 `j`, but it is inert (bit-identical for j = 1..1504), so those ranks get exactly

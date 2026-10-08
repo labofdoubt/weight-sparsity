@@ -67,6 +67,10 @@ SWAPS_DIR = os.environ.get("SWAPS_DIR", "/workspace/analysis/swaps")
 #   ckpt  -- one array per run, the 2k..20k checkpoint ladder
 #   probe -- three arrays per run (score + the two gradients), steps 0..1000
 GRAD_ARRAYS = ("g_ztilde", "g_z")
+# code_residual ladders also carry "<run>.carry.npy": the K-sparse code gate l
+# received from gate l-1 (zero at l = 0), so score - carry is the block's own
+# encoded contribution.  A sidecar like the gradients, never a dataset.
+SIDECAR_ARRAYS = GRAD_ARRAYS + ("carry",)
 # "surr" is not stored: it is dL/dz - M * dL/d~z computed per cell, the support
 # term alone (the gate's backward is M * g + S^T(.), so subtracting the hard
 # path leaves S^T(.): zero outside Top(K+J), the eviction term on TopK, the
@@ -139,7 +143,7 @@ def load_run(key: str):
     if kind == "probe":
         arrays = {"score": np.load(os.path.join(PROBE_DIR, f"{name}.score.npy"),
                                    mmap_mode="r")}
-        for g in GRAD_ARRAYS:
+        for g in SIDECAR_ARRAYS:
             fp = os.path.join(PROBE_DIR, f"{name}.{g}.npy")
             if os.path.exists(fp):
                 arrays[g] = np.load(fp, mmap_mode="r")
@@ -149,7 +153,7 @@ def load_run(key: str):
                                    mmap_mode="r")}
         # since 2026-10-05 extract_bottleneck_scores.py also records the two
         # gradients at every checkpoint, so the ladder gets the probe's panel
-        for g in GRAD_ARRAYS:
+        for g in SIDECAR_ARRAYS:
             fp = os.path.join(SCORES_DIR, f"{name}.{g}.npy")
             if os.path.exists(fp):
                 arrays[g] = np.load(fp, mmap_mode="r")
@@ -181,7 +185,7 @@ def available_runs(kind: str):
         # front); the gradient arrays `<run>.g_*.npy` are not datasets
         names = [os.path.splitext(os.path.basename(p))[0]
                  for p in glob.glob(os.path.join(SCORES_DIR, "*.npy"))
-                 if not p.endswith(tuple(f".{g}.npy" for g in GRAD_ARRAYS))
+                 if not p.endswith(tuple(f".{g}.npy" for g in SIDECAR_ARRAYS))
                  and os.path.exists(os.path.splitext(p)[0] + ".json")]
         meta_dir = SCORES_DIR
 
@@ -1371,6 +1375,175 @@ fig2.update_xaxes(type="log" if log_y else "linear", title=score_label,
                   tickformat=None if hl_wide else ".3g")
 fig2.update_yaxes(visible=False, range=[-2.4, 2.4])
 st.plotly_chart(fig2, width="stretch", theme=None)
+
+# --------------------------------------------------------------------------- #
+# panels 2b / 2c -- the code residual   (code_residual datasets only, hard too)
+# --------------------------------------------------------------------------- #
+# Under code_residual gate l >= 1 ranks  c_l + alpha E_l Delta_l : the K-sparse
+# code carried from gate l-1 plus the block's own encoded contribution.  2b puts
+# the two on the half-line's axis, with a grey segment joining the carried value
+# and the update at each carried index; 2c asks how many later gates keep each
+# of this gate's TopK before evicting it.  Neither question exists for a
+# stream-carried stack, where every gate re-encodes the decoded stream.
+CARRY_COLOR, UPDATE_COLOR = "#4a3aa7", "#eda100"
+if bool(meta.get("code_residual", False)):
+    st.markdown("#### The code residual at this cell")
+    if "carry" not in arrays:
+        st.caption("The carried code was not recorded for this dataset (extracted "
+                   "before 2026-10-08); re-run extract_bottleneck_scores.py to add "
+                   "the carried-code panel.")
+    elif li == 0:
+        st.caption("Block 0 carries nothing: its gate encodes the whole block "
+                   "output E_0 (x_0 + \u0394_0), so the score here *is* the "
+                   "update. Pick a block \u2265 1 for the carried-code panel.")
+    else:
+        cvec = np.asarray(arrays["carry"][ci, li, bi, ti], dtype=np.float64)
+        uvec = signed - cvec
+        c_abs, u_abs = np.abs(cvec) / denom, np.abs(uvec) / denom
+        csup = cvec != 0                       # the carried support (k indices)
+        kept = csup & (bands == "topk")        # ...still active after this gate
+        n_c, n_kept = int(csup.sum()), int(kept.sum())
+        same_sign = csup & (np.sign(uvec) == np.sign(cvec))
+        u_on = np.linalg.norm(uvec[csup]); u_all = np.linalg.norm(uvec)
+        med_c = float(np.median(c_abs[csup])) if n_c else float("nan")
+        med_u_on = float(np.median(u_abs[csup])) if n_c else float("nan")
+        med_u_off = float(np.median(u_abs[~csup]))
+        med_ratio = float(np.median(u_abs[csup] / c_abs[csup])) if n_c else float("nan")
+
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("carried |code|, median", f"{med_c:.4g}",
+                  help=f"over the {n_c} non-zero coordinates of the carried code "
+                       f"c_{li}, in the panel's units ({score_label}).")
+        m2.metric("update on the carried support, median", f"{med_u_on:.4g}",
+                  help="median |alpha E_l Delta_l| over the same coordinates; off "
+                       f"the support it is {med_u_off:.4g}.")
+        m3.metric("|update| / |carried|, median", f"{med_ratio:.3g}",
+                  help="per carried coordinate, the block's contribution relative to "
+                       "what it received. Below 1 the carry dominates the score at "
+                       "that index; above 1 the block rewrites it.")
+        m4.metric("carried kept in TopK", f"{n_kept} / {n_c}",
+                  help="how many of the carried coordinates survive this gate's "
+                       "TopK. The others were evicted here (their circle is faint).")
+        m5.metric("update mass on the support", f"{u_on / u_all:.3f}" if u_all > 0 else "n/a",
+                  help="||u_S|| / ||u|| with S the carried support: the share of the "
+                       "update's Euclidean norm that lands on coordinates already in "
+                       "the code. sign agreement there: "
+                       f"{int(same_sign.sum())} / {n_c} reinforce the carried value.")
+
+        fig2b = go.Figure()
+        # the update at every drawn index (same subsample as the half-line, plus
+        # the carried support, which is always shown)
+        usel = (draw | csup) & (u_abs >= hl_min) & (u_abs > 0)
+        uidx = np.where(usel)[0]
+
+        def hover_cr(i):
+            tail = ""
+            if csup[i]:
+                tail = (f"<br><b>carried: {'kept in TopK' if kept[i] else 'evicted here'}</b>"
+                        f"<br>|update| / |carried| {u_abs[i] / c_abs[i]:.3g}")
+            return (f"feature {i}<br>carried c {cvec[i]:+.4g}<br>update {uvec[i]:+.4g}"
+                    f"<br>score c + u {signed[i]:+.4g}<br>rank now {rank[i]}"
+                    f"<br>{BAND_LABEL[bands[i]]}" + tail)
+
+        # segments first, so the circles sit on top
+        seg = np.where(csup & (c_abs > 0) & (u_abs > 0))[0]
+        if seg.size:
+            sx = np.column_stack([c_abs[seg], u_abs[seg], np.full(seg.size, np.nan)]).ravel()
+            sy = np.column_stack([jt[seg], jt[seg], np.full(seg.size, np.nan)]).ravel()
+            fig2b.add_trace(go.Scattergl(
+                x=sx, y=sy, mode="lines", name="same index",
+                line=dict(color="rgba(0,0,0,0.25)", width=1),
+                hoverinfo="skip", showlegend=True))
+        if uidx.size:
+            fig2b.add_trace(go.Scattergl(
+                x=u_abs[uidx], y=jt[uidx], mode="markers",
+                name="block update  alpha E_l \u0394_l",
+                marker=dict(size=np.where(csup[uidx], 8, 5), color=UPDATE_COLOR,
+                            opacity=np.where(csup[uidx], 0.95, 0.45),
+                            line=dict(width=0.5, color=UPDATE_COLOR)),
+                text=[hover_cr(i) for i in uidx], hoverinfo="text"))
+        cidx = np.where(csup & (c_abs >= hl_min))[0]
+        if cidx.size:
+            fig2b.add_trace(go.Scattergl(
+                x=c_abs[cidx], y=jt[cidx], mode="markers",
+                name=f"carried code  c_{li}  (from gate {li - 1})",
+                marker=dict(size=10, color=CARRY_COLOR,
+                            opacity=np.where(kept[cidx], 1.0, 0.35),
+                            line=dict(width=np.where(kept[cidx], 2.0, 1.0), color=INK)),
+                text=[hover_cr(i) for i in cidx], hoverinfo="text"))
+        for n_e, (edge, lab) in enumerate(edges):
+            mid = (r[order[edge - 1]] + r[order[min(edge, N - 1)]]) / 2.0 / denom
+            fig2b.add_vline(x=mid, line=dict(color=INK_MUTED, width=1, dash="dot"))
+        fig2b.update_layout(
+            hovermode="closest", hoverdistance=12,
+            **banner("Carried code vs. this block's update on the half-line "
+                     "(same jitter as above, so each grey segment is horizontal: "
+                     "one index, carried value to update)", 250, legend=True),
+        )
+        fig2b.update_xaxes(type="log" if log_y else "linear", title=score_label,
+                           range=hl_r, gridcolor=GRID, zeroline=False, linecolor=GRID,
+                           dtick=1 if (log_y and hl_wide) else None,
+                           tickformat=None if hl_wide else ".3g")
+        fig2b.update_yaxes(visible=False, range=[-2.4, 2.4])
+        st.plotly_chart(fig2b, width="stretch", theme=None)
+        st.caption(
+            f"Violet: the {n_c} non-zero coordinates of the code gate {li} received "
+            f"(faint = evicted by this gate). Amber: the block's own contribution "
+            f"alpha E_{li} \u0394_{li} at every drawn index (large = on the carried "
+            f"support). Dotted lines: this gate's band edges on the score c + u. "
+            f"Points below the half-line cut (x \u2265 {hl_min:.4g}) are not drawn."
+        )
+
+    # ---- 2c: how long this gate's TopK survives along the carry ------------ #
+    later = list(range(li + 1, L))
+    top_now = order[:k]                        # sorted by |score| at this gate
+    if not later:
+        st.caption(f"Block {li} is the last bottleneck: nothing follows it, so "
+                   "there is no survival to measure here.")
+    else:
+        later_top = [bands_at(run, ci, l2, bi, ti, k, j)[0] for l2 in later]
+        surv = np.zeros(k, dtype=int)
+        for n_i, i in enumerate(top_now.tolist()):
+            for S in later_top:
+                if i in S:
+                    surv[n_i] += 1
+                else:
+                    break
+        reach = surv == len(later)
+        ranks = np.arange(1, k + 1)
+        hover_sv = [
+            (f"feature {i}<br>rank {n_i + 1} at block {li}<br>{score_label} {val[i]:.4g}"
+             f"<br>blocks survived {surv[n_i]}"
+             + (f"<br><b>still active at block {L - 1}</b>" if reach[n_i]
+                else f"<br>evicted at block {li + 1 + surv[n_i]}"))
+            for n_i, i in enumerate(top_now.tolist())]
+        fig2c = go.Figure()
+        for sel, name, color in ((~reach, f"evicted before block {L - 1}", BAND_COLOR["topk"]),
+                                 (reach, f"still active at block {L - 1} (never evicted)", CARRY_COLOR)):
+            if not sel.any():
+                continue
+            fig2c.add_trace(go.Bar(
+                x=ranks[sel], y=surv[sel], name=name, marker_color=color,
+                hovertext=[hover_sv[n_i] for n_i in np.where(sel)[0]], hoverinfo="text"))
+        fig2c.add_hline(y=len(later), line=dict(color=INK_MUTED, width=1, dash="dot"))
+        fig2c.update_layout(barmode="overlay", bargap=0.15,
+                            **banner(f"Blocks each TopK feature of gate {li} survives "
+                                     f"before eviction (max {len(later)} = gates "
+                                     f"{li + 1}..{L - 1})", 300, legend=True))
+        tick = dict(tickvals=ranks, ticktext=[str(i) for i in top_now]) if k <= 64 else {}
+        fig2c.update_xaxes(title=(f"TopK of gate {li}, ranked by |score| "
+                                  + ("(label = feature index)" if k <= 64 else "(hover for the feature index)")),
+                           gridcolor=GRID, zeroline=False, linecolor=GRID, **tick)
+        fig2c.update_yaxes(title="later gates that keep it", gridcolor=GRID,
+                           zeroline=False, linecolor=GRID, dtick=1)
+        st.plotly_chart(fig2c, width="stretch", theme=None)
+        st.caption(
+            f"Of the {k} features gate {li} keeps: {int((surv == 0).sum())} are evicted "
+            f"by the very next gate, {int(reach.sum())} are still active at the last "
+            f"gate, mean survival {surv.mean():.2f} of {len(later)} possible blocks. "
+            "Survival counts consecutive later gates whose TopK contains the feature, "
+            "stopping at the first eviction (a feature re-entering later is not counted)."
+        )
 
 # --------------------------------------------------------------------------- #
 # panel 3 -- the support map, ordered by neuron index

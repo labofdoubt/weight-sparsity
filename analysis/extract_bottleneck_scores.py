@@ -32,6 +32,12 @@ Output, one per run:
     <out-dir>/<run>.g_z.npy       dL/dz at the gate's input, through the surrogate
     <out-dir>/<run>.json          steps, layer labels, k, j, token ids, val CE
 
+Under ``code_residual`` a fourth array is written, ``<run>.carry.npy``: the
+K-sparse code that gate ``l`` received from gate ``l-1`` (block 0 carries
+nothing, so its slice is zero).  The score at gate ``l >= 1`` is
+``carry + alpha * E_l Delta_l``, so ``score - carry`` is the block's own
+contribution and the viewer can put the two on one axis.
+
 With ``--grads`` (the default since 2026-10-05) every checkpoint also runs one
 forward + backward on the fixed batch in ``train()`` mode and float32 -- the
 same measurement as ``probe_early_training.py`` -- so the viewer's gradient
@@ -124,6 +130,7 @@ def main() -> None:
     # between two cells of the viewer is a change in the model, never in the
     # data.  deterministic_offset makes it independent of the RNG seed.
     model, cfg, _ = load_for_inference(ckpts[0], device=str(device))
+    code_res = bool(getattr(cfg.activation_bottleneck, "code_residual", False))
     seq_len = int(cfg.data.seq_len)
     n_pos = min(int(args.positions), seq_len)
     stream = TokenStream(os.path.join(args.data_dir, f"{args.split}.bin"), seq_len, seed=0)
@@ -155,6 +162,12 @@ def main() -> None:
                 os.path.join(args.out_dir, f"{run}.{g}.npy"), mode="w+",
                 dtype=np.float32, shape=arr.shape)
 
+    carry_arr = None
+    if code_res:
+        carry_arr = np.lib.format.open_memmap(
+            os.path.join(args.out_dir, f"{run}.carry.npy"), mode="w+",
+            dtype=np.float32, shape=arr.shape)
+
     val_ce = []
     for ci, path in enumerate(ckpts):
         if ci > 0:  # the first is already loaded
@@ -176,7 +189,10 @@ def main() -> None:
 
         def make_post(li):
             def post(module, inputs, output):
-                if output.requires_grad:
+                # the gate's output is the K-sparse code; under code_residual
+                # it is what the next gate receives as its carry
+                grabbed[("code", li)] = output.detach()
+                if args.grads and output.requires_grad:
                     output.register_hook(
                         lambda g, li=li: grabbed.__setitem__(("g_ztilde", li), g.detach()))
                 return None
@@ -184,8 +200,7 @@ def main() -> None:
 
         for li, (_, mod) in enumerate(bottlenecks):
             handles.append(mod.gate.register_forward_pre_hook(make_hook(li)))
-            if args.grads:
-                handles.append(mod.gate.register_forward_hook(make_post(li)))
+            handles.append(mod.gate.register_forward_hook(make_post(li)))
 
         if args.grads:
             # train() mode: surrogate_active() is False in eval and under
@@ -218,6 +233,17 @@ def main() -> None:
                     raise RuntimeError(f"{path} layer {li}: unexpected {name} shape {tuple(a.shape)}")
                 dst = arr if name == "score" else grad_arrs[name]
                 dst[ci, li] = a[:, :n_pos, :].float().cpu().numpy()
+        if carry_arr is not None:
+            # gate l's carry is gate l-1's output (model._code_residual_stack:
+            # code = gate(code + alpha * E_l Delta_l)); block 0 has none
+            carry_arr[ci, 0] = 0.0
+            for li in range(1, len(bottlenecks)):
+                a = grabbed.get(("code", li - 1))
+                if a is None:
+                    raise RuntimeError(f"{path}: code never captured for bottleneck {li - 1}")
+                if a.shape != (args.batch, seq_len, n_feat):
+                    raise RuntimeError(f"{path} layer {li - 1}: unexpected code shape {tuple(a.shape)}")
+                carry_arr[ci, li] = a[:, :n_pos, :].float().cpu().numpy()
         model.zero_grad(set_to_none=True)
 
         val_ce.append(float(loss))
@@ -229,6 +255,8 @@ def main() -> None:
     arr.flush()
     for g in grad_arrs.values():
         g.flush()
+    if carry_arr is not None:
+        carry_arr.flush()
 
     meta = dict(
         run=run,
@@ -256,12 +284,16 @@ def main() -> None:
         batch_ce=val_ce,
         array=os.path.basename(out_path),
         array_shape=list(arr.shape),
-        arrays=({"score": os.path.basename(out_path),
-                 **{g: f"{run}.{g}.npy" for g in GRAD_NAMES}} if args.grads
-                else {"score": os.path.basename(out_path)}),
+        arrays={"score": os.path.basename(out_path),
+                **({g: f"{run}.{g}.npy" for g in GRAD_NAMES} if args.grads else {}),
+                **({"carry": f"{run}.carry.npy"} if code_res else {})},
         rblapsum_surrogate_scope=str(getattr(cfg.activation_bottleneck,
                                              "rblapsum_surrogate_scope", "pool")),
-        code_residual=bool(getattr(cfg.activation_bottleneck, "code_residual", False)),
+        code_residual=code_res,
+        code_residual_scale=float(getattr(cfg.activation_bottleneck, "code_residual_scale", 1.0)),
+        carry_note=("carry[c, l] is the K-sparse code gate l received from gate l-1 "
+                    "(zero at l = 0); score - carry is the block's own encoded "
+                    "contribution alpha * E_l Delta_l" if code_res else None),
         grads_mode=("train-mode float32 forward+backward on the fixed batch; "
                     "first_order_backward for first_order scopes" if args.grads else None),
         note=(
