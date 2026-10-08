@@ -178,6 +178,9 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
 - **Keep `train.compile=False`.** A graph break around the hand-written gate
   backward can zero gradients silently while the loss keeps falling (§11).
 - **A run without `summary.json` did not finish.**
+- **The validation set is `val_batches` x `micro_batch_size` windows.** A run whose
+  micro-batch differs from its references must scale `val_batches` (micro 8 ->
+  120 for the usual 40 x 24), or its `val/ce` is measured on other windows.
 - **Archived configs** mostly reload through migration (§9d); the
   relative-temperature `dc_rout_soft_*` family raises by design. Rebuild those
   from the pre-cleanup tree `e9eada3`.
