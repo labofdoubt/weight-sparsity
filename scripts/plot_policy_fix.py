@@ -43,7 +43,7 @@ OUT = os.path.join(HERE, "policy-cr")
 CELLS = [(32, 32), (32, 480), (128, 128), (256, 256)]
 C_CONST, C_ANNEAL = "#1f4e9c", "#4fa3d1"
 C_RB, C_HARD, C_HARD2 = "0.35", "#c0392b", "#e59866"
-C_G0, C_FIX, C_FULL = "#2ca02c", "#7b3294", "#e08214"
+C_G0, C_FIX, C_FULL = "#2ca02c", "#7b3294", "#8c510a"
 VIRIDIS = cm.get_cmap("viridis")
 
 
@@ -112,7 +112,9 @@ def fig_gradnorm(cv, cz):
         elif name.startswith("vi_rb") and "full" in name:
             ax.plot(s, g, "-", color=C_FULL, lw=1.5)
         elif "rbfo" in name or name.endswith("_fo"):
-            ax.plot(s, g, "-", color=C_FIX, lw=1.0)
+            key = "project" if "_proj_" in name else ("frozen" if "_frozen_" in name else "through")
+            ax.plot(s, g, "-", color=WIDTH_STYLE[key][0] if name.startswith("zu_") else C_FIX,
+                    lw=1.0)
     refdir = os.path.join(DATA, "ref")
     for run, color in (("ma_cr_rbk_k32_j480_t2", C_RB), ("ma_cr_hard_k32_pnorm", C_HARD)):
         path = os.path.join(refdir, run, "metrics.jsonl")
@@ -129,7 +131,9 @@ def fig_gradnorm(cv, cz):
     from matplotlib.lines import Line2D
     hd = [Line2D([0], [0], color=C_CONST, lw=1.2, label="likelihood ratio (8 runs)"),
           Line2D([0], [0], color=C_FULL, lw=1.5, label="Rao-Blackwell, full scope"),
-          Line2D([0], [0], color=C_FIX, lw=1.2, label="Rao-Blackwell, first-order scope"),
+          Line2D([0], [0], color="#7b3294", lw=1.2, label="Rao-Blackwell, first order, projected"),
+          Line2D([0], [0], color="#c2a5cf", lw=1.2, label="Rao-Blackwell, first order, through"),
+          Line2D([0], [0], color="#e08214", lw=1.2, label="Rao-Blackwell, first order, frozen"),
           Line2D([0], [0], color=C_G0, lw=1.2, label="$\\gamma = 0$"),
           Line2D([0], [0], color=C_RB, ls=":", lw=1.2, label="RBLapSum $T=2$, (32, 480)"),
           Line2D([0], [0], color=C_HARD, ls=":", lw=1.2, label="hard Top-32"),
@@ -158,11 +162,14 @@ def fig_probe(probes):
                                  ("rbfo", C_FIX, "Rao-Blackwell, first order")):
             if est not in rep["groups"][order[0]]:
                 continue
-            noise = [max(1e-8, rep["groups"][g][est]["noise"]) for g in order]
-            sig = [max(1e-8, rep["groups"][g][est]["signal"]) for g in order]
+            nan = float("nan")
+            noise = [rep["groups"][g][est]["noise"] or nan for g in order]
             ax.plot(xs, noise, "-", color=color, lw=1.6, label=f"{lab2}: noise")
-            ax.plot(xs, sig, "--", color=color, lw=1.4, label=f"{lab2}: signal")
+            if est != "lr":   # the LR mean is not resolved by 64 draws: no signal line
+                sig = [rep["groups"][g][est]["signal"] or nan for g in order]
+                ax.plot(xs, sig, "--", color=color, lw=1.4, label=f"{lab2}: signal")
         ax.set_yscale("log")
+        ax.set_ylim(1e-5, 1e5)
         ax.set_xticks(list(xs))
         ax.set_xticklabels([g.replace("block", "b").replace(".branches", " br")
                             .replace(".encoder", " enc").replace(".decoder", " dec")
@@ -177,52 +184,99 @@ def fig_probe(probes):
     save(fig, "pf_probe.png")
 
 
+WIDTH_STYLE = {"project": ("#7b3294", "-", 2.4, "Rao-Blackwell, first order, projected width"),
+               "through": ("#c2a5cf", "-", 1.6, "Rao-Blackwell, first order, span differentiated"),
+               "frozen": ("#e08214", "-", 1.6, "Rao-Blackwell, first order, frozen width")}
+
+
+def rb_runs(cz):
+    """zurich Rao-Blackwell first-order runs keyed by width gradient."""
+    out = {}
+    for name, rec in (cz or {}).items():
+        if not name.startswith("zu_rbfo"):
+            continue
+        key = "project" if "_proj_" in name else ("frozen" if "_frozen_" in name else "through")
+        out[key] = (name, rec)
+    return out
+
+
 def fig_fix(cv, cz, ref):
-    fix = {n: r for n, r in (cz or {}).items() if "rbfo" in n}
-    if not fix:
+    rbs = rb_runs(cz)
+    if not rbs:
         return
-    fig, axes = plt.subplots(1, 2, figsize=(14, 4.8))
-    for ax, ylim in zip(axes, ((1.3, 3.5), None)):
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+    for ax, zoom in zip(axes, (False, True)):
         for run, color, ls, lab in (("ma_cr_rbk_k32_j480_t2", C_RB, ":", "RBLapSum $T=2$, (32, 480)"),
                                     ("ma_cr_hard_k32_pnorm", C_HARD, "--", "hard Top-32"),
                                     ("ma_cr_hard_k512_pnorm", C_HARD2, "--", "hard Top-512")):
             if run in ref:
                 ax.plot(*zip(*[(p[0], p[1]) for p in ref[run]["val"]]), ls, color=color, lw=1.8,
                         label=lab)
-        lr = cv.get("vi_pol_rs_k32_j480_t0p16_const")
-        if lr:
-            ax.plot(*val(lr), "-o", ms=3, color=C_CONST, lw=1.5, label="likelihood ratio (stopped)")
-        g0 = cv.get("vi_salv_k32_j480_g0")
-        if g0 and g0["val"]:
-            ax.plot(*val(g0), "s", ms=7, color=C_G0, label="$\\gamma = 0$ (vienna)")
-        for name, rec in (cz or {}).items():
-            if name.endswith("_g0") and rec["val"]:
-                ax.plot(*val(rec), "-s", ms=4, color=C_G0, lw=1.2, label="$\\gamma = 0$, 1000 steps")
-        for name, rec in fix.items():
-            ax.plot(*val(rec), "-", color=C_FIX, lw=2.2, label="Rao-Blackwell, first order")
+        if not zoom:
+            lr = cv.get("vi_pol_rs_k32_j480_t0p16_const")
+            if lr:
+                ax.plot(*val(lr), "-o", ms=3, color=C_CONST, lw=1.5,
+                        label="likelihood ratio (stopped at 2540)")
+        for name, rec in {**cv, **(cz or {})}.items():
+            if "k32_j480" in name and name.endswith("_g0") and rec["val"]:
+                ax.plot(*val(rec), "s", ms=7, color=C_G0,
+                        label="$\\gamma = 0$" if "vi_" in name else None)
+        for key in ("frozen", "through", "project"):
+            if key in rbs:
+                color, ls, lw, lab = WIDTH_STYLE[key]
+                ax.plot(*val(rbs[key][1]), ls, color=color, lw=lw, label=lab)
         ax.set_xlim(0, 20000)
-        if ylim:
-            ax.set_ylim(*ylim)
-        else:
-            tail = [p[1] for r in fix.values() for p in r["val"] if p[0] >= 4000]
+        if zoom:
+            tail = [p[1] for p in rbs.get("project", ("", {"val": []}))[1]["val"] if p[0] >= 3000]
             refs = [p[1] for run in ("ma_cr_rbk_k32_j480_t2", "ma_cr_hard_k32_pnorm",
                                      "ma_cr_hard_k512_pnorm") if run in ref
-                    for p in ref[run]["val"] if p[0] >= 4000]
+                    for p in ref[run]["val"] if p[0] >= 3000]
             if tail:
-                ax.set_ylim(min(tail + refs) - 0.01, max(tail + refs[:1]) + 0.03)
-                ax.set_xlim(4000, 20000)
+                ax.set_ylim(min(tail + refs) - 0.01, max(tail + refs) + 0.01)
+                ax.set_xlim(3000, 20000)
+            ax.set_title("from step 3000")
+        else:
+            ax.set_ylim(1.3, 3.6)
+            ax.set_title("all steps")
         ax.set_xlabel("training step")
         ax.grid(alpha=0.3)
     axes[0].set_ylabel("clean Top-$K$ validation CE (nats)")
-    axes[0].legend(fontsize=8)
+    axes[0].legend(fontsize=7.5)
     save(fig, "pf_fix.png")
 
 
+def fig_span(cv, cz):
+    """Median pool span over blocks against step: the frozen-width runaway."""
+    fig, ax = plt.subplots(figsize=(9, 4.4))
+    lr = cv.get("vi_pol_rs_k32_j480_t0p16_const")
+    series = []
+    if lr:
+        series.append((lr, C_CONST, "-", 1.2, "likelihood ratio, frozen width"))
+    g0 = cv.get("vi_salv_k32_j480_g0")
+    if g0:
+        series.append((g0, C_G0, "-", 1.2, "$\\gamma = 0$"))
+    for key, (name, rec) in rb_runs(cz).items():
+        color, ls, lw, lab = WIDTH_STYLE[key]
+        series.append((rec, color, ls, lw, lab))
+    for rec, color, ls, lw, lab in series:
+        sp = rec["blocks"].get("span", [])
+        if sp:
+            ax.plot([p[0] for p in sp], [sorted(p[1])[len(p[1]) // 2] for p in sp], ls,
+                    color=color, lw=lw, label=lab)
+    ax.set_yscale("log")
+    ax.set_xlim(0, 3000)
+    ax.set_xlabel("training step")
+    ax.set_ylabel("pool span $s_{(K+1)} - s_{(K+J)}$, median over blocks")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
+    save(fig, "pf_span.png")
+
+
 def fig_rb_blocks(cz):
-    fix = [(n, r) for n, r in (cz or {}).items() if "rbfo" in n]
-    if not fix:
+    rbs = rb_runs(cz)
+    if "project" not in rbs:
         return
-    name, rec = fix[0]
+    name, rec = rbs["project"]
     fig, axes = plt.subplots(1, 3, figsize=(17, 4.4))
     for ax, key, lab, log in ((axes[0], "exchange", "exchange $q_\\ell$", False),
                               (axes[1], "span", "pool span $s_{(K+1)} - s_{(K+J)}$", True),
@@ -296,6 +350,7 @@ def main():
     if probes:
         fig_probe(probes)
     fig_fix(cv, cz, ref)
+    fig_span(cv, cz)
     fig_rb_blocks(cz)
     fig_salvage(cz, cv, ref)
 
