@@ -1,0 +1,15 @@
+{
+ "zu_rbfo_proj_k32_j480_t0p16_const": {
+  "ckpt": "/workspace/runs/zu_rbfo_proj_k32_j480_t0p16_const/ckpt_step20000.pt",
+  "step": 20000,
+  "tau": 0.16,
+  "batches": 40,
+  "samples": 8,
+  "seed": 1337,
+  "clean_ce": 1.5592044234275817,
+  "stochastic_ce": 1.5960032988339663,
+  "stochastic_std": 0.0005694814982300869,
+  "stochastic_sem": 0.00020134211457938463,
+  "gap": 0.0367988754063846
+ }
+}

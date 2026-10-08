@@ -88,7 +88,13 @@ grow from $13$ to $2.2 \times 10^5$ in 400 steps; removing that component
 (orthogonal projection, which the exact gradient satisfies by Euler's identity)
 fixes it without the noise of differentiating the span itself.
 
-\item \textbf{With the three changes the method trains.} %%HEADLINE%%
+\item \textbf{With the three changes the method trains.} At $(32, 480)$ the repaired
+estimator trains normally -- no clipped step after warm-up, clean validation CE
+$1.5592$ after 20k steps instead of a plateau at $\approx 6.0$ -- but it does not
+reach RBLapSum $T = 2$: it ends $0.067$ above it ($1.4927$) and $0.019$ above hard
+Top-32 ($1.5400$), the gap to RBLapSum narrowing from $0.106$ at step 1000. Over
+1500 steps at $(256, 256)$ it is level with RBLapSum (within $0.02$). The fix
+removes the failure; it does not yet make the policy method competitive.
 \end{itemize}
 
 % ============================================================
@@ -483,7 +489,7 @@ width gradient & \multicolumn{2}{c}{probe} & pool span & \multicolumn{2}{c}{clea
 \midrule
 \code{frozen} (detached width)      & 0.44 & 0.37 & $13 \to 2.2\times10^5$ & 5.30 & -- \\
 \code{through} (span differentiated) & 1.29 & 0.37 & $3.1 \to 3.1$ & 2.97 & 2.56 \\
-\code{project} (radial part removed) & 0.40 & 0.37 & $4.3 \to 2.6$ & 2.78 & \PH{P1000} \\
+\code{project} (radial part removed) & 0.40 & 0.37 & $4.3 \to 2.6$ & 2.78 & 2.33 \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -530,9 +536,45 @@ differences $\Delta_{\mathrm{P-RB}} = L^{\mathrm{policy}} - L^{\mathrm{RBLapSum}
 and $\Delta_{\mathrm{P-hard}} = L^{\mathrm{policy}} - L^{\mathrm{hard\ Top\text{-}32}}$
 (negative: the policy is better):
 
-%%RESULT_TABLE%%
+\begin{center}\small
+\begin{tabular}{lcccccc}
+\toprule
+step & policy & RBLapSum $T{=}2$ & hard Top-32 & hard Top-512 & $\Delta_{\mathrm{P-RB}}$ & $\Delta_{\mathrm{P-hard}}$ \\
+\midrule
+1000 & 2.3316 & 2.2258 & 2.2597 & 2.0219 & $+0.1059$ & $+0.0719$ \\
+2000 & 2.0446 & 1.9488 & 2.0050 & 1.7933 & $+0.0958$ & $+0.0396$ \\
+5000 & 1.8170 & 1.7377 & 1.7927 & 1.6054 & $+0.0793$ & $+0.0243$ \\
+10000 & 1.6776 & 1.6067 & 1.6560 & 1.4822 & $+0.0709$ & $+0.0216$ \\
+15000 & 1.5970 & 1.5287 & 1.5776 & 1.4018 & $+0.0683$ & $+0.0194$ \\
+20000 & 1.5592 & 1.4927 & 1.5400 & 1.3622 & $+0.0665$ & $+0.0192$ \\
+\midrule
+best & 1.5592 & 1.4927 & 1.5400 & 1.3622 & $+0.0665$ & $+0.0192$ \\
+\bottomrule
+\end{tabular}
+\end{center}
 
-%%RESULT_TEXT%%
+The repaired run trains like the references in every respect that failed
+before: no logged step after step 500 is clipped (0 of 975; gradient norm median
+$0.34$, maximum $0.66$), the clean CE falls from $2.33$ at step 1000 to $1.5592$
+at step 20000, and the best validation is the last one. It does not reach
+RBLapSum: $\Delta_{\mathrm{P-RB}}$ narrows from $+0.106$ at step 1000 to $+0.071$
+at step 10000 and $+0.0665$ at the end, and the run also ends $0.019$ above hard
+Top-32 ($1.5400$; the stream-carried hard Top-32 of the K+J note ended at
+$1.6022$), far below the unigram plateau of the original estimator ($\approx 6.0$
+at step 2500).
+The 8-draw stochastic validation of the final checkpoint is $1.5960 \pm 0.0006$
+(standard deviation over draws), $0.037$ above the clean one; with 2 draws during
+training the gap was $0.034$--$0.037$ from step 5000 on.
+
+The median over blocks of the exchange stayed between $0.17$ and $0.21$ and ends
+at $0.19$, but the blocks drift apart (Figure~\ref{fig:rbblocks}): block 1 rises to
+$0.38$ around step 4000 -- above the plan's $0.35$ limit on 282 of the 326 logged
+steps between steps 2180 and 8680 -- and returns to $0.26$ by the end, while
+blocks 3 and 4 fall to $0.12$--$0.14$. The
+span-relative width holds the scale, not the shape of each block's score
+distribution. The self-gain of the member nearest the threshold stays between
+$3.5$ and $5.1$ in every block, against about 14 in the span-differentiated run.
+The pool span does not run away (Figure~\ref{fig:span}).
 
 \begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/policy-cr/pf_fix.png}
@@ -541,15 +583,16 @@ width, dark purple) against RBLapSum $T = 2$ (dotted), hard Top-32 and Top-512
 (dashed), the two other width gradients with the first-order scope (span
 differentiated, light purple, stopped at step 1060; frozen, orange, stopped at
 step 700 after the span runaway), the likelihood-ratio campaign run (blue,
-stopped at 2540) and $\gamma = 0$ (green). Right: from step 3000 on a tight scale.}
+stopped at 2540) and $\gamma = 0$ (green, step 500). The likelihood-ratio and frozen-width runs lie above the plotted range. Right: from step 3000 on a tight scale.}
 \label{fig:fix}
 \end{figure}
 
 \begin{figure}[htb]\centering
 \includegraphics[width=\textwidth]{figures/policy-cr/pf_rb_blocks.png}
 \caption{The repaired run, per block (colour from block 0, dark, to block 7,
-light): exchange fraction $q_\ell$ (grey band the calibration target), pool span
-(log), and the RMS of the Rao--Blackwell score gradient (log).}
+light): exchange fraction $q_\ell$ (grey band the calibration target, dotted the
+plan's $0.35$ limit), pool span (log), and the self-gain $\gamma\,p\,|v|$ of the
+member nearest the threshold (log), averaged over the tokens of a micro-batch.}
 \label{fig:rbblocks}
 \end{figure}
 
@@ -636,7 +679,24 @@ noise and appeared as a slow growth of the span; with the low-noise estimator
 it became an exponential runaway. Projecting the push out restores the
 symmetry the exact gradient has, and it removes rather than adds variance.
 
-%%INTERP_RESULT%%
+What remains between the repaired estimator and RBLapSum at $(32, 480)$,
+$0.067$ at the end, has two parts that are measured only early in training. At
+step 500 the $\gamma = 0$ control -- the same sampled forward with no selection
+term -- is $0.043$ above RBLapSum, and the repaired run is a further $0.045$ above
+the control. The first part is the price of the exploration the objective asks
+for: about $19\%$ of the support is exchanged at every training step, while the
+model is evaluated on the clean support (the stochastic validation is $0.037$
+above the clean one at the end). The second is the cost of the selection term in
+its current form, whose per-draw signal-to-noise ratio is about 1 and whose
+self-gain of $3.5$--$5$ makes it a strong term relative to the value gradient
+(the same measure for RBLapSum's kernel, $b/2T$ with its boundary score
+$b \approx 2.3$ at $T = 2$, is about $0.6$). Neither part was
+measured at 20k: the controls ran for at most 700 steps. The annealed width of the
+original plan, which ends at $0.2\,\tau_0$ and so at a much smaller exchange, is
+the direct test of the first part; a $\gamma = 0$ run to 20k would separate the
+two. Against hard Top-32 the gap closes from $0.072$ to $0.019$ over the run;
+whether the selection term contributes to that late gain cannot be separated
+from the effect of the sampled forward without the long $\gamma = 0$ control.
 
 % ============================================================
 \section{Scope}

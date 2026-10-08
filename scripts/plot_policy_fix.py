@@ -187,6 +187,7 @@ def fig_probe(probes):
 WIDTH_STYLE = {"project": ("#7b3294", "-", 2.4, "Rao-Blackwell, first order, projected width"),
                "through": ("#c2a5cf", "-", 1.6, "Rao-Blackwell, first order, span differentiated"),
                "frozen": ("#e08214", "-", 1.6, "Rao-Blackwell, first order, frozen width")}
+FIX_LABEL = {"frozen": "Rao-Blackwell, first order, frozen width (5.3 at 500, off scale)"}
 
 
 def rb_runs(cz):
@@ -216,15 +217,17 @@ def fig_fix(cv, cz, ref):
             lr = cv.get("vi_pol_rs_k32_j480_t0p16_const")
             if lr:
                 ax.plot(*val(lr), "-o", ms=3, color=C_CONST, lw=1.5,
-                        label="likelihood ratio (stopped at 2540)")
+                        label="likelihood ratio (stopped at 2540; $\\approx 6$, off scale)")
         for name, rec in {**cv, **(cz or {})}.items():
-            if "k32_j480" in name and name.endswith("_g0") and rec["val"]:
+            # the vienna control validates on the usual 960 windows (micro 24); the
+            # zurich salvage runs (micro 8) on 320, so they are not drawn here
+            if name.startswith("vi_") and "k32_j480" in name and name.endswith("_g0") and rec["val"]:
                 ax.plot(*val(rec), "s", ms=7, color=C_G0,
                         label="$\\gamma = 0$" if "vi_" in name else None)
         for key in ("frozen", "through", "project"):
             if key in rbs:
                 color, ls, lw, lab = WIDTH_STYLE[key]
-                ax.plot(*val(rbs[key][1]), ls, color=color, lw=lw, label=lab)
+                ax.plot(*val(rbs[key][1]), ls, color=color, lw=lw, label=FIX_LABEL.get(key, lab))
         ax.set_xlim(0, 20000)
         if zoom:
             tail = [p[1] for p in rbs.get("project", ("", {"val": []}))[1]["val"] if p[0] >= 3000]
@@ -280,7 +283,8 @@ def fig_rb_blocks(cz):
     fig, axes = plt.subplots(1, 3, figsize=(17, 4.4))
     for ax, key, lab, log in ((axes[0], "exchange", "exchange $q_\\ell$", False),
                               (axes[1], "span", "pool span $s_{(K+1)} - s_{(K+J)}$", True),
-                              (axes[2], "rb_grad", "Rao-Blackwell score-gradient RMS", True)):
+                              (axes[2], "rb_selfgain",
+                               "self-gain $\\gamma\\,p\\,|v|$ of the member nearest the threshold", True)):
         series = rec["blocks"].get(key, [])
         if not series:
             continue
@@ -293,6 +297,7 @@ def fig_rb_blocks(cz):
             ax.set_yscale("log")
         if key == "exchange":
             ax.axhspan(0.15, 0.20, color="0.88", zorder=0)
+            ax.axhline(0.35, color="0.4", ls=":", lw=1)
         ax.set_ylabel(lab)
         ax.set_xlabel("training step")
         ax.grid(alpha=0.3)
