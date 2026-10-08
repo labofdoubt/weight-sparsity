@@ -1471,9 +1471,20 @@ if bool(meta.get("code_residual", False)):
                             opacity=np.where(kept[cidx], 1.0, 0.35),
                             line=dict(width=np.where(kept[cidx], 2.0, 1.0), color=INK)),
                 text=[hover_cr(i) for i in cidx], hoverinfo="text"))
+        # the gate's edges on the score c + u, coloured like the bands they
+        # close: blue for the TopK edge (K | K+1), orange for the pool edge
+        # (K+J | K+J+1); labels staggered as on the half-line
         for n_e, (edge, lab) in enumerate(edges):
             mid = (r[order[edge - 1]] + r[order[min(edge, N - 1)]]) / 2.0 / denom
-            fig2b.add_vline(x=mid, line=dict(color=INK_MUTED, width=1, dash="dot"))
+            col = BAND_COLOR["topk"] if edge == k else BAND_COLOR["cand"]
+            fig2b.add_vline(x=mid, line=dict(color=col, width=1.2, dash="dot"))
+            fig2b.add_annotation(x=np.log10(mid) if log_y else mid,
+                                 y=1.0 - 0.17 * n_e, yref="y domain",
+                                 text=(f"{lab}  (K | K+1 on |c+u|)" if edge == k
+                                       else f"{lab}  (pool edge on |c+u|)"),
+                                 showarrow=False, yanchor="top",
+                                 xanchor="left" if n_e == 0 else "right",
+                                 font=dict(size=11, color=col))
         fig2b.update_layout(
             hovermode="closest", hoverdistance=12,
             **banner("Carried code vs. this block's update on the half-line "
@@ -1490,7 +1501,9 @@ if bool(meta.get("code_residual", False)):
             f"Violet: the {n_c} non-zero coordinates of the code gate {li} received "
             f"(faint = evicted by this gate). Amber: the block's own contribution "
             f"alpha E_{li} \u0394_{li} at every drawn index (large = on the carried "
-            f"support). Dotted lines: this gate's band edges on the score c + u. "
+            f"support). Dotted lines: this gate's edges on the score it ranks, "
+            f"|c + u| -- blue the TopK edge (K | K+1)"
+            + (f", orange the candidate-pool edge (K+J | K+J+1)" if j else "") + ". "
             f"Points below the half-line cut (x \u2265 {hl_min:.4g}) are not drawn."
         )
 
