@@ -379,13 +379,23 @@ gradient norm, step 100 & 0.53 & 0.63 & 2.78 & 20.3 \\
 \end{tabular}
 \end{center}
 
-The loss rises monotonically with $\gamma$ from $\gamma = 0$ on: no scale of the
-term makes it useful. Even $0.1\gamma_*$, at which the term's whole-model noise
+The loss rises monotonically with $\gamma$ from $\gamma = 0$ on
+(Figure~\ref{fig:salvage}): no scale of the term makes it useful. Even $0.1\gamma_*$, at which the term's whole-model noise
 is about a tenth of the value gradient, costs $0.16$ at step 500. A plausible
 reason, not measured here: under per-element normalization what matters is the
 noise of each parameter, and the term's noise is concentrated in the parameters
 it reaches most directly (the encoders), where it dominates the update even at a
 small global share.
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/policy-cr/pf_salvage.png}
+\caption{The $\gamma$ grid at $(32, 480)$, 600 steps: noise-off training CE
+(left) and gradient norm before clipping (right) for $\gamma = 0$,
+$0.1\gamma_*$, $\gamma_*$, $10\gamma_*$ ($\gamma_* = 3.05 \times 10^{-5}$),
+with RBLapSum $T = 2$ (dotted, its training CE) and the $\gamma = 1$ campaign run
+(blue).}
+\label{fig:salvage}
+\end{figure}
 
 \subsection*{Realized swap differences are discontinuous}
 
@@ -514,8 +524,8 @@ One run of 20k steps at $(32, 480)$ with the three changes --
 \code{policy\_estimator: rao\_blackwell}, \code{policy\_rb\_scope: first\_order},
 \code{policy\_width\_gradient: project} -- and everything else as in the
 campaign: the span-relative width at the calibrated $\tau_0 = 0.16$, constant,
-$\gamma = 1$ (\code{configs/policy\_cr/zu\_rbfo\_proj\_k32\_j480\_t0p16\_const.yaml},
-run \code{zu\_rbfo\_proj\_k32\_j480\_t0p16\_const}). Clean validation CE, with the
+$\gamma = 1$ (run \code{zu\_rbfo\_proj\_k32\_j480\_t0p16\_const}, config in
+\code{configs/policy\_cr/}). Clean validation CE, with the
 differences $\Delta_{\mathrm{P-RB}} = L^{\mathrm{policy}} - L^{\mathrm{RBLapSum}}$
 and $\Delta_{\mathrm{P-hard}} = L^{\mathrm{policy}} - L^{\mathrm{hard\ Top\text{-}32}}$
 (negative: the policy is better):
@@ -554,7 +564,35 @@ do not.}
 
 \subsection*{A second cell: $(256, 256)$}
 
-%%CELL256%%
+The same three changes at $(256, 256)$, with the cell's calibrated
+$\tau_0 = 0.67$, ran for 1500 steps of the 20k schedule beside the main run (micro-batches of 8 with
+120 validation batches: the same 960 windows as every other table); the run is
+\code{zu\_rbfo\_proj\_k256\_j256\_t0p67\_const}. This is the cell where the
+full scope reached gradient norms of $8.5 \times 10^5$.
+
+\begin{center}\small
+\begin{tabular}{lccc}
+\toprule
+clean validation CE & step 500 & 1000 & 1500 \\
+\midrule
+policy, repaired          & 2.620 & 2.165 & 2.010 \\
+RBLapSum $T = 2$          & 2.639 & 2.163 & 1.992 \\
+hard Top-256              & 2.506 & 2.076 & 1.925 \\
+hard Top-512              & 2.453 & 2.022 & 1.879 \\
+$\gamma = 0$ (vienna)     & 2.569 & --    & -- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Over the first 1500 steps the repaired estimator is level with RBLapSum --
+$-0.019$, $+0.002$, $+0.018$ at steps 500, 1000, 1500 -- and $0.085$--$0.114$
+above hard Top-256, the order the code-residual note found for this cell at 20k
+(RBLapSum $0.034$ above hard Top-256). The run is stable where the full scope
+diverged: gradient norm median $0.60$ after step 500 (4 of 50 logged steps above
+the clip), block-averaged exchange $0.175$--$0.184$, pool span $0.84$--$1.05$,
+self-gain $\gamma\,p\,|v|$ of the member nearest the threshold about $2.2$ (median
+over blocks). With 1500 of 20k steps this is a check that the repair carries
+over to a large $K$, not a comparison of final losses.
 
 
 % ============================================================

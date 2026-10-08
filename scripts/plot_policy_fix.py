@@ -301,13 +301,16 @@ def fig_rb_blocks(cz):
 
 
 def fig_salvage(cz, cv, ref):
-    runs = sorted((n, r) for n, r in (cz or {}).items() if "_salv_" in n)
+    order = {"g0": (0, "$\\gamma = 0$"), "g01x": (1, "$\\gamma = 0.1\\gamma_*$"),
+             "g1x": (2, "$\\gamma = \\gamma_*$"), "g10x": (3, "$\\gamma = 10\\gamma_*$")}
+    runs = sorted(((n, r) for n, r in (cz or {}).items() if "_salv_" in n),
+                  key=lambda nr: order.get(nr[0].rsplit("_", 1)[-1], (9, ""))[0])
     if not runs:
         return
     fig, axes = plt.subplots(1, 2, figsize=(14, 4.6))
     cmap = cm.get_cmap("plasma")
     for i, (name, rec) in enumerate(runs):
-        tag = name.rsplit("_", 1)[-1]
+        tag = order.get(name.rsplit("_", 1)[-1], (9, name))[1]
         color = cmap(0.1 + 0.8 * i / max(1, len(runs) - 1))
         tr = rec["train"]
         axes[0].plot([p[0] for p in tr], [p[2] if p[2] is not None else p[1] for p in tr], "-",
@@ -319,13 +322,13 @@ def fig_salvage(cz, cv, ref):
         tr = [(r["step"], r["train/ce"], r["train/grad_norm"]) for r in rows
               if "train/ce" in r and r["step"] <= 1000]
         axes[0].plot([a for a, _, _ in tr], [b for _, b, _ in tr], ":", color=C_RB, lw=1.8,
-                     label="RBLapSum $T=2$")
+                     label="RBLapSum $T=2$ (training CE)")
         axes[1].plot([a for a, _, _ in tr], [c for _, _, c in tr], ":", color=C_RB, lw=1.8)
     lr = cv.get("vi_pol_rs_k32_j480_t0p16_const")
     if lr:
         tr = [p for p in lr["train"] if p[0] <= 1000]
         axes[0].plot([p[0] for p in tr], [p[2] if p[2] is not None else p[1] for p in tr], "-",
-                     color=C_CONST, lw=1.0, alpha=0.6, label="$\\gamma = 1$ (campaign run)")
+                     color=C_CONST, lw=1.0, alpha=0.6, label="$\\gamma = 1$ (campaign run, micro 24)")
     axes[0].set_ylabel("training CE, noise-off probe (nats)")
     axes[1].set_ylabel("gradient norm before clipping")
     axes[1].set_yscale("log")
