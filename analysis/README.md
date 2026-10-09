@@ -17,6 +17,8 @@ memory-mapped, so the viewer only touches the cell it draws.
 | `probe_gain_sweep.py` | per-layer gain / `enc` / `keep` / `cos` for a k or j sweep -> `gain/<name>.json` |
 | `probe_weight_norms.py` | every block's weight-matrix norms every N steps -> `wnorm/<name>.json` |
 | `inspect_bottleneck_scores.py` | prints the distribution facts that decide how to plot |
+| `state_preservation.py` | linear reconstruction of bottleneck `s`'s code from its transport through `s+1..e` with block updates off -> `state_pres/<run>_s<s>_e<e>.{npz,json}` |
+| `radial_pressure_probe.py` | the RBLapSum support term's component along the pool scores, per token and gate, at fixed checkpoints -> `radial/<run>.{npz,json}` |
 | `score_explorer.py` | the streamlit viewer over all of the above |
 
 # Bottleneck score explorer
@@ -257,6 +259,28 @@ evolution across checkpoints.  Engine + correctness tests (restart exactness,
 batching, causality, linearization): `src/wsparse/interventions.py`,
 `tests/test_interventions.py`.  Only `placement=residual_out` is supported (the
 bottleneck ends its block, so the suffix restart is exact).
+
+## 9b. State preservation across stream-carried bottlenecks
+
+```bash
+python analysis/state_preservation.py --ckpt /workspace/ckpt/<run>/ckpt_step20000.pt \
+    --start 2 --end 6 --data-dir /workspace/data/tinystories \
+    --out /workspace/analysis/state_pres/<run>_s2_e6.npz
+python scripts/plot_state_preservation.py --out <dir> --label A --label B <A.npz> <B.npz>
+```
+
+Transports bottleneck `s`'s K-sparse code through bottlenecks `s+1..e` with
+the block updates disabled (decode, output norm, encode, hard TopK, and
+nothing added), fits a full `N x N` ridge map from the transported code back
+to the original on training windows with `lambda` chosen on validation
+windows, and reports the normalized held-out error `E||R(c~) - c||^2 /
+E||c - E[c]||^2` on test windows (the constant predictor scores 1; the
+identity map `c~` is reported too). Predictions are dense, every coordinate
+counts. Windows are split by sequence; the map has 2.36M parameters and the
+fit is data-limited below ~1e5 training tokens, so the default split is
+448 / 32 / 32 windows (229k / 16k / 16k tokens), where train, validation and
+test errors agree to 0.01. Stream-carried models only: under `code_residual`
+the transport is the identity on the code.
 
 ## 10. Surviving instance destruction
 
