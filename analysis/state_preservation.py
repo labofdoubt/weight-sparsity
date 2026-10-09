@@ -90,17 +90,29 @@ def transport(mods, c: torch.Tensor, start: int, end: int) -> torch.Tensor:
 
 
 @torch.no_grad()
-def collect_codes(model, mods, idx: torch.Tensor, start: int, end: int, chunk: int = 16):
-    """``(c_start, c_end_transported)`` for every token of ``idx``, flattened."""
+def collect_codes(model, mods, idx: torch.Tensor, start: int, end: int, chunk: int = 16,
+                  with_updates: bool = False):
+    """``(c_start, c_end)`` for every token of ``idx``, flattened.
+
+    ``c_end`` is the transport of ``c_start`` with the block updates off, or,
+    with ``with_updates``, the model's own code at bottleneck ``end`` from the
+    same full forward (attention and MLP active): the map then measures how
+    much of the earlier code is linearly recoverable from the later one as
+    the trained model actually produces it.
+    """
     ys, xs = [], []
     for i in range(0, idx.shape[0], chunk):
         grabbed = {}
-        h = mods[start].gate.register_forward_hook(
-            lambda m, inp, out: grabbed.__setitem__("c", out.detach()))
+        hs = [mods[start].gate.register_forward_hook(
+            lambda m, inp, out: grabbed.__setitem__("c", out.detach()))]
+        if with_updates:
+            hs.append(mods[end].gate.register_forward_hook(
+                lambda m, inp, out: grabbed.__setitem__("c_end", out.detach())))
         model(idx[i:i + chunk])
-        h.remove()
+        for h in hs:
+            h.remove()
         c = grabbed["c"]
-        ct = transport(mods, c, start, end)
+        ct = grabbed["c_end"] if with_updates else transport(mods, c, start, end)
         ys.append(c.reshape(-1, c.shape[-1]).float())
         xs.append(ct.reshape(-1, ct.shape[-1]).float())
     return torch.cat(ys), torch.cat(xs)
@@ -150,6 +162,9 @@ def main() -> None:
     ap.add_argument("--test-seqs", type=int, default=32)
     ap.add_argument("--lambdas", default="1e-6,3e-6,1e-5,3e-5,1e-4,3e-4,1e-3,3e-3,1e-2,3e-2,1e-1,3e-1,1,3,10",
                     help="ridge lambdas relative to the mean eigenvalue of the training Gram")
+    ap.add_argument("--with-updates", action="store_true",
+                    help="use the model's real code at --end (full forward, attention and MLP "
+                         "active) as the map's input instead of the frozen transport")
     ap.add_argument("--out", required=True)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
@@ -171,7 +186,8 @@ def main() -> None:
     stream = TokenStream(os.path.join(args.data_dir, f"{args.split}.bin"), seq_len, seed=0)
     idx, _ = stream.batch(n_tr + n_va + n_te, device, deterministic_offset=args.offset)
 
-    y_all, x_all = collect_codes(model, mods, idx, args.start, args.end)
+    y_all, x_all = collect_codes(model, mods, idx, args.start, args.end,
+                                 with_updates=args.with_updates)
     T = seq_len
     sl = {"train": slice(0, n_tr * T), "val": slice(n_tr * T, (n_tr + n_va) * T),
           "test": slice((n_tr + n_va) * T, (n_tr + n_va + n_te) * T)}
@@ -192,6 +208,7 @@ def main() -> None:
 
     summary = {"run": os.path.basename(os.path.dirname(os.path.abspath(args.ckpt))),
                "ckpt": os.path.abspath(args.ckpt), "start": args.start, "end": args.end,
+               "with_updates": bool(args.with_updates),
                "k": k, "j": j, "n_features": n_feat, "seq_len": seq_len, "split_source": args.split,
                "offset": args.offset, "seqs": {"train": n_tr, "val": n_va, "test": n_te},
                "tokens": {s: int(x[s].shape[0]) for s in x},
@@ -213,7 +230,8 @@ def main() -> None:
     with open(os.path.splitext(args.out)[0] + ".json", "w") as fh:
         json.dump(summary, fh, indent=2)
     e = summary["errors"]
-    print(f"{summary['run']}  s={args.start} e={args.end}  K={k} J={j}  "
+    print(f"{summary['run']}  s={args.start} e={args.end}  "
+          f"{'updates on' if args.with_updates else 'transport, updates off'}  K={k} J={j}  "
           f"tokens train/val/test {n_tr * T}/{n_va * T}/{n_te * T}  lambda {lam:.3g}")
     print("  normalized error   ridge      identity   constant   support overlap")
     for s in ("train", "val", "test"):

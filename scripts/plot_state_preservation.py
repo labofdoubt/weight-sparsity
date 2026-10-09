@@ -47,7 +47,7 @@ def main() -> None:
     s, e = runs[0][2]["start"], runs[0][2]["end"]
     fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.2))
     for which, ax, title in ((("err_ridge", "ridge"), axes[0], "ridge map R(c~) = A c~ + b, lambda chosen on validation"),
-                             (("err_identity", "identity"), axes[1], "no map: c~ itself as the prediction of c")):
+                             (("err_identity", "identity"), axes[1], "no map: the later code itself as the prediction of c")):
         key, ekey = which
         hi = args.xmax or max(np.percentile(z[key], 99) for _, z, _ in runs)
         logx = args.logx and key == "err_ridge"
@@ -67,9 +67,11 @@ def main() -> None:
         ax.set_title(title, fontsize=10); ax.set_xlabel("per-token ||prediction - c||^2 / E||c - E[c]||^2")
         ax.legend(fontsize=8); ax.grid(alpha=0.3)
     axes[0].set_ylabel("test tokens")
-    fig.suptitle(f"State preservation, bottleneck {s} -> {e} with block updates off: "
-                 f"reconstruction of c_{s} from the transported c_{e}  "
-                 f"({runs[0][2]['tokens']['test']:,} test tokens; dashed = mean, dotted = constant predictor)",
+    upd = bool(runs[0][2].get("with_updates", False))
+    fig.suptitle(f"State preservation, bottleneck {s} -> {e} "
+                 + (f"with block updates on: reconstruction of c_{s} from the model's own c_{e}  "
+                    if upd else f"with block updates off: reconstruction of c_{s} from the transported c_{e}  ")
+                 + f"({runs[0][2]['tokens']['test']:,} test tokens; dashed = mean, dotted = constant predictor)",
                  fontsize=10, y=1.01)
     fig.tight_layout()
     out = os.path.join(args.out, args.name)
