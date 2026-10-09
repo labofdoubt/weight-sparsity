@@ -30,6 +30,10 @@ def main() -> None:
     ap.add_argument("--label", action="append", default=[], help="one per npz, in order")
     ap.add_argument("--bins", type=int, default=60)
     ap.add_argument("--xmax", type=float, default=None)
+    ap.add_argument("--logx", action="store_true",
+                    help="log-spaced bins and a log x axis on the ridge panel (errors below "
+                         "--xmin are placed at --xmin)")
+    ap.add_argument("--xmin", type=float, default=1e-3)
     ap.add_argument("--name", default="state_preservation.png")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
@@ -46,9 +50,15 @@ def main() -> None:
                              (("err_identity", "identity"), axes[1], "no map: c~ itself as the prediction of c")):
         key, ekey = which
         hi = args.xmax or max(np.percentile(z[key], 99) for _, z, _ in runs)
-        bins = np.linspace(0, hi, args.bins + 1)
+        logx = args.logx and key == "err_ridge"
+        if logx:
+            hi = max(hi, 1.0)
+            bins = np.logspace(np.log10(args.xmin), np.log10(hi), args.bins + 1)
+            ax.set_xscale("log")
+        else:
+            bins = np.linspace(0, hi, args.bins + 1)
         for n, (lab, z, m) in enumerate(runs):
-            v = np.clip(z[key], 0, hi)
+            v = np.clip(z[key], args.xmin if logx else 0, hi)
             eps = m["errors"]["test"][ekey]
             ax.hist(v, bins=bins, color=COLORS[n % len(COLORS)], alpha=0.5, edgecolor="none",
                     label=f"{lab}: eps = {eps:.3f} (median {np.median(z[key]):.3f})")
