@@ -256,12 +256,21 @@ def sequence_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     return (ce * valid).sum(1) / valid.sum(1).clamp_min(1.0)
 
 
-def apply_swaps(y: torch.Tensor, rows: Sequence[int], swaps: Sequence[Swap]) -> torch.Tensor:
-    """``y' = y - z_i e_i + z_j e_j`` on the given rows of a (B,T,N) code."""
+def apply_swaps(y: torch.Tensor, rows: Sequence[int], swaps: Sequence[Swap],
+                z_live: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """``y' = y - z_i e_i + z_j e_j`` on the given rows of a (B,T,N) code.
+
+    The hard gate emits ``y_i = z_i`` exactly, so the removal is written as
+    setting coordinate ``i`` to zero: subtracting a ``z_i`` stored from
+    another forward would leave a kernel-rounding residue (a 33rd non-zero)
+    whenever the batch composition differs.  With ``z_live`` (the gate input
+    of the same forward) the inserted value is the live ``z_j``; otherwise
+    the stored one.
+    """
     out = y.clone()
     for r, s in zip(rows, swaps):
-        out[r, s.pos, s.i] = out[r, s.pos, s.i] - s.z_i
-        out[r, s.pos, s.j] = out[r, s.pos, s.j] + s.z_j
+        out[r, s.pos, s.i] = 0.0
+        out[r, s.pos, s.j] = (z_live[r, s.pos, s.j] if z_live is not None else s.z_j)
     return out
 
 
@@ -314,14 +323,19 @@ def swap_losses(model, mods, layer: int, idx: torch.Tensor, targets: torch.Tenso
                     with _autocast(device, dtype):
                         logits = _logits_from_code(model, mods, layer, yb)
                 else:
+                    live = {}
+                    def pre(module, inputs):
+                        live["z"] = inputs[0].detach()
                     def hook(module, inputs, output, rows=rows, chunk=chunk):
-                        return apply_swaps(output, rows, chunk)
-                    h = mods[layer].gate.register_forward_hook(hook)
+                        return apply_swaps(output, rows, chunk, z_live=live["z"])
+                    hs = [mods[layer].gate.register_forward_pre_hook(pre),
+                          mods[layer].gate.register_forward_hook(hook)]
                     try:
                         with _autocast(device, dtype):
                             logits, _ = model(xb, tb)
                     finally:
-                        h.remove()
+                        for h in hs:
+                            h.remove()
                 out[start:start + len(chunk)] = sequence_loss(logits, tb).cpu().numpy()
     finally:
         model.train(was_training)
