@@ -58,6 +58,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from wsparse.data import TokenStream  # noqa: E402
 from wsparse.swap_audit import (Swap, aggregate_layers, baseline_codes, bootstrap_credit,  # noqa: E402
                                 capture_support, check_auditable, credit_error, find_bottlenecks,
+                                hard_output_gradients, paired_scores, paired_swap_deltas,
                                 sample_pairs, swap_deltas, swap_losses)
 from wsparse.train import load_for_inference  # noqa: E402
 
@@ -150,6 +151,10 @@ def main() -> None:
                          "downstream selection in either path, which is what the replays measure")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--backup", default=None, help="rclone destination for the outputs")
+    ap.add_argument("--paired", action="store_true",
+                    help="paired downstream-support replay on a finished audit's swaps: native vs frozen later "
+                         "supports, the all-hard gradient control, transitions; writes under <out-dir>/paired/")
+    ap.add_argument("--verify-replay", type=int, default=2, help="batches per layer whose unswapped mask replay is checked")
     ap.add_argument("--rescore", action="store_true",
                     help="add the linear control to a finished audit in --out-dir: reuse rows.parquet and dL, "
                          "recapture the gradients, rewrite summaries")
@@ -186,6 +191,98 @@ def main() -> None:
 
         # ---- support term (train mode, the checkpoint's own backward) ---- #
         cap = capture_support(model, cfg, mods, idx, targets, layers, dtype=dtype)
+
+        if args.paired:
+            od0 = os.path.join(args.out_dir, f"step{step}")
+            meta0 = json.load(open(os.path.join(od0, "meta.json")))
+            df = pd.read_parquet(os.path.join(od0, "rows.parquet"))
+            if meta0["probe"]["positions"] != positions or meta0["probe"]["batch_shape"] != list(idx.shape):
+                raise SystemExit(f"step {step}: the saved audit used other positions or windows than this invocation")
+            tau = float(meta0["tau"])
+            # the all-hard gradient at the gate outputs, on the probe batch
+            g_hard, fwd_err = hard_output_gradients(model, mods, idx, targets, layers, dtype=dtype)
+            if fwd_err > 1e-5:
+                raise RuntimeError(f"step {step}: the mask-replay forward differs from the plain forward by {fwd_err:.2e}")
+            gi = np.array([float(g_hard[int(r.layer)][int(r.seq), int(r.pos), int(r.i)]) for r in df.itertuples()])
+            gj = np.array([float(g_hard[int(r.layer)][int(r.seq), int(r.pos), int(r.j)]) for r in df.itertuples()])
+            df["g_hard_i"], df["g_hard_j"] = gi, gj
+            df["r_hard_linear"] = df["z_i"] * df["g_hard_i"] - df["z_j"] * df["g_hard_j"]
+            # the paired responses, per layer, same swaps
+            dn = np.zeros(len(df)); dfx = np.zeros(len(df)); valid = np.ones(len(df), bool)
+            cascade = {}; replay = {}
+            for l in layers:
+                m = (df["layer"] == l).to_numpy()
+                sw = [Swap(int(r.seq), int(r.pos), int(r.i), int(r.j), r.z_i, r.z_j) for r in df[m].itertuples()]
+                res = paired_swap_deltas(model, mods, l, idx, targets, sw, args.swap_batch, dtype,
+                                         verify_replay=args.verify_replay)
+                dn[m], dfx[m], valid[m] = res["dL_native"], res["dL_fixed"], res["valid"]
+                replay[int(l)] = res["replay_err"]
+                for k_, mm in enumerate(res["later_layers"]):
+                    col = f"cascade_L{mm}"
+                    if col not in cascade:
+                        cascade[col] = np.full(len(df), -1, dtype=np.int64)
+                    cascade[col][m] = res["cascade"][:, k_]
+            replay_err = max(replay.values()) if replay else 0.0
+            if replay_err > tau:
+                raise RuntimeError(f"step {step}: the unswapped mask replay differs from the baseline by {replay_err:.2e} > tau {tau:.2e}")
+            df["dL_native"], df["dL_fixed"], df["valid"] = dn, dfx, valid
+            for col, v in cascade.items():
+                df[col] = v
+            df["C"] = df["dL_native"] - df["dL_fixed"]
+            df["R_fixed"] = df["dL_fixed"] + df["r_hard_linear"]
+            # dL_native = -r_hard_linear + R_fixed + C holds by construction; record its residual
+            ident_res = float(np.abs(df["dL_native"] - (-df["r_hard_linear"] + df["R_fixed"] + df["C"])).max())
+            dv = df[df["valid"]]
+            pressures = {"support": dv["r"].to_numpy(), "hard_linear": dv["r_hard_linear"].to_numpy()}
+            if "r_linear" in dv:
+                pressures["surrogate_linear"] = dv["r_linear"].to_numpy()
+            sc = paired_scores(dv["seq"].to_numpy(), dv["layer"].to_numpy(), pressures,
+                               dv["dL_native"].to_numpy(), dv["dL_fixed"].to_numpy(), layers, weights, tau,
+                               args.bootstrap, args.seed)
+            od = os.path.join(args.out_dir, "paired", f"step{step}")
+            os.makedirs(od, exist_ok=True)
+            df.to_parquet(os.path.join(od, "rows_paired.parquet"), index=False)
+            cls_n = np.where(dv["dL_native"] < -tau, "improve", np.where(dv["dL_native"] > tau, "harm", "dead"))
+            cls_f = np.where(dv["dL_fixed"] < -tau, "improve", np.where(dv["dL_fixed"] > tau, "harm", "dead"))
+            meta = dict(ckpt=os.path.abspath(path), step=step, run=meta0["run"], provenance=prov, source_audit=od0,
+                        probe=meta0["probe"], tau=tau, dtype=args.dtype, swap_batch=args.swap_batch,
+                        replay_err_per_layer=replay, hard_forward_err=fwd_err, identity_residual=ident_res,
+                        n_invalid=int((~valid).sum()),
+                        invalid_note="incumbent not selected or candidate active in the batch's own baseline; excluded from scoring",
+                        hard_control="r_hard_linear = z_i g_i - z_j g_j, g = dL/dy from an all-hard backward "
+                                     "(every gate = detached baseline mask x live input), L = sum of per-sequence mean CE",
+                        layer_weights={int(l): w for l, w in weights.items()}, seconds=time.time() - t0)
+            with open(os.path.join(od, "meta_paired.json"), "w") as fh:
+                json.dump(meta, fh, indent=2)
+            summary = dict(step=step, tau=tau, n_rows=int(len(df)), n_valid=int(len(dv)),
+                           classes_native=pd.Series(cls_n).value_counts().to_dict(),
+                           classes_fixed=pd.Series(cls_f).value_counts().to_dict(),
+                           cascade_mean_per_layer={int(l): {col: float(df.loc[(df["layer"] == l) & (df[col] >= 0), col].mean())
+                                                            for col in cascade if (df.loc[df["layer"] == l, col] >= 0).any()}
+                                                   for l in layers},
+                           cascade_any_frac={int(l): float((df.loc[df["layer"] == l, list(cascade)].clip(lower=0).sum(1) > 0).mean())
+                                             if cascade else None for l in layers},
+                           scores=sc)
+            with open(os.path.join(od, "summary_paired.json"), "w") as fh:
+                json.dump(summary, fh, indent=2)
+            vs_step.append(dict(step=step, tau=tau, n_valid=int(len(dv)),
+                                **{f"E_{name}_{cond}": sc[name][cond]["E"] for name in sc for cond in ("native", "fixed")},
+                                **{f"ci_{name}": sc[name].get("bootstrap") for name in sc}))
+            with open(os.path.join(args.out_dir, "paired", "credit_vs_step_paired.json"), "w") as fh:
+                json.dump(vs_step, fh, indent=2)
+            line = " | ".join(f"{name}: native {sc[name]['native']['E'] if sc[name]['native']['E'] is None else round(sc[name]['native']['E'], 3)}"
+                              f" fixed {sc[name]['fixed']['E'] if sc[name]['fixed']['E'] is None else round(sc[name]['fixed']['E'], 3)}"
+                              for name in sc)
+            tr = sc["support"]["transitions_all"]
+            print(f"step {step:>6} (paired): valid {len(dv)}/{len(df)} replay {replay_err:.1e} cascade-any "
+                  + " ".join(f"L{l}:{summary['cascade_any_frac'][int(l)]:.2f}" for l in layers if summary['cascade_any_frac'][int(l)] is not None)
+                  + f"\n                      {line}\n                      support transitions: beneficial repaired {tr['beneficial']['repaired']}/"
+                  f"{tr['beneficial']['n']} broken {tr['beneficial']['broken']}; harmful repaired {tr['harmful']['repaired']}/{tr['harmful']['n']} broken {tr['harmful']['broken']}")
+            if args.backup:
+                subprocess.run(["rclone", "copy", args.out_dir, args.backup], check=False)
+            del model
+            torch.cuda.empty_cache() if device.type == "cuda" else None
+            continue
 
         if args.rescore:
             od = os.path.join(args.out_dir, f"step{step}")

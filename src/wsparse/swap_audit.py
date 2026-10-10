@@ -526,3 +526,231 @@ def bootstrap_credit(seq: np.ndarray, layer: np.ndarray, r: np.ndarray, dL: np.n
                     lo=float(np.percentile(v, 2.5)) if v.size else None,
                     hi=float(np.percentile(v, 97.5)) if v.size else None)
     return dict(aggregate=ci(agg), per_layer={int(l): ci(per[l]) for l in layers}, n_boot=n_boot)
+
+
+# --------------------------------------------------------------------------- #
+# paired downstream-support replay
+# --------------------------------------------------------------------------- #
+# Does the disagreement between the support pressure and the finite swap effect
+# come from the hard supports that change downstream of the swap?  Every swap
+# is evaluated twice in the same batch layout: natively (later gates re-select)
+# and with every later gate forced to its unswapped selection
+# ``y_m = M_m^0 * z_m`` (values still respond; only the selection is frozen).
+# Masks are the gates' actual selections (gate._mask_sink), never ``y != 0``.
+
+class _ForwardScope:
+    """Hooks, gate attributes, mode and dropout, all restored on exit."""
+
+    def __init__(self, model, mods):
+        self.model, self.mods = model, mods
+        self.handles: list = []
+        self._det = None
+        self._was_training = None
+
+    def __enter__(self):
+        self._was_training = self.model.training
+        self._det = deterministic_forward(self.model); self._det.__enter__()
+        return self
+
+    def add(self, h):
+        self.handles.append(h); return h
+
+    def __exit__(self, *exc):
+        for h in self.handles:
+            h.remove()
+        for m in self.mods:
+            m.gate._mask_sink = None
+        self._det.__exit__(*exc)
+        self.model.train(self._was_training)
+        return False
+
+
+def _run_paired_batch(model, mods, layer: int, xb, tb, srows, chunk, mode: str,
+                      fixed: Optional[Dict[int, torch.Tensor]], capture: Sequence[int],
+                      dtype, grad: bool = False):
+    """One forward over a batch.
+
+    ``mode``: "plain" (no swap), "swap" (native swap at ``layer`` through the
+    gate-output hook with the live candidate value).  ``fixed``: gate index ->
+    (B,T,N) bool mask forced on that gate's output (``y = M * z``).  ``capture``:
+    gates whose actual masks are returned.  With ``grad`` the forward is
+    traced and the gate outputs (after any override) are returned with hooks
+    attached so their gradients can be read.  Returns (logits, masks, outputs).
+    """
+    scope_handles = []
+    masks: Dict[int, torch.Tensor] = {}
+    outputs: Dict[int, torch.Tensor] = {}
+    sinks = {}
+    try:
+        for l in capture:
+            sinks[l] = {}
+            mods[l].gate._mask_sink = sinks[l]
+        live = {}
+        for l, gate in ((l, m.gate) for l, m in enumerate(mods)):
+            def pre(module, inputs, l=l):
+                live[l] = inputs[0]
+            scope_handles.append(gate.register_forward_pre_hook(pre))
+
+            def post(module, inputs, output, l=l):
+                out = output
+                if fixed is not None and l in fixed:
+                    out = live[l] * fixed[l].to(live[l].dtype)
+                if mode == "swap" and l == layer:
+                    out = apply_swaps(out, srows, chunk, z_live=live[l].detach())
+                if grad:
+                    outputs[l] = out
+                return out
+            scope_handles.append(gate.register_forward_hook(post))
+        if grad:
+            with _autocast(xb.device, dtype):
+                logits, _ = model(xb, tb)
+        else:
+            with torch.no_grad(), _autocast(xb.device, dtype):
+                logits, _ = model(xb, tb)
+        for l in capture:
+            masks[l] = sinks[l]["mask"]
+    finally:
+        for h in scope_handles:
+            h.remove()
+        for l in capture:
+            mods[l].gate._mask_sink = None
+    return logits, masks, outputs
+
+
+@torch.no_grad()
+def paired_swap_deltas(model, mods, layer: int, idx, targets, swaps: Sequence[Swap],
+                       batch_size: int = 32, dtype: torch.dtype = torch.float32,
+                       verify_replay: int = 1) -> dict:
+    """Per swap: ``dL_native``, ``dL_fixed``, ``valid`` (incumbent selected and
+    candidate inactive in this batch's own baseline), ``cascade`` (per later
+    gate, the number of mask entries the native swap changed in the sequence),
+    and ``replay_err`` (max |L(fixed, no swap) - L(plain)| over the first
+    ``verify_replay`` batches: the unswapped mask replay must reproduce the
+    baseline).  Baseline, native and fixed passes share one batch layout."""
+    n_layers = len(mods)
+    later = list(range(layer + 1, n_layers))
+    out = dict(dL_native=np.zeros(len(swaps)), dL_fixed=np.zeros(len(swaps)),
+               valid=np.ones(len(swaps), dtype=bool),
+               cascade=np.zeros((len(swaps), len(later)), dtype=np.int64), replay_err=0.0)
+    with _ForwardScope(model, mods):
+        model.eval()
+        for b0 in range(0, len(swaps), batch_size):
+            chunk = list(swaps[b0:b0 + batch_size]); srows = list(range(len(chunk)))
+            seqs = torch.tensor([s.seq for s in chunk], device=idx.device)
+            xb, tb = idx[seqs], targets[seqs]
+            # 1. baseline in this layout: losses and the actual masks at layer.. end
+            logits1, M0, _ = _run_paired_batch(model, mods, layer, xb, tb, srows, chunk, "plain",
+                                               None, list(range(layer, n_layers)), dtype)
+            L1 = sequence_loss(logits1, tb).cpu().numpy()
+            for r, s in enumerate(chunk):
+                ok = bool(M0[layer][r, s.pos, s.i]) and not bool(M0[layer][r, s.pos, s.j])
+                out["valid"][b0 + r] = ok
+            fixed = {m: M0[m] for m in later}
+            if (b0 // batch_size) < verify_replay and later:
+                logits_r, _, _ = _run_paired_batch(model, mods, layer, xb, tb, srows, chunk, "plain",
+                                                   fixed, [], dtype)
+                out["replay_err"] = max(out["replay_err"],
+                                        float(np.abs(sequence_loss(logits_r, tb).cpu().numpy() - L1).max()))
+            # 2. native swap: later gates re-select; record what changed
+            logits2, M2, _ = _run_paired_batch(model, mods, layer, xb, tb, srows, chunk, "swap",
+                                               None, later, dtype)
+            L2 = sequence_loss(logits2, tb).cpu().numpy()
+            for k, m in enumerate(later):
+                out["cascade"][b0:b0 + len(chunk), k] = (M2[m] != M0[m]).reshape(len(chunk), -1).sum(1).cpu().numpy()
+            # 3. the same swap with every later selection frozen
+            logits3, _, _ = _run_paired_batch(model, mods, layer, xb, tb, srows, chunk, "swap",
+                                              fixed, [], dtype)
+            L3 = sequence_loss(logits3, tb).cpu().numpy()
+            out["dL_native"][b0:b0 + len(chunk)] = L2 - L1
+            out["dL_fixed"][b0:b0 + len(chunk)] = L3 - L1
+    out["later_layers"] = later
+    return out
+
+
+def hard_output_gradients(model, mods, idx, targets, layers: Sequence[int],
+                          dtype: torch.dtype = torch.float32) -> Tuple[Dict[int, torch.Tensor], float]:
+    """``g^hard = dL/dy`` at the output of each gate in ``layers`` with every
+    gate replaced by its detached baseline mask times its live input, so the
+    backward is the ordinary hard one at every gate (no surrogate term
+    anywhere).  ``L`` is the sum of the per-sequence mean losses, so each
+    sequence's gradient is in the units of its own mean CE.  Also returns the
+    max |logit| difference between this forward and the plain one (must be
+    ~0).  Parameters are left untouched."""
+    n_layers = len(mods)
+    with _ForwardScope(model, mods):
+        model.eval()
+        with torch.no_grad():
+            logits_plain, M0, _ = _run_paired_batch(model, mods, -1, idx, targets, [], [], "plain",
+                                                    None, list(range(n_layers)), dtype)
+        fixed = {m: M0[m] for m in range(n_layers)}
+        with torch.enable_grad():
+            logits, _, outputs = _run_paired_batch(model, mods, -1, idx, targets, [], [], "plain",
+                                                   fixed, [], dtype, grad=True)
+            fwd_err = float((logits.detach() - logits_plain).abs().max())
+            loss = sequence_loss(logits, targets).sum()
+            grads = torch.autograd.grad(loss, [outputs[l] for l in layers], allow_unused=False)
+    model.zero_grad(set_to_none=True)
+    return {l: g.detach() for l, g in zip(layers, grads)}, fwd_err
+
+
+# ---- scoring of the paired responses -------------------------------------- #
+def transitions(r: np.ndarray, dL_nat: np.ndarray, dL_fix: np.ndarray, tau: float) -> dict:
+    """On pairs non-dead under both responses: predictions repaired or broken
+    by fixing the downstream supports, split by the native class."""
+    both = (np.abs(dL_nat) > tau) & (np.abs(dL_fix) > tau)
+    promote = r > 0
+    right_nat = np.where(dL_nat < 0, promote, ~promote)
+    right_fix = np.where(dL_fix < 0, promote, ~promote)
+    out = {"n_both": int(both.sum())}
+    for name, cls in (("beneficial", dL_nat < -tau), (("harmful"), dL_nat > tau)):
+        m = both & cls
+        out[name] = dict(n=int(m.sum()),
+                         repaired=int((m & ~right_nat & right_fix).sum()),
+                         broken=int((m & right_nat & ~right_fix).sum()),
+                         right_native=int((m & right_nat).sum()), right_fixed=int((m & right_fix).sum()))
+    return out
+
+
+def paired_scores(seq, layer, pressures: Dict[str, np.ndarray], dL_nat, dL_fix, layers, weights,
+                  tau: float, n_boot: int, seed: int) -> dict:
+    """For every pressure: E under the native and the fixed response (per layer
+    and aggregate), the transitions, and bootstrap CIs over whole sequence
+    windows with identical resamples for both conditions and their difference."""
+    seq, layer, dL_nat, dL_fix = (np.asarray(a) for a in (seq, layer, dL_nat, dL_fix))
+
+    def score_all(sel):
+        res = {}
+        for name, r in pressures.items():
+            r = np.asarray(r)
+            pn = {l: credit_error(r[sel][layer[sel] == l], dL_nat[sel][layer[sel] == l], tau) for l in layers}
+            pf = {l: credit_error(r[sel][layer[sel] == l], dL_fix[sel][layer[sel] == l], tau) for l in layers}
+            En, Ef = aggregate_layers(pn, weights), aggregate_layers(pf, weights)
+            res[name] = dict(native=dict(per_layer=pn, E=En), fixed=dict(per_layer=pf, E=Ef),
+                             diff=(En - Ef) if (En is not None and Ef is not None) else None,
+                             transitions={int(l): transitions(r[sel][layer[sel] == l], dL_nat[sel][layer[sel] == l],
+                                                              dL_fix[sel][layer[sel] == l], tau) for l in layers},
+                             transitions_all=transitions(r[sel], dL_nat[sel], dL_fix[sel], tau))
+        return res
+
+    full = score_all(np.ones(len(seq), dtype=bool))
+    if n_boot:
+        seqs = np.array(sorted(set(seq.tolist()))); rng = np.random.default_rng(seed)
+        rows_of = {s: np.where(seq == s)[0] for s in seqs}
+        acc = {name: {"native": [], "fixed": [], "diff": []} for name in pressures}
+        for _ in range(n_boot):
+            draw = rng.choice(seqs, size=len(seqs), replace=True)
+            sel = np.concatenate([rows_of[s] for s in draw])
+            res = score_all(sel)
+            for name in pressures:
+                acc[name]["native"].append(res[name]["native"]["E"]); acc[name]["fixed"].append(res[name]["fixed"]["E"])
+                acc[name]["diff"].append(res[name]["diff"])
+
+        def ci(vals):
+            v = np.array([x for x in vals if x is not None], dtype=float)
+            return dict(n_defined=int(v.size), n_undefined=int(len(vals) - v.size),
+                        lo=float(np.percentile(v, 2.5)) if v.size else None,
+                        hi=float(np.percentile(v, 97.5)) if v.size else None)
+        for name in pressures:
+            full[name]["bootstrap"] = {k: ci(v) for k, v in acc[name].items()}
+            full[name]["bootstrap"]["n_boot"] = n_boot
+    return full

@@ -312,6 +312,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
         # wsparse.swap_audit.SupportCapture, installed by the audit for one
         # backward; None otherwise (no effect on training)
         self._support_capture = None
+        # wsparse.swap_audit mask capture: a dict that receives the gate's
+        # actual hard selection ("mask", bool, the scores' shape) at every
+        # forward while set; None otherwise (no effect on training)
+        self._mask_sink = None
 
     @property
     def diagnostics(self) -> Dict[str, torch.Tensor]:
@@ -405,6 +409,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 self._forward_diag["active_count"] = kprime.to(torch.float32).mean().detach()
         else:
             hard_mask = torch.zeros_like(scores).scatter(-1, cand_idx[..., : self.k], 1.0)
+        if self._mask_sink is not None:
+            self._mask_sink["mask"] = (hard_mask != 0).detach()
         if self.log_diagnostics and self.training:
             self._record_usage(hard_mask)
 
@@ -701,6 +707,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
         # active = TopK AND s > b0, using TopK's own tie-breaking (position < k)
         active_c = torch.zeros_like(score_c)
         active_c[..., :self.k] = (score_c[..., :self.k] > b0).to(score_c.dtype)
+        if self._mask_sink is not None:
+            self._mask_sink["mask"] = torch.zeros_like(scores, dtype=torch.bool).scatter(
+                -1, cand_idx, active_c != 0).detach()
         sign_c = (value_c.sign() if self.selection_mode == "abs_topk"
                   else torch.ones_like(value_c))
 
