@@ -51,7 +51,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from wsparse.data import TokenStream  # noqa: E402
 from wsparse.swap_audit import (Swap, aggregate_layers, baseline_codes, bootstrap_credit,  # noqa: E402
                                 capture_support, check_auditable, credit_error, find_bottlenecks,
-                                sample_pairs, swap_losses)
+                                sample_pairs, swap_deltas, swap_losses)
 from wsparse.train import load_for_inference  # noqa: E402
 
 DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}
@@ -83,7 +83,10 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=1234, help="pair-sampling and bootstrap seed")
     ap.add_argument("--dtype", default="float32", choices=list(DTYPES))
     ap.add_argument("--tau", type=float, default=None)
-    ap.add_argument("--tau-factor", type=float, default=4.0)
+    ap.add_argument("--tau-factor", type=float, default=4.0,
+                    help="tau = max(tau_factor x paired replay noise, tau_floor)")
+    ap.add_argument("--tau-floor", type=float, default=1e-7, help="the fp32 resolution of a sequence-mean CE")
+    ap.add_argument("--swap-batch", type=int, default=32)
     ap.add_argument("--layer-weights", default=None, help="comma-separated, one per layer; default uniform")
     ap.add_argument("--bootstrap", type=int, default=1000)
     ap.add_argument("--suffix", action="store_true")
@@ -92,7 +95,6 @@ def main() -> None:
                     help="max |L_suffix - L_oracle| allowed beyond the identity-replay noise (tau_factor x "
                          "the largest identity-replay |dL|): batch-composition rounding can flip a near-tied "
                          "downstream selection in either path, which is what the replays measure")
-    ap.add_argument("--swap-batch", type=int, default=32)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--backup", default=None, help="rclone destination for the outputs")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -152,40 +154,39 @@ def main() -> None:
         df = pd.DataFrame(rows)
         df["r"] = df["h_i"] - df["h_j"]
 
-        # ---- tau from identity replays ----------------------------------- #
+        # ---- paired evaluation: every batch carries unswapped copies of its
+        # sequences, dL is row against row, and the two unswapped copies of a
+        # sequence in one batch measure the replay noise that is left ------- #
+        dL = np.zeros(len(df)); noise_all = []
+        for l in layers:
+            m = (df["layer"] == l).to_numpy()
+            sw = [Swap(int(r.seq), int(r.pos), int(r.i), int(r.j), r.z_i, r.z_j) for r in df[m].itertuples()]
+            d, noise = swap_deltas(model, mods, l, idx, targets, sw, args.swap_batch, dtype,
+                                   suffix=use_suffix, baseline_code=y_eval[l] if use_suffix else None, n_identity=2)
+            dL[m] = d; noise_all.append(noise)
+        noise_all = np.concatenate(noise_all) if noise_all else np.zeros(0)
+        tau_replay = float(noise_all.max()) if noise_all.size else 0.0
+        # cross-batch reference: the unpaired identity replay against the hook-free baseline (reported only)
         tau_src = {}
         for l in layers:
             sw = [s for ll, s in ident if ll == l]
             Lid = swap_losses(model, mods, l, idx, targets, sw, args.swap_batch, dtype,
                               suffix=use_suffix, baseline_code=y_eval[l] if use_suffix else None)
             tau_src[l] = float(np.abs(Lid - L0[[s.seq for s in sw]]).max())
-        tau_replay = max(tau_src.values())
-        # ---- suffix check against the oracle ----------------------------- #
         suffix_check = None
         if use_suffix and args.verify_suffix > 0:
             suffix_check = {}
             for l in layers:
                 sub = df[df["layer"] == l].head(args.verify_suffix)
                 sw = [Swap(int(r.seq), int(r.pos), int(r.i), int(r.j), r.z_i, r.z_j) for r in sub.itertuples()]
-                a = swap_losses(model, mods, l, idx, targets, sw, args.swap_batch, dtype, suffix=False)
-                s = swap_losses(model, mods, l, idx, targets, sw, args.swap_batch, dtype, suffix=True,
-                                baseline_code=y_eval[l])
-                suffix_check[l] = float(np.abs(a - s).max())
-                allowed = args.suffix_tol + args.tau_factor * tau_replay
+                a, _ = swap_deltas(model, mods, l, idx, targets, sw, args.swap_batch, dtype, suffix=False)
+                b, _ = swap_deltas(model, mods, l, idx, targets, sw, args.swap_batch, dtype, suffix=True,
+                                   baseline_code=y_eval[l])
+                suffix_check[l] = float(np.abs(a - b).max())
+                allowed = args.suffix_tol + args.tau_factor * max(tau_replay, max(tau_src.values()))
                 if suffix_check[l] > allowed:
-                    raise RuntimeError(f"step {step} layer {l}: suffix vs oracle differ by {suffix_check[l]:.3e} "
-                                       f"> {allowed:.3e} (tol {args.suffix_tol} + {args.tau_factor} x replay noise {tau_replay:.3e})")
-            tau_replay = max(tau_replay, max(suffix_check.values()))
-        tau = args.tau if args.tau is not None else args.tau_factor * tau_replay
-
-        # ---- the swaps --------------------------------------------------- #
-        dL = np.zeros(len(df))
-        for l in layers:
-            m = (df["layer"] == l).to_numpy()
-            sw = [Swap(int(r.seq), int(r.pos), int(r.i), int(r.j), r.z_i, r.z_j) for r in df[m].itertuples()]
-            L1 = swap_losses(model, mods, l, idx, targets, sw, args.swap_batch, dtype,
-                             suffix=use_suffix, baseline_code=y_eval[l] if use_suffix else None)
-            dL[m] = L1 - L0[[s.seq for s in sw]]
+                    raise RuntimeError(f"step {step} layer {l}: suffix vs oracle differ by {suffix_check[l]:.3e} > {allowed:.3e}")
+        tau = args.tau if args.tau is not None else max(args.tau_factor * tau_replay, args.tau_floor)
         df["dL"] = dL
         df["cls"] = np.where(df["dL"] < -tau, "improve", np.where(df["dL"] > tau, "harm", "dead"))
 
@@ -209,7 +210,8 @@ def main() -> None:
                     windows=dict(active=args.active_window, cand=args.cand_window, pairs_per_token=args.pairs_per_token,
                                  exhaustive=args.exhaustive, seed=args.seed),
                     dtype=args.dtype, suffix=use_suffix, suffix_check=suffix_check,
-                    tau=tau, tau_replay=tau_replay, tau_per_layer=tau_src, tau_factor=args.tau_factor,
+                    tau=tau, tau_replay_paired=tau_replay, n_paired_noise=int(noise_all.size),
+                    cross_batch_identity_per_layer=tau_src, tau_factor=args.tau_factor, tau_floor=args.tau_floor,
                     layer_weights={int(l): w for l, w in weights.items()}, loss="mean fp32 CE per sequence, fp64",
                     seconds=time.time() - t0)
         with open(os.path.join(od, "meta.json"), "w") as fh:

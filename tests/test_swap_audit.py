@@ -157,3 +157,21 @@ def test_bootstrap_reports_undefined_resamples():
                               np.array([-1.0, 1.0, -1.0, -1.0]), [0], {0: 1.0}, 0.1, n_boot=50, seed=0)
     assert out["aggregate"]["n_defined"] + out["aggregate"]["n_undefined"] == 50
     assert out["aggregate"]["n_undefined"] > 0      # resamples with only seq 1 have no harm class
+
+
+def test_paired_deltas_match_the_oracle_differences_and_have_zero_replay_noise():
+    model, cfg, mods, idx, targets = make()
+    layer = 1
+    z, y, L0 = sa.baseline_codes(model, mods, idx, targets, layers=[layer])
+    swaps = []
+    for b in range(3):
+        for t in (3, 8, 12):
+            order = torch.argsort(z[layer][b, t].abs(), descending=True)
+            i, j = int(order[K - 1]), int(order[K])
+            swaps.append(sa.Swap(b, t, i, j, float(z[layer][b, t, i]), float(z[layer][b, t, j])))
+    d, noise = sa.swap_deltas(model, mods, layer, idx, targets, swaps, batch_size=5, n_identity=2)
+    L1 = sa.swap_losses(model, mods, layer, idx, targets, swaps, batch_size=5)
+    assert noise.size > 0 and noise.max() == 0.0
+    assert np.abs(d - (L1 - L0[[s.seq for s in swaps]])).max() < 1e-6
+    ds, _ = sa.swap_deltas(model, mods, layer, idx, targets, swaps, batch_size=5, suffix=True, baseline_code=y[layer])
+    assert np.abs(ds - d).max() < 1e-6

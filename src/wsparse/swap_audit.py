@@ -343,6 +343,87 @@ def swap_losses(model, mods, layer: int, idx: torch.Tensor, targets: torch.Tenso
 
 
 @torch.no_grad()
+def swap_deltas(model, mods, layer: int, idx: torch.Tensor, targets: torch.Tensor,
+                swaps: Sequence[Swap], batch_size: int = 32, dtype: torch.dtype = torch.float32,
+                suffix: bool = False, baseline_code: Optional[torch.Tensor] = None,
+                n_identity: int = 1) -> Tuple[np.ndarray, np.ndarray]:
+    """``dL`` per swap, paired: each batch holds, for every sequence it uses,
+    ``n_identity`` unswapped copies as well, and the swap's loss is taken
+    against the unswapped copy of the same batch, so the rounding that
+    depends on batch composition is the same on both sides of the difference
+    and only the swap differs.  Returns ``(dL, noise)`` with ``noise`` the
+    |difference| between the unswapped copies of one sequence within one
+    batch (zero when rows are computed independently), one value per batch
+    and sequence with ``n_identity >= 2``, else empty.
+
+    The oracle path replaces the gate output by a hook with the live gate
+    input; the suffix path (stream-carried only) starts from ``baseline_code``.
+    """
+    cr = bool(getattr(model, "code_residual", False))
+    if suffix and cr:
+        raise NotImplementedError("the cached suffix is not valid for code_residual models; use the oracle")
+    if suffix and baseline_code is None:
+        raise ValueError("suffix=True needs baseline_code")
+    was_training = model.training
+    model.eval()
+    device = idx.device
+    order = sorted(range(len(swaps)), key=lambda a: swaps[a].seq)
+    dL = np.zeros(len(swaps), dtype=np.float64)
+    noise: List[float] = []
+    try:
+        with deterministic_forward(model):
+            pos = 0
+            while pos < len(order):
+                # fill a batch: identity rows for each new sequence, then its swaps
+                rows_seq: List[int] = []; rows_swap: List[Optional[int]] = []
+                while pos < len(order):
+                    a = order[pos]; sq = swaps[a].seq
+                    need = (n_identity if sq not in rows_seq else 0) + 1
+                    if rows_seq and len(rows_seq) + need > batch_size:
+                        break
+                    if sq not in rows_seq:
+                        for _ in range(n_identity):
+                            rows_seq.append(sq); rows_swap.append(None)
+                    rows_seq.append(sq); rows_swap.append(a); pos += 1
+                seqs = torch.tensor(rows_seq, device=device)
+                xb, tb = idx[seqs], targets[seqs]
+                srows = [r for r, a in enumerate(rows_swap) if a is not None]
+                chunk = [swaps[a] for a in rows_swap if a is not None]
+                if suffix:
+                    yb = apply_swaps(baseline_code[seqs], srows, chunk)
+                    with _autocast(device, dtype):
+                        logits = _logits_from_code(model, mods, layer, yb)
+                else:
+                    live = {}
+                    def pre(module, inputs):
+                        live["z"] = inputs[0].detach()
+                    def hook(module, inputs, output, srows=srows, chunk=chunk):
+                        return apply_swaps(output, srows, chunk, z_live=live["z"])
+                    hs = [mods[layer].gate.register_forward_pre_hook(pre),
+                          mods[layer].gate.register_forward_hook(hook)]
+                    try:
+                        with _autocast(device, dtype):
+                            logits, _ = model(xb, tb)
+                    finally:
+                        for h in hs:
+                            h.remove()
+                L = sequence_loss(logits, tb).cpu().numpy()
+                first_id = {}
+                for r, (sq, a) in enumerate(zip(rows_seq, rows_swap)):
+                    if a is None:
+                        if sq in first_id:
+                            noise.append(abs(float(L[r] - L[first_id[sq]])))
+                        else:
+                            first_id[sq] = r
+                for r, (sq, a) in enumerate(zip(rows_seq, rows_swap)):
+                    if a is not None:
+                        dL[a] = L[r] - L[first_id[sq]]
+    finally:
+        model.train(was_training)
+    return dL, np.array(noise, dtype=np.float64)
+
+
+@torch.no_grad()
 def baseline_codes(model, mods, idx: torch.Tensor, targets: torch.Tensor, layers: Sequence[int],
                    dtype: torch.dtype = torch.float32) -> Tuple[Dict[int, torch.Tensor], Dict[int, torch.Tensor], np.ndarray]:
     """Eval-mode gate inputs ``z`` and outputs ``y`` per layer, and the
