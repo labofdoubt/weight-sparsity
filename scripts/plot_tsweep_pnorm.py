@@ -76,7 +76,7 @@ def main():
         hd += [Line2D([0], [0], color=pt.GREY, ls=":", lw=1.8,
                       label=r"first-order, $T=2$, $\gamma=1$, no post-norm")]
         hd += [Line2D([0], [0], color=scol[s], lw=2.0, label=rf"$s={s:g}$") for _, s in pt.SS]
-        axes[row][1].legend(handles=hd, loc="best", framealpha=0.93, ncol=2)
+        axes[row][1].legend(handles=hd, loc="center left", bbox_to_anchor=(1.02, 0.5), framealpha=0.93, ncol=1)
     fig.suptitle(r"First-order scope, span rule $T=\tau\,(s_{(K+1)}-s_{(K+J)})$, $\gamma=2sT/b$, "
                  "code carried: without (left) and with (right) the output RMSNorm", y=1.0, fontsize=12)
     fig.tight_layout()
