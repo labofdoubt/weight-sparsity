@@ -18,6 +18,7 @@ memory-mapped, so the viewer only touches the cell it draws.
 | `probe_weight_norms.py` | every block's weight-matrix norms every N steps -> `wnorm/<name>.json` |
 | `inspect_bottleneck_scores.py` | prints the distribution facts that decide how to plot |
 | `state_preservation.py` | linear reconstruction of bottleneck `s`'s code from its transport through `s+1..e` with block updates off -> `state_pres/<run>_s<s>_e<e>.{npz,json}` |
+| `swap_credit_audit.py` | counterfactual hard-swap audit of RBLapSum support credit at saved checkpoints -> `swap_audit/<run>/step<S>/{rows.parquet,meta.json,summary.json}` |
 | `radial_pressure_probe.py` | the RBLapSum support term's component along the pool scores, per token and gate, at fixed checkpoints -> `radial/<run>.{npz,json}` |
 | `score_explorer.py` | the streamlit viewer over all of the above |
 
@@ -287,6 +288,62 @@ fit is data-limited below ~1e5 training tokens, so the default split is
 448 / 32 / 32 windows (229k / 16k / 16k tokens), where train, validation and
 test errors agree to 0.01. Stream-carried models only: under `code_residual`
 the transport is the identity on the code.
+
+## 9c. Counterfactual hard-swap audit of support credit
+
+```bash
+python analysis/swap_credit_audit.py --ckpt <run>/ckpt_step2000.pt --ckpt <run>/ckpt_step20000.pt \
+    --data-dir /workspace/data/tinystories --layers 1,3,5 --n-positions 12 \
+    --active-window 8 --cand-window 8 --pairs-per-token 16 \
+    --out-dir /workspace/analysis/swap_audit/<run> --backup gdrive:weight-sparsity/analysis_<box>/swap_audit/<run>
+```
+
+Does the surrogate's support term predict the loss effect of a finite
+replacement?  At each checkpoint (`src/wsparse/swap_audit.py`):
+
+* **Capture.** One train-mode forward + backward on a fixed probe batch with
+  dropout off (`nn.Dropout` and the functional attention dropout; RNG state
+  restored).  A `SupportCapture` installed on each audited gate receives the
+  *final* score-space support term `h` the RBLapSum backward applies -- after
+  scale, member restriction, token centering and the radial projection -- in
+  the sorted order of the candidate pool, whose feature ids the gate records.
+  The first-order scope runs its real two-pass backward and the total pass's
+  term is the one captured.  `h` is never obtained by subtracting an all-hard
+  backward, and the hard value gradient is not part of it; the local
+  decomposition `g_z = m * g_y + sign(z) * h` is verified at every gate and a
+  failure is an error.  Carry/update scopes, soft-forward and policy gates are
+  refused; the capture is `None` in training and changes no numerics.
+* **Pairs.** Active rank `i` in `[K - w_a, K)` against candidate rank `j` in
+  `[K, K + w_c)` of the pool, uniform without replacement or exhaustive,
+  seeded by (seed, layer, sequence, position) only, so every checkpoint and
+  variant sees the same rank pairs at the same tokens.  Replacement pressure
+  `r_ij = h_i - h_j` (positive promotes `j`).
+* **Swap.** `y' = y - z_i e_i + z_j e_j` at one token of one gate, with the
+  candidate's own signed pre-gate value `z_j` (not the incumbent's), nothing
+  else touched; everything downstream recomputed.  The oracle is a full
+  forward with a gate-output hook (valid for every architecture, code
+  residual included); `--suffix` uses the cached stream suffix (decode,
+  post-norm, the later blocks, final norm, head) after checking it against
+  the oracle on `--verify-suffix` swaps per layer, and is refused for code
+  residual.  `dL_ij = L(y') - L(y)` with `L` the mean fp32 per-token CE of
+  the sequence, differences in fp64; batched rows are copies of the sequence
+  with their own swap.  A train/eval disagreement on the active support is
+  an error.
+* **Estimator.** `E_credit = 1/2 [P(r <= 0 | dL < -tau) + P(r > 0 | dL > tau)]`,
+  the balanced decision error with the dead band `|dL| <= tau`, `tau` calibrated as
+  `--tau-factor` times the largest |dL| of identity replays (and of the
+  suffix check); per layer, aggregated with fixed `--layer-weights`;
+  undefined (`null`) when a class is empty, never 0.5 or renormalized; CIs by
+  resampling whole sequence windows, undefined resamples counted.
+
+Outputs: per-swap rows (`rows.parquet`), `meta.json` (checkpoint provenance:
+scope, temperature, strength, width, projection, normalization, architecture;
+probe batch shape; dropout handling; dtype; tau; decomposition errors),
+`summary.json` (class counts, per-layer and aggregate E with CIs) and
+`credit_vs_step.json`.  Tests: `tests/test_swap_audit.py`.  What it measures
+is score-space credit agreement with finite replacement utility, downstream
+support changes included; not Adam-step quality, not training damage, and
+not whether the gap causes the surrogate's advantage.
 
 ## 10. Surviving instance destruction
 

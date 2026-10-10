@@ -309,6 +309,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
         self._forward_diag: Dict[str, torch.Tensor] = {}
         self._usage_diag: Dict[str, torch.Tensor] = {}
         self._grad_sink: Dict[str, torch.Tensor] = {}
+        # wsparse.swap_audit.SupportCapture, installed by the audit for one
+        # backward; None otherwise (no effect on training)
+        self._support_capture = None
 
     @property
     def diagnostics(self) -> Dict[str, torch.Tensor]:
@@ -748,9 +751,12 @@ class AdaptiveLapSumTopKGate(nn.Module):
             scale = float(self.rblapsum_support_scale)
             if self.rblapsum_support_strength is not None:
                 scale = strength_scale(self.rblapsum_support_strength, t_row, b)
+            capture = self._support_capture
+            if capture is not None:
+                capture.record_forward(cand_idx.detach(), alpha)
             y_c = rblapsum_gate(value_c, active_c, score_c, sign_c, b, t_row,
                                 self.rblapsum_boundary_grad_mode, self.k, cap_active, sink,
-                                supp_scale=scale,
+                                supp_scale=scale, capture=capture,
                                 perm_rho=(self.rblapsum_rho_random_perm_prob_grad
                                           if self.training else 0.0),
                                 members=SURROGATE_SCOPES[self.rblapsum_surrogate_scope],
