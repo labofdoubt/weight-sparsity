@@ -1385,22 +1385,36 @@ st.plotly_chart(fig2, width="stretch", theme=None)
 # and the update at each carried index; 2c asks how many later gates keep each
 # of this gate's TopK before evicting it.  Neither question exists for a
 # stream-carried stack, where every gate re-encodes the decoded stream.
+# The same panel for a stream-carried residual_out model: the "passed code" is
+# the previous code re-encoded by this block's encoder, E_l N D c_{l-1} (dense),
+# and the update is E_l Delta_l; the "support" of the passed code is then the
+# Top-K it would select on its own, i.e. the selection with the block updates
+# off.  meta["passed_code"] says which of the two a dataset holds.
 CARRY_COLOR, UPDATE_COLOR = "#4a3aa7", "#eda100"
-if bool(meta.get("code_residual", False)):
-    st.markdown("#### The code residual at this cell")
+is_carried = bool(meta.get("code_residual", False))
+passed_kind = meta.get("passed_code", "carried" if is_carried else None)
+if is_carried or "code_residual" in arrays:
+    cr_name = "carried code" if is_carried else "passed code"
+    cr_sym = f"c_{li}" if is_carried else f"E_{li} N D c_{li - 1}"
+    st.markdown("#### The code residual at this cell" if is_carried
+                else "#### The passed code at this cell (stream-carried: the previous "
+                     "code re-encoded by this block, against the block's update)")
     if "code_residual" not in arrays:
-        st.caption("The carried code was not recorded for this dataset (extracted "
-                   "before 2026-10-08); re-run extract_bottleneck_scores.py to add "
-                   "the carried-code panel.")
+        st.caption("The passed code was not recorded for this dataset; re-run "
+                   "extract_bottleneck_scores.py (or --code-residual-only) to add this panel.")
     elif li == 0:
-        st.caption("Block 0 carries nothing: its gate encodes the whole block "
+        st.caption("Block 0 has no previous code: its gate encodes the whole block "
                    "output E_0 (x_0 + \u0394_0), so the score here *is* the "
-                   "update. Pick a block \u2265 1 for the carried-code panel.")
+                   "update. Pick a block \u2265 1 for this panel.")
     else:
         cvec = np.asarray(arrays["code_residual"][ci, li, bi, ti], dtype=np.float64)
         uvec = signed - cvec
         c_abs, u_abs = np.abs(cvec) / denom, np.abs(uvec) / denom
-        csup = cvec != 0                       # the carried support (k indices)
+        if is_carried:
+            csup = cvec != 0                   # the carried support (k indices)
+        else:
+            csup = np.zeros(N, dtype=bool)     # the Top-K the passed code selects on its own
+            csup[np.argpartition(-np.abs(cvec), k - 1)[:k]] = True
         kept = csup & (bands == "topk")        # ...still active after this gate
         n_c, n_kept = int(csup.sum()), int(kept.sum())
         same_sign = csup & (np.sign(uvec) == np.sign(cvec))
@@ -1411,20 +1425,21 @@ if bool(meta.get("code_residual", False)):
         med_ratio = float(np.median(u_abs[csup] / c_abs[csup])) if n_c else float("nan")
 
         m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("carried |code|, median", f"{med_c:.4g}",
-                  help=f"over the {n_c} non-zero coordinates of the carried code "
-                       f"c_{li}, in the panel's units ({score_label}).")
-        m2.metric("update on the carried support, median", f"{med_u_on:.4g}",
+        m1.metric(f"{cr_name} |.|, median", f"{med_c:.4g}",
+                  help=f"over the {n_c} coordinates of the {cr_name}'s support "
+                       f"({'its non-zeros' if is_carried else 'its own Top-K'}), "
+                       f"in the panel's units ({score_label}).")
+        m2.metric("update on that support, median", f"{med_u_on:.4g}",
                   help="median |alpha E_l Delta_l| over the same coordinates; off "
                        f"the support it is {med_u_off:.4g}.")
-        m3.metric("|update| / |carried|, median", f"{med_ratio:.3g}",
+        m3.metric(f"|update| / |{cr_name}|, median", f"{med_ratio:.3g}",
                   help="per carried coordinate, the block's contribution relative to "
                        "what it received. Below 1 the carry dominates the score at "
                        "that index; above 1 the block rewrites it.")
-        m4.metric("carried: kept / evicted", f"{n_kept} / {n_c - n_kept}",
-                  help=f"of the {n_c} carried coordinates, how many survive this "
-                       "gate's TopK (opaque circles) and how many it evicts "
-                       "(faint circles).")
+        m4.metric(f"{cr_name}: kept / evicted", f"{n_kept} / {n_c - n_kept}",
+                  help=f"of the {n_c} support coordinates of the {cr_name}, how many "
+                       "survive this gate's TopK (opaque circles) and how many it "
+                       "evicts (faint circles).")
         m5.metric("update mass on the support", f"{u_on / u_all:.3f}" if u_all > 0 else "n/a",
                   help="||u_S|| / ||u|| with S the carried support: the share of the "
                        "update's Euclidean norm that lands on coordinates already in "
@@ -1440,9 +1455,9 @@ if bool(meta.get("code_residual", False)):
         def hover_cr(i):
             tail = ""
             if csup[i]:
-                tail = (f"<br><b>carried: {'kept in TopK' if kept[i] else 'evicted here'}</b>"
-                        f"<br>|update| / |carried| {u_abs[i] / c_abs[i]:.3g}")
-            return (f"feature {i}<br>carried c {cvec[i]:+.4g}<br>update {uvec[i]:+.4g}"
+                tail = (f"<br><b>{cr_name}: {'kept in TopK' if kept[i] else 'evicted here'}</b>"
+                        f"<br>|update| / |{cr_name}| {u_abs[i] / max(c_abs[i], 1e-30):.3g}")
+            return (f"feature {i}<br>{cr_name} {cvec[i]:+.4g}<br>update {uvec[i]:+.4g}"
                     f"<br>score c + u {signed[i]:+.4g}<br>rank now {rank[i]}"
                     f"<br>{BAND_LABEL[bands[i]]}" + tail)
 
@@ -1464,8 +1479,8 @@ if bool(meta.get("code_residual", False)):
                             line=dict(width=0.5, color=UPDATE_COLOR)),
                 text=[hover_cr(i) for i in uidx], hoverinfo="text"))
         for sel_c, name_c, op_c, w_c in (
-                (csup & kept, f"carried code c_{li}, kept in TopK: {n_kept}", 1.0, 2.0),
-                (csup & ~kept, f"carried code c_{li}, evicted here: {n_c - n_kept}", 0.35, 1.0)):
+                (csup & kept, f"{cr_name} {cr_sym}, kept in TopK: {n_kept}", 1.0, 2.0),
+                (csup & ~kept, f"{cr_name} {cr_sym}, evicted here: {n_c - n_kept}", 0.35, 1.0)):
             cidx = np.where(sel_c & (c_abs >= hl_min))[0]
             if not cidx.size:
                 continue
@@ -1490,8 +1505,8 @@ if bool(meta.get("code_residual", False)):
                                  font=dict(size=11, color=col))
         fig2b.update_layout(
             hovermode="closest", hoverdistance=12,
-            **banner(f"Carried code (from gate {li - 1}) vs. this block's update on "
-                     f"the half-line  \u00b7  {n_kept} of {n_c} carried kept, "
+            **banner(f"{cr_name.capitalize()} (from gate {li - 1}) vs. this block's update on "
+                     f"the half-line  \u00b7  {n_kept} of {n_c} kept, "
                      f"{n_c - n_kept} evicted  \u00b7  same jitter as above, so each "
                      "grey segment is horizontal: one index, carried value to update",
                      250, legend=True),
@@ -1503,9 +1518,13 @@ if bool(meta.get("code_residual", False)):
         fig2b.update_yaxes(visible=False, range=[-2.4, 2.4])
         st.plotly_chart(fig2b, width="stretch", theme=None)
         st.caption(
-            f"Violet: the {n_c} non-zero coordinates of the code gate {li} received "
-            f"(faint = evicted by this gate). Amber: the block's own contribution "
-            f"alpha E_{li} \u0394_{li} at every drawn index (large = on the carried "
+            (f"Violet: the {n_c} non-zero coordinates of the code gate {li} received "
+             if is_carried else
+             f"Violet: the Top-{k} the re-encoded previous code E_{li} N D c_{li - 1} would "
+             f"select on its own (the selection with the block updates off), drawn at its "
+             f"values; this passed code is dense, the other {N - n_c} coordinates are not drawn ")
+            + f"(faint = evicted by this gate). Amber: the block's own contribution "
+            f"{'alpha ' if is_carried else ''}E_{li} \u0394_{li} at every drawn index (large = on that "
             f"support). Dotted lines: this gate's edges on the score it ranks, "
             f"|c + u| -- blue the TopK edge (K | K+1)"
             + (f", orange the candidate-pool edge (K+J | K+J+1)" if j else "") + ". "
@@ -1515,7 +1534,11 @@ if bool(meta.get("code_residual", False)):
     # ---- 2c: how long this gate's TopK survives along the carry ------------ #
     later = list(range(li + 1, L))
     top_now = order[:k]                        # sorted by |score| at this gate
-    if not later:
+    if not is_carried:
+        st.caption("No survival panel for a stream-carried model: each block re-encodes "
+                   "in its own basis, so feature index i at one bottleneck and at the "
+                   "next are unrelated coordinates (the overlap is at the chance level K/N).")
+    elif not later:
         st.caption(f"Block {li} is the last bottleneck: nothing follows it, so "
                    "there is no survival to measure here.")
     else:

@@ -32,11 +32,14 @@ Output, one per run:
     <out-dir>/<run>.g_z.npy       dL/dz at the gate's input, through the surrogate
     <out-dir>/<run>.json          steps, layer labels, k, j, token ids, val CE
 
-Under ``code_residual`` a fourth array is written, ``<run>.code_residual.npy``: the
-K-sparse code that gate ``l`` received from gate ``l-1`` (block 0 carries
-nothing, so its slice is zero).  The score at gate ``l >= 1`` is
-``carry + alpha * E_l Delta_l``, so ``score - carry`` is the block's own
-contribution and the viewer can put the two on one axis.
+A fourth array, ``<run>.code_residual.npy``, holds the *passed code*: under
+``code_residual`` the K-sparse code gate ``l`` received from gate ``l-1``,
+and for a stream-carried ``residual_out`` model the previous code re-encoded
+by this block's encoder, ``E_l N_{l-1} D_{l-1} c_{l-1}`` (dense; ``N`` the
+output norm if present).  Block 0 has no previous code, so its slice is zero.
+In both cases the score at gate ``l >= 1`` is ``passed + E_l Delta_l``, so
+``score - passed`` is the block's own encoded contribution and the viewer can
+put the two on one axis.  ``meta["passed_code"]`` says which it is.
 
 ``--code-residual-only`` adds that array to a dataset extracted before it existed: it
 reads ``<out-dir>/<run>.json``, checks that the checkpoint list and the fixed
@@ -108,6 +111,50 @@ def find_bottlenecks(model, cfg):
     return found
 
 
+PASSED_NOTE = {
+    "carried": ("code_residual[c, l] is the K-sparse code gate l received from gate l-1 "
+                "(zero at l = 0); score - passed is the block's own encoded contribution "
+                "alpha * E_l Delta_l"),
+    "encoded_previous": ("code_residual[c, l] is the previous code re-encoded by this block's "
+                         "encoder, E_l N_{l-1} D_{l-1} c_{l-1} (dense; zero at l = 0); "
+                         "score - passed is the block's own encoded contribution E_l Delta_l"),
+}
+
+
+def passed_code_kind(cfg, bottlenecks):
+    """``"carried"`` under code_residual, ``"encoded_previous"`` for a stream-carried
+    residual_out stack, ``None`` when no passed code is defined."""
+    if bool(getattr(cfg.activation_bottleneck, "code_residual", False)):
+        return "carried"
+    if list(parse_placements(cfg.activation_bottleneck.placement)) == ["residual_out"] \
+            and len(bottlenecks) > 1 and not any(getattr(m, "gated", False) for _, m in bottlenecks):
+        return "encoded_previous"
+    return None
+
+
+@torch.no_grad()
+def fill_passed(carry_arr, ci, kind, bottlenecks, grabbed, batch, seq_len, n_pos, n_feat, path):
+    """Write the passed code of every bottleneck of checkpoint ``ci`` into ``carry_arr``."""
+    carry_arr[ci, 0] = 0.0                      # block 0 has no previous code
+    for li in range(1, len(bottlenecks)):
+        if kind == "carried":
+            # gate l's carry is gate l-1's output (model._code_residual_stack:
+            # code = gate(code + alpha * E_l Delta_l))
+            a = grabbed.get(("code", li - 1))
+            if a is None:
+                raise RuntimeError(f"{path}: code never captured for bottleneck {li - 1}")
+        else:
+            # the stream block l reads is bottleneck l-1's output (decoded, normed);
+            # re-encoding it with block l's encoder is the score with Delta_l = 0
+            y = grabbed.get(("y", li - 1))
+            if y is None:
+                raise RuntimeError(f"{path}: output never captured for bottleneck {li - 1}")
+            a = bottlenecks[li][1].in_proj(y)
+        if a.shape != (batch, seq_len, n_feat):
+            raise RuntimeError(f"{path} layer {li}: unexpected passed-code shape {tuple(a.shape)}")
+        carry_arr[ci, li] = a[:, :n_pos, :].float().cpu().numpy()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--ckpt-dir", required=True, help="a run directory holding ckpt_step*.pt")
@@ -148,6 +195,7 @@ def main() -> None:
     idx, targets = stream.batch(args.batch, device, deterministic_offset=args.offset)
 
     bottlenecks = find_bottlenecks(model, cfg)
+    passed_kind = passed_code_kind(cfg, bottlenecks)
     labels = [lbl for lbl, _ in bottlenecks]
     n_feat = int(cfg.activation_bottleneck.n_features)
     k = int(cfg.activation_bottleneck.k)
@@ -174,7 +222,7 @@ def main() -> None:
                 dtype=np.float32, shape=arr.shape)
 
     carry_arr = None
-    if code_res:
+    if passed_kind is not None:
         carry_arr = np.lib.format.open_memmap(
             os.path.join(args.out_dir, f"{run}.code_residual.npy"), mode="w+",
             dtype=np.float32, shape=arr.shape)
@@ -209,9 +257,17 @@ def main() -> None:
                 return None
             return post
 
+        def make_out(li):
+            def out(module, inputs, output):
+                # the bottleneck's output, decoded and normed: what the next block reads
+                grabbed[("y", li)] = output.detach()
+                return None
+            return out
+
         for li, (_, mod) in enumerate(bottlenecks):
             handles.append(mod.gate.register_forward_pre_hook(make_hook(li)))
             handles.append(mod.gate.register_forward_hook(make_post(li)))
+            handles.append(mod.register_forward_hook(make_out(li)))
 
         if args.grads:
             # train() mode: surrogate_active() is False in eval and under
@@ -245,16 +301,8 @@ def main() -> None:
                 dst = arr if name == "score" else grad_arrs[name]
                 dst[ci, li] = a[:, :n_pos, :].float().cpu().numpy()
         if carry_arr is not None:
-            # gate l's carry is gate l-1's output (model._code_residual_stack:
-            # code = gate(code + alpha * E_l Delta_l)); block 0 has none
-            carry_arr[ci, 0] = 0.0
-            for li in range(1, len(bottlenecks)):
-                a = grabbed.get(("code", li - 1))
-                if a is None:
-                    raise RuntimeError(f"{path}: code never captured for bottleneck {li - 1}")
-                if a.shape != (args.batch, seq_len, n_feat):
-                    raise RuntimeError(f"{path} layer {li - 1}: unexpected code shape {tuple(a.shape)}")
-                carry_arr[ci, li] = a[:, :n_pos, :].float().cpu().numpy()
+            fill_passed(carry_arr, ci, passed_kind, bottlenecks, grabbed, args.batch, seq_len,
+                        n_pos, n_feat, path)
         model.zero_grad(set_to_none=True)
 
         val_ce.append(float(loss))
@@ -297,14 +345,13 @@ def main() -> None:
         array_shape=list(arr.shape),
         arrays={"score": os.path.basename(out_path),
                 **({g: f"{run}.{g}.npy" for g in GRAD_NAMES} if args.grads else {}),
-                **({"code_residual": f"{run}.code_residual.npy"} if code_res else {})},
+                **({"code_residual": f"{run}.code_residual.npy"} if passed_kind else {})},
         rblapsum_surrogate_scope=str(getattr(cfg.activation_bottleneck,
                                              "rblapsum_surrogate_scope", "pool")),
         code_residual=code_res,
         code_residual_scale=float(getattr(cfg.activation_bottleneck, "code_residual_scale", 1.0)),
-        code_residual_note=("code_residual[c, l] is the K-sparse code gate l received from gate l-1 "
-                    "(zero at l = 0); score - carry is the block's own encoded "
-                    "contribution alpha * E_l Delta_l" if code_res else None),
+        passed_code=passed_kind,
+        code_residual_note=PASSED_NOTE.get(passed_kind),
         grads_mode=("train-mode float32 forward+backward on the fixed batch; "
                     "first_order_backward for first_order scopes" if args.grads else None),
         note=(
@@ -331,8 +378,6 @@ def code_residual_only(args) -> None:
     device = torch.device(args.device)
 
     model, cfg, _ = load_for_inference(ckpts[0], device=str(device))
-    if not bool(getattr(cfg.activation_bottleneck, "code_residual", False)):
-        raise SystemExit(f"{run} is not a code_residual run; nothing to add")
     seq_len = int(cfg.data.seq_len)
     n_pos = min(int(args.positions), seq_len)
     stream = TokenStream(os.path.join(args.data_dir, f"{args.split}.bin"), seq_len, seed=0)
@@ -348,7 +393,10 @@ def code_residual_only(args) -> None:
     n_feat = int(cfg.activation_bottleneck.n_features)
     if meta.get("layer_labels") != [lbl for lbl, _ in bottlenecks]:
         raise SystemExit(f"{run}: bottleneck labels differ from the dataset's")
-    print(f"run={run}  ckpts={len(ckpts)}  code_residual only")
+    kind = passed_code_kind(cfg, bottlenecks)
+    if kind is None:
+        raise SystemExit(f"{run}: no passed code is defined for this placement")
+    print(f"run={run}  ckpts={len(ckpts)}  passed code only ({kind})")
 
     out_path = os.path.join(args.out_dir, f"{run}.code_residual.npy")
     carry_arr = np.lib.format.open_memmap(
@@ -358,36 +406,33 @@ def code_residual_only(args) -> None:
         if ci > 0:
             model, cfg, _ = load_for_inference(path, device=str(device))
             bottlenecks = find_bottlenecks(model, cfg)
-        codes: dict = {}
+        grabbed: dict = {}
         handles = [mod.gate.register_forward_hook(
-            lambda module, inputs, output, li=li: codes.__setitem__(li, output.detach()))
+            lambda module, inputs, output, li=li: grabbed.__setitem__(("code", li), output.detach()))
+            for li, (_, mod) in enumerate(bottlenecks)]
+        handles += [mod.register_forward_hook(
+            lambda module, inputs, output, li=li: grabbed.__setitem__(("y", li), output.detach()))
             for li, (_, mod) in enumerate(bottlenecks)]
         # the forward is hard in both modes, so the eval-mode code is the one the
-        # training forward carried; no backward is needed for the carry
+        # training forward carried; no backward is needed for the passed code
         model.eval()
         with torch.no_grad():
             model(idx, targets)
         for h in handles:
             h.remove()
-        carry_arr[ci, 0] = 0.0
-        for li in range(1, len(bottlenecks)):
-            a = codes.get(li - 1)
-            if a is None or a.shape != (args.batch, seq_len, n_feat):
-                raise RuntimeError(f"{path}: code of bottleneck {li - 1} missing or misshaped")
-            carry_arr[ci, li] = a[:, :n_pos, :].float().cpu().numpy()
+        fill_passed(carry_arr, ci, kind, bottlenecks, grabbed, args.batch, seq_len, n_pos, n_feat, path)
         print(f"  [{ci + 1}/{len(ckpts)}] step {steps[ci]:>6}")
-        codes.clear()
+        grabbed.clear()
         del model
         torch.cuda.empty_cache() if device.type == "cuda" else None
     carry_arr.flush()
 
     meta["arrays"] = {**meta.get("arrays", {"score": meta.get("array")}),
                       "code_residual": os.path.basename(out_path)}
-    meta["code_residual"] = True
+    meta["code_residual"] = bool(getattr(cfg.activation_bottleneck, "code_residual", False))
     meta["code_residual_scale"] = float(getattr(cfg.activation_bottleneck, "code_residual_scale", 1.0))
-    meta["code_residual_note"] = ("code_residual[c, l] is the K-sparse code gate l received from gate l-1 "
-                          "(zero at l = 0); score - carry is the block's own encoded "
-                          "contribution alpha * E_l Delta_l; added with --code-residual-only")
+    meta["passed_code"] = kind
+    meta["code_residual_note"] = PASSED_NOTE[kind] + "; added with --code-residual-only"
     tmp = meta_path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(meta, f, indent=2)

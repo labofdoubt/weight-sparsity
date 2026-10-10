@@ -49,12 +49,15 @@ One fixed batch (`deterministic_offset`) is reused for every checkpoint and
 every run, so a difference between two cells is a difference in the model and
 never in the data.
 
-Under `code_residual` it also writes `<run>.code_residual.npy` (same shape): the
-K-sparse code gate `l` received from gate `l-1`, zero at `l = 0`. The score at
-gate `l >= 1` is `carry + alpha * E_l Delta_l`, so `score - carry` is the
-block's own encoded contribution. The viewer's two code-residual panels (below)
-need it; datasets extracted before 2026-10-08 lack it and show a note instead,
-and `--code-residual-only` adds it to such a dataset without redoing the rest.
+It also writes `<run>.code_residual.npy` (same shape), the *passed code*: under
+`code_residual` the K-sparse code gate `l` received from gate `l-1`; for a
+stream-carried `residual_out` stack the previous code re-encoded by this
+block's encoder, `E_l N D c_{l-1}` (dense, `N` the output norm if present).
+Zero at `l = 0`. Either way the score at gate `l >= 1` is `passed + E_l
+Delta_l`, so `score - passed` is the block's own encoded contribution;
+`meta["passed_code"]` is `"carried"` or `"encoded_previous"`. The viewer's
+passed-code panel (below) needs it; `--code-residual-only` adds it to a
+dataset extracted without it, without redoing the scores and gradients.
 
 ## 2. Early training, without keeping checkpoints
 
@@ -168,14 +171,17 @@ On the vast.ai box it runs as a supervisor service on `127.0.0.1:8501`
 ssh -p <port> root@<host> -L 8501:localhost:8501
 ```
 
-For `code_residual` datasets (hard gates included) the score page adds two
-panels after the half-line: the carried code against the block's update on the
-same axis, each carried index joined to its update by a grey segment, with the
-carried/update medians, their ratio, and how many carried coordinates this
-gate's TopK keeps; and, for the selected gate's TopK, how many consecutive later
-gates keep each feature before evicting it (features still active at the last
-gate are marked as never evicted). Neither panel is drawn for stream-carried
-runs, where every gate re-encodes the decoded stream.
+Datasets with the passed-code sidecar get a panel after the half-line: the
+passed code against the block's update on the same axis, each support index
+joined to its update by a grey segment, with the medians, their ratio, and
+how many support coordinates this gate's TopK keeps. Under `code_residual`
+the passed code is the carried K-sparse code and its support its non-zeros;
+for a stream-carried run it is the re-encoded previous code `E_l N D c_{l-1}`
+and the support is the Top-K it would select on its own (the selection with
+the block updates off). The survival panel (how many consecutive later gates
+keep each of this gate's TopK) is drawn for `code_residual` runs only: in a
+stream-carried stack feature indices of different bottlenecks are unrelated
+coordinates and the overlap is at the chance level K/N.
 
 `j` is forced to 0 for `surrogate_mode=hard` runs: their config still carries a
 `j`, but it is inert (bit-identical for j = 1..1504), so those ranks get exactly
