@@ -336,6 +336,24 @@ replacement?  At each checkpoint (`src/wsparse/swap_audit.py`):
   undefined (`null`) when a class is empty, never 0.5 or renormalized; CIs by
   resampling whole sequence windows, undefined resamples counted.
 
+* **Paired downstream-support replay (`--paired`).** On a finished audit's
+  swaps, every swap is evaluated twice in the same batch layout: natively
+  (later gates re-select) and with every later gate forced to its unswapped
+  selection `y_m = M0_m * z_m` (values respond, only the selection is
+  frozen; masks are the gates' actual selections, recorded by a mask sink,
+  not `y != 0`). The unswapped mask replay must reproduce the baseline, and
+  swaps whose incumbent is not selected or whose candidate is active in the
+  batch's own baseline are excluded as invalid. Records `dL_native`,
+  `dL_fixed`, `C = dL_native - dL_fixed`, the cascade (mask entries changed
+  per later gate), and the all-hard control `r_hard_linear = z_i g_i - z_j
+  g_j` with `g = dL/dy` from a backward in which every gate is its detached
+  baseline mask times its live input (`R_fixed = dL_fixed + r_hard_linear`,
+  so `dL_native = -r_hard_linear + R_fixed + C`). Scores E under both
+  responses for the support term, the hard-linear and the surrogate-linear
+  pressures, transitions repaired/broken on pairs non-dead in both conditions
+  split by native class, and bootstrap CIs with identical resamples for both
+  conditions and their difference. Outputs under `<out-dir>/paired/step<S>/`.
+
 Outputs: per-swap rows (`rows.parquet`), `meta.json` (checkpoint provenance:
 scope, temperature, strength, width, projection, normalization, architecture;
 probe batch shape; dropout handling; dtype; tau; decomposition errors),
