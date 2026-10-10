@@ -91,7 +91,10 @@ Top-32, $0.004$ better than its own $T = 2$, $\gamma = 1$ run and $0.018$
 behind the pool scope's best; it does not profit from a wider kernel, where
 the pool scope does, and it shows the same score-scale runaway at $\gamma >
 1$. At $K = 256$ it is within $0.002$ of hard Top-256 at every $s \le 0.5$ and
-never below it.
+never below it. Adding the output RMSNorm to the first-order cells
+(Section~\ref{sec:fo-pnorm}) changes the end points by at most $0.007$: at
+$K = 32$ the strong cells keep their margin but lose their early lead, at
+$K = 256$ every cell sits on hard Top-256 from step 1000 on.
 \end{itemize}
 
 % ============================================================
@@ -458,7 +461,8 @@ All cells are single runs at one seed, and the comparisons are at step
 ranking of methods moved by up to a quarter of the gaps between 3k and 10k
 steps. Differences below about $0.005$ are within what one config produces
 on two machines. The hard baselines carry the output norm and the surrogate
-cells do not, as in the K+J notes. The grid changes the kernel width and the
+cells do not, as in the K+J notes, except for the eight post-norm cells of
+Section~\ref{sec:fo-pnorm}. The grid changes the kernel width and the
 scale and keeps everything else of the code-carried $T = 2$ cell, including
 the pool scope, so the term's action along the carry is present in every
 cell. Only two $(K, J)$ cells were run, both at $K + J = 512$.
@@ -578,6 +582,61 @@ code-carried hard ladder, as in Figure~\ref{fig:best}. The $K = 32$ cell,
 $(0.25, 1)$, ends $0.035$ above hard Top-64 (the pool scope's best:
 $0.017$); the $K = 256$ cell, $(0.5, 0.25)$, ends on hard Top-256.}
 \label{fig:fobest}
+\end{figure}
+
+% ============================================================
+\subsection{The output norm}
+\label{sec:fo-pnorm}
+% ============================================================
+
+Every surrogate cell of this note is trained without the RMSNorm on the
+bottleneck's decoded output, while the hard baselines carry it. To see what
+the norm does to the first-order cells, two columns of the span grid were
+repeated with \code{post\_norm} $=$ \code{true} and nothing else changed:
+$(K, J) = (32, 480)$ at $\tau = 0.5$ and $(256, 256)$ at $\tau = 0.25$, the
+four strengths each, eight runs
+(\code{configs/cr\_kj/tsweep/de\_ts\_span\_*\_fo\_pnorm.yaml}, trained on
+denver, 10k steps of the 20k schedule as above; \code{scripts/plot\_tsweep\_pnorm.py}).
+Validation CE at step 10000 minus hard Top-$K$, the cells without the norm
+from the tables above in parentheses:
+
+\begin{center}\small
+\begin{tabular}{l|cccc}
+\toprule
+first-order, span rule, post-norm & $s{=}0.1$ & $0.25$ & $0.5$ & $1$ \\
+\midrule
+$K = 32$, $J = 480$, $\tau = 0.5$ & $-0.005$ ($-0.005$) & $-0.007$ ($-0.009$) & $-0.021$ ($-0.020$) & $-0.017$ ($-0.024$) \\
+$K = 256$, $J = 256$, $\tau = 0.25$ & $-0.001$ ($+0.005$) & $0.000$ ($0.000$) & $+0.001$ ($+0.001$) & $-0.002$ ($+0.002$) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The end points move by at most $0.007$, and the ordering in $s$ is kept at
+$K = 32$ ($s = 0.5$ and $s = 1$ remain the best two cells, now in the other
+order). What changes is the course of training
+(Figure~\ref{fig:fopnorm}). At $K = 32$ the cells without the norm dip to
+$-0.03$ to $-0.04$ at steps 1500--2000 and then give part of it back; with the
+norm the same cells start $0.045$ below hard Top-32 at step 500 and approach
+their end points monotonically, so the early lead of the strong cells is
+gone and so is its decay. At $K = 256$ the cells without the norm start
+$0.06$ above hard Top-256 and need until step 8000 to reach it; with the norm
+all four are within $\pm 0.004$ of it from step 1000 on, and none is below it
+by more than $0.002$ at the end. The norm removes the slow approach of the
+surrogate cells to the hard baseline at $K = 256$ without producing a gain
+over it, and at $K = 32$ it leaves the margin of the first-order scope at
+$0.02$, half the pool scope's.
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/tsweep/fig_ts_fo_span_pnorm.png}
+\caption{First-order scope, span rule, without (left, the middle panel of
+Figure~\ref{fig:fo32} and the left panel of Figure~\ref{fig:fo256}) and with
+(right) the output RMSNorm; top $K = 32$, $J = 480$, $\tau = 0.5$, bottom
+$K = 256$, $J = 256$, $\tau = 0.25$. Conventions as before; the dotted grey
+curve is the first-order $T = 2$, $\gamma = 1$ run without the norm in both
+columns. With the norm the $K = 32$ cells approach their end points from
+below without the dip at steps 1500--2000, and the $K = 256$ cells lie on
+hard Top-256 from step 1000 on.}
+\label{fig:fopnorm}
 \end{figure}
 
 \end{document}
