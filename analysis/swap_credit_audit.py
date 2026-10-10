@@ -24,6 +24,13 @@ through the cached stream suffix after checking it against the full-forward
 oracle on ``--verify-suffix`` swaps per layer (a mismatch above the tolerance
 is an error); code-residual checkpoints always use the oracle.
 
+A control scorer is reported beside the support term on the same swaps and
+the same dL: the first-order prediction of the swap from the hard value
+gradient alone, ``r_linear = z_i g_i - z_j g_j`` with ``g = dL/dy`` at the
+gate output (dense, captured in the same backward); positive again means the
+swap is predicted to lower the loss.  ``--rescore`` adds it to a finished
+audit from its saved rows (one capture per checkpoint, dL reused).
+
 Outputs under ``<out-dir>/step<S>/``: ``rows.parquet`` (one row per swap),
 ``meta.json`` (configuration and provenance), ``summary.json`` (class
 counts, per-layer and aggregate errors with bootstrap CIs); and
@@ -66,6 +73,52 @@ def fixed_positions(seq_len: int, n: int) -> list:
     return sorted(set(np.linspace(8, seq_len - 2, num=n, dtype=int).tolist()))
 
 
+def add_linear_control(df: pd.DataFrame, cap: dict) -> pd.DataFrame:
+    """``g_i``, ``g_j`` (dL/dy at the gate output) and ``r_linear = z_i g_i - z_j g_j``."""
+    gi = np.zeros(len(df)); gj = np.zeros(len(df))
+    for n, r in enumerate(df.itertuples()):
+        g = cap[int(r.layer)]["g_y"]
+        gi[n] = float(g[int(r.seq), int(r.pos), int(r.i)]); gj[n] = float(g[int(r.seq), int(r.pos), int(r.j)])
+    df = df.copy(); df["g_i"] = gi; df["g_j"] = gj
+    df["r_linear"] = df["z_i"] * df["g_i"] - df["z_j"] * df["g_j"]
+    return df
+
+
+def score(df: pd.DataFrame, layers, weights, tau: float, n_boot: int, seed: int, key: str) -> dict:
+    per_layer = {int(l): credit_error(df.loc[df["layer"] == l, key].to_numpy(),
+                                      df.loc[df["layer"] == l, "dL"].to_numpy(), tau) for l in layers}
+    E = aggregate_layers(per_layer, weights)
+    boot = (bootstrap_credit(df["seq"].to_numpy(), df["layer"].to_numpy(), df[key].to_numpy(),
+                             df["dL"].to_numpy(), layers, weights, tau, n_boot, seed) if n_boot else None)
+    return dict(pressure=key, per_layer=per_layer, E=E, bootstrap=boot)
+
+
+def write_outputs(od: str, df: pd.DataFrame, meta: dict, layers, weights, tau: float, n_boot: int, seed: int):
+    sup = score(df, layers, weights, tau, n_boot, seed, "r")
+    lin = score(df, layers, weights, tau, n_boot, seed, "r_linear") if "r_linear" in df else None
+    df.to_parquet(os.path.join(od, "rows.parquet"), index=False)
+    with open(os.path.join(od, "meta.json"), "w") as fh:
+        json.dump(meta, fh, indent=2)
+    summary = dict(step=meta["step"], tau=tau, n_rows=int(len(df)), classes=df["cls"].value_counts().to_dict(),
+                   support=sup, linear=lin,
+                   # backward-compatible top-level fields for the support scorer
+                   per_layer=sup["per_layer"], E=sup["E"], bootstrap=sup["bootstrap"])
+    with open(os.path.join(od, "summary.json"), "w") as fh:
+        json.dump(summary, fh, indent=2)
+    return sup, lin
+
+
+def fmt(sc: dict) -> str:
+    if sc is None:
+        return "n/a"
+    b = sc["bootstrap"]
+    return (f"{sc['E'] if sc['E'] is None else round(sc['E'], 4)}"
+            + (f" CI [{b['aggregate']['lo'] if b['aggregate']['lo'] is None else round(b['aggregate']['lo'], 4)}, "
+               f"{b['aggregate']['hi'] if b['aggregate']['hi'] is None else round(b['aggregate']['hi'], 4)}]"
+               f" ({b['aggregate']['n_undefined']} undef)" if b else "")
+            + "  per layer " + " ".join(f"L{l}:{v['E'] if v['E'] is None else round(v['E'], 3)}" for l, v in sc["per_layer"].items()))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ckpt", action="append", required=True, help="checkpoint(s), repeatable")
@@ -97,6 +150,9 @@ def main() -> None:
                          "downstream selection in either path, which is what the replays measure")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--backup", default=None, help="rclone destination for the outputs")
+    ap.add_argument("--rescore", action="store_true",
+                    help="add the linear control to a finished audit in --out-dir: reuse rows.parquet and dL, "
+                         "recapture the gradients, rewrite summaries")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
 
@@ -130,6 +186,35 @@ def main() -> None:
 
         # ---- support term (train mode, the checkpoint's own backward) ---- #
         cap = capture_support(model, cfg, mods, idx, targets, layers, dtype=dtype)
+
+        if args.rescore:
+            od = os.path.join(args.out_dir, f"step{step}")
+            meta = json.load(open(os.path.join(od, "meta.json")))
+            df = pd.read_parquet(os.path.join(od, "rows.parquet"))
+            if meta["probe"]["positions"] != positions or meta["probe"]["batch_shape"] != list(idx.shape):
+                raise SystemExit(f"step {step}: the saved audit used other positions or windows than this invocation")
+            for l in layers:
+                sub = df[df["layer"] == l]
+                h = cap[l]["h"]
+                hi = np.array([float(h[int(r.seq), int(r.pos), int(r.rank_i)]) for r in sub.itertuples()])
+                if not np.allclose(hi, sub["h_i"].to_numpy(), rtol=1e-4, atol=1e-9):
+                    raise SystemExit(f"step {step} layer {l}: the recaptured support term differs from the saved one")
+            df = add_linear_control(df, cap)
+            meta["linear_control"] = "r_linear = z_i g_i - z_j g_j, g = dL/dy at the gate output, same backward as h"
+            tau = float(meta["tau"])
+            sup, lin = write_outputs(od, df, meta, layers, weights, tau, args.bootstrap, args.seed)
+            vs_step.append(dict(step=step, E=sup["E"], E_linear=lin["E"], ci=sup["bootstrap"]["aggregate"] if sup["bootstrap"] else None,
+                                ci_linear=lin["bootstrap"]["aggregate"] if lin["bootstrap"] else None,
+                                per_layer={l: v["E"] for l, v in sup["per_layer"].items()},
+                                per_layer_linear={l: v["E"] for l, v in lin["per_layer"].items()}, tau=tau))
+            with open(os.path.join(args.out_dir, "credit_vs_step.json"), "w") as fh:
+                json.dump(vs_step, fh, indent=2)
+            print(f"step {step:>6} (rescored): support {fmt(sup)}\n                      linear  {fmt(lin)}")
+            if args.backup:
+                subprocess.run(["rclone", "copy", args.out_dir, args.backup], check=False)
+            del model
+            torch.cuda.empty_cache() if device.type == "cuda" else None
+            continue
         # ---- baseline codes and losses (eval mode, hook-free) ------------- #
         z_eval, y_eval, L0 = baseline_codes(model, mods, idx, targets, layers, dtype=dtype)
         for l in layers:
@@ -189,19 +274,11 @@ def main() -> None:
         tau = args.tau if args.tau is not None else max(args.tau_factor * tau_replay, args.tau_floor)
         df["dL"] = dL
         df["cls"] = np.where(df["dL"] < -tau, "improve", np.where(df["dL"] > tau, "harm", "dead"))
+        df = add_linear_control(df, cap)
 
-        # ---- the estimator ----------------------------------------------- #
-        per_layer = {int(l): credit_error(df.loc[df["layer"] == l, "r"].to_numpy(),
-                                          df.loc[df["layer"] == l, "dL"].to_numpy(), tau) for l in layers}
-        E = aggregate_layers(per_layer, weights)
-        boot = (bootstrap_credit(df["seq"].to_numpy(), df["layer"].to_numpy(), df["r"].to_numpy(),
-                                 df["dL"].to_numpy(), layers, weights, tau, args.bootstrap, args.seed)
-                if args.bootstrap else None)
-
-        # ---- outputs ----------------------------------------------------- #
+        # ---- outputs and the two estimators ------------------------------ #
         od = os.path.join(args.out_dir, f"step{step}")
         os.makedirs(od, exist_ok=True)
-        df.to_parquet(os.path.join(od, "rows.parquet"), index=False)
         meta = dict(ckpt=os.path.abspath(path), step=step, run=os.path.basename(os.path.dirname(os.path.abspath(path))),
                     provenance=prov, probe=dict(split=args.split, offset=args.offset, sequences=int(idx.shape[0]),
                                                 seq_len=seq_len, positions=positions, batch_shape=list(idx.shape)),
@@ -213,24 +290,20 @@ def main() -> None:
                     tau=tau, tau_replay_paired=tau_replay, n_paired_noise=int(noise_all.size),
                     cross_batch_identity_per_layer=tau_src, tau_factor=args.tau_factor, tau_floor=args.tau_floor,
                     layer_weights={int(l): w for l, w in weights.items()}, loss="mean fp32 CE per sequence, fp64",
+                    linear_control="r_linear = z_i g_i - z_j g_j, g = dL/dy at the gate output, same backward as h",
                     seconds=time.time() - t0)
-        with open(os.path.join(od, "meta.json"), "w") as fh:
-            json.dump(meta, fh, indent=2)
-        summary = dict(step=step, tau=tau, n_rows=int(len(df)), classes=df["cls"].value_counts().to_dict(),
-                       per_layer=per_layer, E=E, bootstrap=boot)
-        with open(os.path.join(od, "summary.json"), "w") as fh:
-            json.dump(summary, fh, indent=2)
-        vs_step.append(dict(step=step, E=E, ci=(boot["aggregate"] if boot else None),
+        sup, lin = write_outputs(od, df, meta, layers, weights, tau, args.bootstrap, args.seed)
+        per_layer = sup["per_layer"]
+        vs_step.append(dict(step=step, E=sup["E"], E_linear=lin["E"], ci=sup["bootstrap"]["aggregate"] if sup["bootstrap"] else None,
+                            ci_linear=lin["bootstrap"]["aggregate"] if lin["bootstrap"] else None,
                             per_layer={l: v["E"] for l, v in per_layer.items()},
+                            per_layer_linear={l: v["E"] for l, v in lin["per_layer"].items()},
                             n_improve=int(sum(v["n_improve"] for v in per_layer.values())),
                             n_harm=int(sum(v["n_harm"] for v in per_layer.values())), tau=tau))
         with open(os.path.join(args.out_dir, "credit_vs_step.json"), "w") as fh:
             json.dump(vs_step, fh, indent=2)
-        print(f"step {step:>6}: tau {tau:.2e}  rows {len(df)}  classes {summary['classes']}  "
-              f"E_credit {E if E is None else round(E, 4)}  "
-              + (f"CI [{boot['aggregate']['lo']}, {boot['aggregate']['hi']}] ({boot['aggregate']['n_undefined']} undefined)"
-                 if boot else "")
-              + "  per layer " + " ".join(f"L{l}:{v['E'] if v['E'] is None else round(v['E'], 3)}" for l, v in per_layer.items()))
+        print(f"step {step:>6}: tau {tau:.2e}  rows {len(df)}  classes {df['cls'].value_counts().to_dict()}\n"
+              f"                      support {fmt(sup)}\n                      linear  {fmt(lin)}")
         if args.backup:
             subprocess.run(["rclone", "copy", args.out_dir, args.backup], check=False)
         del model
