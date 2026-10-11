@@ -43,3 +43,13 @@ K=256 with J = 256 -- one more change each, written by
 
 Forty runs (16 at K=32, 12 at K=64, 8 at K=128, 4 at K=256), compared in the
 note with the stream-carried T=2 cells of the same K.
+
+## The post-norm first-order arm (requested 2026-10-11, box geneva)
+
+`pnorm_fo/ge_cr_rbk_k<K>_j<J>_pnorm_fo.yaml`: the ten post-norm cells
+`ma_cr_rbk_k<K>_j<J>_pnorm.yaml` (code residual, T = 1 constant, RMSNorm on
+each bottleneck output) with `rblapsum_surrogate_scope: first_order` as the one
+change, written by `scripts/make_cr_kj_configs.py --pnorm-fo configs/cr_kj
+configs/cr_kj/pnorm_fo`.  Compared with the code-residual hard Top-K'
+ladder `ma_cr_hard_k<K'>_pnorm` in a four-panel active-count figure
+(`scripts/plot_main_kj.py`).

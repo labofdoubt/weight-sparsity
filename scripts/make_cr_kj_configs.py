@@ -172,7 +172,7 @@ def main():
             print(f"   {k} = {v!r}")
 
 
-if __name__ == "__main__" and "--sweep" not in sys.argv:
+if __name__ == "__main__" and "--sweep" not in sys.argv and "--pnorm-fo" not in sys.argv:
     main()
 
 
@@ -219,6 +219,48 @@ def write_sweep(out_dir, ks=(32, 64, 128, 256)):
             print(f"{name:30s} k={b.k} j={b.j} T={b.temperature:g} post_norm={b.post_norm} "
                   f"code_residual={b.code_residual} support_scale={b.rblapsum_support_scale:g} "
                   f"scope={b.rblapsum_surrogate_scope}")
+
+
+PNORM_FO_HEADER = """# {name}: the code-residual K+J grid, post-norm arm, first-order scope.
+# {base}.yaml (code_residual: true, T = 1 constant, RMSNorm on each bottleneck
+# output) with one change:
+#   rblapsum_surrogate_scope: first_order
+# (every gate's support term evaluated on the hard-path upstream gradient; two
+# backward passes per micro-batch, single process).  Requested 2026-10-11 on
+# box geneva.  Written by scripts/make_cr_kj_configs.py --pnorm-fo.
+"""
+
+
+def write_pnorm_fo(cr_dir, out_dir, ks=(32, 64, 128, 256)):
+    import yaml
+    os.makedirs(out_dir, exist_ok=True)
+    for k in ks:
+      for j in SWEEP_CELLS[k]:
+        base = f"ma_cr_rbk_k{k}_j{j}_pnorm"
+        tree0 = yaml.safe_load(open(os.path.join(cr_dir, base + ".yaml")))
+        ab = tree0["activation_bottleneck"]
+        assert ab["code_residual"] is True and ab["post_norm"] is True
+        assert ab["temperature"] == 1.0 and ab["rblapsum_surrogate_scope"] == "pool"
+        assert ab.get("rblapsum_temperature_mode", "fixed") == "fixed"
+        name = f"ge_cr_rbk_k{k}_j{j}_pnorm_fo"
+        tree = copy.deepcopy(tree0)
+        tree["activation_bottleneck"]["rblapsum_surrogate_scope"] = "first_order"
+        tree["train"]["run_name"] = name
+        config_from_dict(copy.deepcopy(tree))  # validates
+        path = os.path.join(out_dir, name + ".yaml")
+        with open(path, "w") as f:
+            f.write(PNORM_FO_HEADER.format(name=name, base=base))
+            yaml.safe_dump(tree, f, sort_keys=False)
+        b = load_config(path).activation_bottleneck
+        print(f"{name:32s} k={b.k} j={b.j} T={b.temperature:g} post_norm={b.post_norm} "
+              f"code_residual={b.code_residual} support_scale={b.rblapsum_support_scale:g} "
+              f"scope={b.rblapsum_surrogate_scope}")
+
+
+if __name__ == "__main__" and "--pnorm-fo" in sys.argv:
+    # python scripts/make_cr_kj_configs.py --pnorm-fo configs/cr_kj configs/cr_kj/pnorm_fo
+    i = sys.argv.index("--pnorm-fo")
+    write_pnorm_fo(sys.argv[i + 1], sys.argv[i + 2])
 
 
 if __name__ == "__main__" and "--sweep" in sys.argv:
