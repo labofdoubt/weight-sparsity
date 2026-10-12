@@ -31,6 +31,12 @@ gate output (dense, captured in the same backward); positive again means the
 swap is predicted to lower the loss.  ``--rescore`` adds it to a finished
 audit from its saved rows (one capture per checkpoint, dL reused).
 
+``--active-bands 0:8,8:16,16:32 --cand-bands 0:8,8:32,32:96,96:224
+--pairs-per-band 2`` replaces the rank windows by pairs stratified by their
+distance from the boundary (depth in ranks: active ``K-1-rank``, candidate
+``rank-K``), a fixed count per (active band, candidate band) cell and token;
+the summary then also scores every cell (``bands``), per layer and aggregated.
+
 Outputs under ``<out-dir>/step<S>/``: ``rows.parquet`` (one row per swap),
 ``meta.json`` (configuration and provenance), ``summary.json`` (class
 counts, per-layer and aggregate errors with bootstrap CIs); and
@@ -58,8 +64,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from wsparse.data import TokenStream  # noqa: E402
 from wsparse.swap_audit import (Swap, aggregate_layers, baseline_codes, bootstrap_credit,  # noqa: E402
                                 capture_support, check_auditable, credit_error, find_bottlenecks,
-                                hard_output_gradients, paired_scores, paired_swap_deltas,
-                                sample_pairs, swap_deltas, swap_losses)
+                                hard_output_gradients, paired_scores, paired_swap_deltas, parse_bands,
+                                sample_pairs, sample_pairs_banded, swap_deltas, swap_losses)
 from wsparse.train import load_for_inference  # noqa: E402
 
 DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}
@@ -94,14 +100,28 @@ def score(df: pd.DataFrame, layers, weights, tau: float, n_boot: int, seed: int,
     return dict(pressure=key, per_layer=per_layer, E=E, bootstrap=boot)
 
 
+def band_scores(df: pd.DataFrame, layers, weights, tau: float, n_boot: int, seed: int) -> dict:
+    """Per (active band, candidate band) cell: the support and linear scorers, per layer and aggregated."""
+    out = {}
+    for (ba, bc), sub in df.groupby(["band_a", "band_c"], sort=False):
+        cell = {"n_rows": int(len(sub)), "classes": sub["cls"].value_counts().to_dict(),
+                "median_score_gap": float(np.median(np.abs(sub["z_i"]) - np.abs(sub["z_j"])))}
+        for key, name in (("r", "support"), ("r_linear", "linear")):
+            if key in sub:
+                cell[name] = score(sub, layers, weights, tau, n_boot, seed, key)
+        out[f"{ba}|{bc}"] = cell
+    return out
+
+
 def write_outputs(od: str, df: pd.DataFrame, meta: dict, layers, weights, tau: float, n_boot: int, seed: int):
     sup = score(df, layers, weights, tau, n_boot, seed, "r")
     lin = score(df, layers, weights, tau, n_boot, seed, "r_linear") if "r_linear" in df else None
+    bands = band_scores(df, layers, weights, tau, n_boot, seed) if "band_a" in df else None
     df.to_parquet(os.path.join(od, "rows.parquet"), index=False)
     with open(os.path.join(od, "meta.json"), "w") as fh:
         json.dump(meta, fh, indent=2)
     summary = dict(step=meta["step"], tau=tau, n_rows=int(len(df)), classes=df["cls"].value_counts().to_dict(),
-                   support=sup, linear=lin,
+                   support=sup, linear=lin, bands=bands,
                    # backward-compatible top-level fields for the support scorer
                    per_layer=sup["per_layer"], E=sup["E"], bootstrap=sup["bootstrap"])
     with open(os.path.join(od, "summary.json"), "w") as fh:
@@ -134,6 +154,12 @@ def main() -> None:
     ap.add_argument("--cand-window", type=int, default=8, help="candidate ranks [K, K+w)")
     ap.add_argument("--pairs-per-token", type=int, default=16)
     ap.add_argument("--exhaustive", action="store_true", help="every pair of the windows")
+    ap.add_argument("--active-bands", default=None,
+                    help="stratified sampling: active-depth bands in ranks from the boundary, e.g. 0:8,8:16,16:32 "
+                         "(depth 0 = the weakest active feature); replaces the windows")
+    ap.add_argument("--cand-bands", default=None,
+                    help="candidate-depth bands, e.g. 0:8,8:32,32:96,96:224 (depth 0 = the strongest candidate)")
+    ap.add_argument("--pairs-per-band", type=int, default=2, help="pairs per (active band, candidate band) cell and token")
     ap.add_argument("--seed", type=int, default=1234, help="pair-sampling and bootstrap seed")
     ap.add_argument("--dtype", default="float32", choices=list(DTYPES))
     ap.add_argument("--tau", type=float, default=None)
@@ -160,6 +186,13 @@ def main() -> None:
                          "recapture the gradients, rewrite summaries")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
+    if (args.active_bands is None) != (args.cand_bands is None):
+        raise SystemExit("--active-bands and --cand-bands go together")
+    banded = args.active_bands is not None
+    if banded and (args.paired or args.exhaustive):
+        raise SystemExit("--active-bands is for a fresh audit (not --paired or --exhaustive)")
+    a_bands = parse_bands(args.active_bands) if banded else None
+    c_bands = parse_bands(args.cand_bands) if banded else None
 
     device = torch.device(args.device)
     dtype = DTYPES[args.dtype]
@@ -325,14 +358,22 @@ def main() -> None:
             z, h, cand = cap[l]["z"], cap[l]["h"], cap[l]["cand_idx"]
             for b in range(idx.shape[0]):
                 for t in positions:
-                    pairs = sample_pairs(cand[b, t], K, args.active_window, args.cand_window,
-                                         args.pairs_per_token, args.seed, l, b, t, args.exhaustive)
+                    if banded:
+                        pairs = sample_pairs_banded(cand[b, t], K, a_bands, c_bands, args.pairs_per_band,
+                                                    args.seed, l, b, t)
+                    else:
+                        pairs = [p + (None, None) for p in
+                                 sample_pairs(cand[b, t], K, args.active_window, args.cand_window,
+                                              args.pairs_per_token, args.seed, l, b, t, args.exhaustive)]
                     zi_id = int(cand[b, t, K - 1])
                     ident.append((l, Swap(b, t, zi_id, zi_id, float(z[b, t, zi_id]), float(z[b, t, zi_id]))))
-                    for ri, rj, fi, fj in pairs:
-                        rows.append(dict(step=step, layer=l, seq=b, pos=t, rank_i=ri, rank_j=rj, i=fi, j=fj,
-                                         z_i=float(z[b, t, fi]), z_j=float(z[b, t, fj]),
-                                         h_i=float(h[b, t, ri]), h_j=float(h[b, t, rj])))
+                    for ri, rj, fi, fj, ba, bc in pairs:
+                        row = dict(step=step, layer=l, seq=b, pos=t, rank_i=ri, rank_j=rj, i=fi, j=fj,
+                                   z_i=float(z[b, t, fi]), z_j=float(z[b, t, fj]),
+                                   h_i=float(h[b, t, ri]), h_j=float(h[b, t, rj]))
+                        if banded:
+                            row.update(band_a=ba, band_c=bc)
+                        rows.append(row)
         df = pd.DataFrame(rows)
         df["r"] = df["h_i"] - df["h_j"]
 
@@ -381,8 +422,11 @@ def main() -> None:
                                                 seq_len=seq_len, positions=positions, batch_shape=list(idx.shape)),
                     capture=cap["_meta"], decomp_err={int(l): cap[l]["decomp_err"] for l in layers},
                     capture_phase={int(l): cap[l]["phase"] for l in layers},
-                    windows=dict(active=args.active_window, cand=args.cand_window, pairs_per_token=args.pairs_per_token,
-                                 exhaustive=args.exhaustive, seed=args.seed),
+                    windows=(dict(active_bands=args.active_bands, cand_bands=args.cand_bands,
+                                  pairs_per_band=args.pairs_per_band, seed=args.seed,
+                                  depth="ranks from the boundary: active K-1-rank, candidate rank-K") if banded else
+                             dict(active=args.active_window, cand=args.cand_window, pairs_per_token=args.pairs_per_token,
+                                  exhaustive=args.exhaustive, seed=args.seed)),
                     dtype=args.dtype, suffix=use_suffix, suffix_check=suffix_check,
                     tau=tau, tau_replay_paired=tau_replay, n_paired_noise=int(noise_all.size),
                     cross_batch_identity_per_layer=tau_src, tau_factor=args.tau_factor, tau_floor=args.tau_floor,
@@ -401,6 +445,11 @@ def main() -> None:
             json.dump(vs_step, fh, indent=2)
         print(f"step {step:>6}: tau {tau:.2e}  rows {len(df)}  classes {df['cls'].value_counts().to_dict()}\n"
               f"                      support {fmt(sup)}\n                      linear  {fmt(lin)}")
+        if banded:
+            summ = json.load(open(os.path.join(od, "summary.json")))["bands"]
+            for cell, v in summ.items():
+                print(f"    band {cell:>12} (active|candidate depth)  n {v['n_rows']:5d}  median |z_i|-|z_j| "
+                      f"{v['median_score_gap']:+.3f}\n        support {fmt(v['support'])}\n        linear  {fmt(v['linear'])}")
         if args.backup:
             subprocess.run(["rclone", "copy", args.out_dir, args.backup], check=False)
         del model

@@ -336,6 +336,14 @@ replacement?  At each checkpoint (`src/wsparse/swap_audit.py`):
   undefined (`null`) when a class is empty, never 0.5 or renormalized; CIs by
   resampling whole sequence windows, undefined resamples counted.
 
+* **Pairs stratified by distance from the boundary (`--active-bands`,
+  `--cand-bands`, `--pairs-per-band`).** Instead of the two rank windows,
+  depth bands counted in ranks from the boundary (active `K-1-rank`,
+  candidate `rank-K`, both 0 at the boundary); `--pairs-per-band` pairs per
+  (active band, candidate band) cell and token, the same rank pairs for every
+  checkpoint. `summary.json` then holds `bands`: per cell the class counts,
+  the median `|z_i|-|z_j|`, and both scorers per layer and aggregated.
+
 * **Paired downstream-support replay (`--paired`).** On a finished audit's
   swaps, every swap is evaluated twice in the same batch layout: natively
   (later gates re-select) and with every later gate forced to its unswapped

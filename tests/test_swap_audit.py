@@ -140,6 +140,27 @@ def test_pair_sampling_is_seeded_by_token_and_independent_of_the_pool_values():
     assert len(sa.sample_pairs(pool, K, 3, 4, 5, seed=7, layer=0, seq=0, pos=0, exhaustive=True)) == 12
 
 
+def test_banded_pairs_respect_depth_bands_cells_and_seeding():
+    kk, m = 8, 20                                   # pool of 20: ranks 0..7 active, 8..19 candidates
+    pool = torch.arange(500, 500 + m)
+    ab, cb = sa.parse_bands("0:2,2:8"), sa.parse_bands("0:3,3:12,12:40")
+    a = sa.sample_pairs_banded(pool, kk, ab, cb, 2, seed=3, layer=1, seq=0, pos=5)
+    cells = {}
+    for ri, rj, fi, fj, la, lc in a:
+        da, dc = kk - 1 - ri, rj - kk
+        lo_a, hi_a = map(int, la.split("-")); lo_c, hi_c = map(int, lc.split("-"))
+        assert lo_a <= da < hi_a and lo_c <= dc < hi_c and rj < m
+        assert fi == 500 + ri and fj == 500 + rj
+        cells[(la, lc)] = cells.get((la, lc), 0) + 1
+    # the 12:40 candidate band is empty (pool ends at depth 11): four non-empty cells, two pairs each
+    assert cells == {("0-2", "0-3"): 2, ("0-2", "3-12"): 2, ("2-8", "0-3"): 2, ("2-8", "3-12"): 2}
+    assert a == sa.sample_pairs_banded(pool, kk, ab, cb, 2, seed=3, layer=1, seq=0, pos=5)
+    assert a != sa.sample_pairs_banded(pool, kk, ab, cb, 2, seed=3, layer=1, seq=0, pos=6)
+    # a cell smaller than the request is taken whole
+    small = sa.sample_pairs_banded(pool, kk, [(0, 1)], [(0, 1)], 5, seed=0, layer=0, seq=0, pos=0)
+    assert [(p[0], p[1]) for p in small] == [(kk - 1, kk)]
+
+
 def test_credit_error_cases():
     r = np.array([1.0, 1.0, -1.0, -1.0]); dL = np.array([-1.0, -1.0, 1.0, 1.0])
     assert sa.credit_error(r, dL, 0.1)["E"] == 0.0                       # perfect agreement

@@ -28,6 +28,8 @@ Pieces, each usable on its own:
 * :func:`sample_pairs` -- rank-window pair sampling, uniform or exhaustive,
   seeded by (seed, layer, sequence, position) so the same rank pairs are
   drawn for every checkpoint; nothing in it looks at a gradient.
+  :func:`sample_pairs_banded` stratifies the pairs by rank distance from the
+  boundary (active-depth band x candidate-depth band, a fixed count per cell).
 * :func:`credit_error` / :func:`bootstrap_credit` -- the balanced decision
   error with the dead band ``|dL| <= tau``, per layer and with fixed layer
   weights; undefined (``None``) when a class is empty, never 0.5.
@@ -469,6 +471,52 @@ def sample_pairs(cand_idx_bt: torch.Tensor, k: int, active_window: int, cand_win
         sel = rng.choice(len(pairs), size=n_pairs, replace=False)
         pairs = [pairs[int(s)] for s in sorted(sel)]
     return [(ri, rj, pool[ri], pool[rj]) for ri, rj in pairs]
+
+
+def parse_bands(spec: str) -> List[Tuple[int, int]]:
+    """``"0:8,8:32"`` -> ``[(0, 8), (8, 32)]``: half-open depth bands."""
+    bands = []
+    for part in spec.split(","):
+        lo, hi = (int(v) for v in part.split(":"))
+        if not 0 <= lo < hi:
+            raise ValueError(f"bad band {part!r}")
+        bands.append((lo, hi))
+    return bands
+
+
+def band_label(band: Tuple[int, int]) -> str:
+    return f"{band[0]}-{band[1]}"
+
+
+def sample_pairs_banded(cand_idx_bt: torch.Tensor, k: int, active_bands: Sequence[Tuple[int, int]],
+                        cand_bands: Sequence[Tuple[int, int]], n_per_cell: int, seed: int, layer: int,
+                        seq: int, pos: int) -> List[Tuple[int, int, int, int, str, str]]:
+    """Pairs stratified by distance from the rank boundary, for one token.
+
+    Depths are counted in ranks from the boundary on each side: an active
+    feature at rank ``r < k`` has depth ``k - 1 - r`` (0 = the weakest active
+    one), a candidate at rank ``r >= k`` has depth ``r - k`` (0 = the strongest
+    candidate).  For every (active band, candidate band) cell, ``n_per_cell``
+    pairs are drawn uniformly without replacement from the cell (all of them if
+    it has fewer), clipped to the pool.  Returns ``(rank_i, rank_j, feature_i,
+    feature_j, active_band, cand_band)``; the RNG is seeded from (seed, layer,
+    seq, pos) only, so every checkpoint and model sees the same rank pairs."""
+    pool = cand_idx_bt.tolist()
+    m = len(pool)
+    rng = np.random.default_rng([seed, layer, seq, pos])
+    out = []
+    for ab in active_bands:
+        ranks_i = [k - 1 - d for d in range(ab[0], ab[1]) if 0 <= k - 1 - d < k]
+        for cb in cand_bands:
+            ranks_j = [k + d for d in range(cb[0], cb[1]) if k + d < m]
+            cell = [(ri, rj) for ri in ranks_i for rj in ranks_j]
+            if not cell:
+                continue
+            if n_per_cell < len(cell):
+                sel = rng.choice(len(cell), size=n_per_cell, replace=False)
+                cell = [cell[int(s)] for s in sorted(sel)]
+            out += [(ri, rj, pool[ri], pool[rj], band_label(ab), band_label(cb)) for ri, rj in cell]
+    return out
 
 
 # --------------------------------------------------------------------------- #
