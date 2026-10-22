@@ -737,7 +737,7 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                     line += f" | xchg {bn['bottleneck/policy_exchange_frac']:.3f}"
             if dm.get("dust/steps"):
                 line += (f" | dust {int(dm['dust/steps'])} gap {dm['dust/ce_gap']:+.4f}"
-                         f" ghat {dm['dust/ghat_rms']:.2e}")
+                         f" ghat {dm['dust/ghat_rms']:.2e} snr {dm['dust/snr']:.3f}")
                 if "dust/cosine" in dm:
                     line += f" cos {dm['dust/cosine']:.3f}"
             if "bottleneck/temperature" in bn:

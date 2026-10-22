@@ -356,6 +356,44 @@ def test_discounted_credit_sums_the_later_tokens_losses():
         assert torch.allclose(ghat, expected, atol=0.35), (gamma, (ghat - expected).abs().max())
 
 
+def test_snr_matches_the_direct_definition_and_grows_with_the_draws():
+    torch.manual_seed(7)
+    B, T, N, M = 2, 4, 12, 6
+    z = torch.randn(B, T, N)
+    w = torch.randn(N)
+    cand = pool_indices(z, "abs_topk", M)
+    sigma_t = noise_scale("absolute", 0.2, z, cand)
+    # a loss with cross-token coupling, so the per-draw estimates have real noise
+    loss_fn = lambda zp: torch.cumsum((zp * w).sum(-1), dim=-1) + 0.3 * (zp ** 2).sum(-1)  # noqa: E731
+    K = 24
+    gen = torch.Generator().manual_seed(3)
+    ghat, st = dust_estimate(z, cand, sigma_t, draws=K, gamma=0.0, loss_fn=loss_fn,
+                             generator=gen, chunk=K)
+    # the same draws, by the same generator call, scored by the definition
+    gen2 = torch.Generator().manual_seed(3)
+    a = torch.randn((K, B, T, M), generator=gen2)
+    noise = torch.zeros(K, B, T, N).scatter_(-1, cand.unsqueeze(0).expand(K, B, T, M),
+                                            sigma_t.unsqueeze(0) * a)
+    ell = loss_fn((z.unsqueeze(0) + noise).reshape(K * B, T, N)).reshape(K, B, T)
+    r = ell.mean(0, keepdim=True) - ell                                   # reward, gamma 0
+    zi = -r.unsqueeze(-1) * a / sigma_t.unsqueeze(0)                     # one draw's estimate
+    mu = zi.mean(0)
+    nu2 = ((zi - mu) ** 2).sum(-1).sum(0) / (K - 1)
+    snr = math.sqrt(K) * mu.norm(dim=-1) / nu2.sqrt()
+    assert torch.allclose(mu, ghat, atol=1e-5)
+    assert torch.allclose(st["snr"], snr, rtol=1e-4, atol=1e-5)
+    # more draws: the SNR grows about as sqrt(K)
+    gen = torch.Generator().manual_seed(5)
+    _, st4 = dust_estimate(z, cand, sigma_t, draws=4 * K, gamma=0.0, loss_fn=loss_fn,
+                           generator=gen, chunk=K)
+    ratio = (st4["snr"].mean() / st["snr"].mean()).item()
+    assert 1.5 < ratio < 2.7, ratio
+    # identical draws (a degenerate loss): no noise, SNR reported as 0, not inf/nan
+    _, st0 = dust_estimate(z, cand, sigma_t, draws=4, gamma=0.0,
+                           loss_fn=lambda zp: torch.zeros(zp.shape[:2]), generator=gen)
+    assert torch.equal(st0["snr"], torch.zeros(B, T))
+
+
 def test_token_losses_zero_ignored_targets_and_use_float32():
     logits = torch.randn(2, 4, VOCAB, dtype=torch.bfloat16)
     y = torch.randint(0, VOCAB, (2, 4))
@@ -401,6 +439,8 @@ def test_micro_step_encoder_target_touches_encoders_only_and_matches_backprop_si
         assert cos > 0.25, (name, cos)  # the sign and the scaling of the estimate
     assert math.isfinite(st["ce_clean"]) and st["ce_clean"] > 0
     assert st["ghat_rms"] > 0 and st["reward_rms"] > 0
+    assert st["snr"] > 0 and set(st["snr_layers"]) == {"blocks.0", "blocks.1"}
+    assert st["snr"] == pytest.approx(sum(st["snr_layers"].values()) / 2)
     assert st["ce_gap"] == pytest.approx(st["ce_perturbed"] - st["ce_clean"])
     # the tails ran in eval mode: one usage update (the clean forward) per gate
     for _, m in ctl.layers:
@@ -534,6 +574,7 @@ def test_training_alternates_and_the_encoder_target_moves_only_the_encoders(tmp_
     dust_rows = [r for r in tr if r["dust/steps"]]
     for r in dust_rows:
         for key in ("dust/ce_perturbed", "dust/ce_gap", "dust/reward_rms", "dust/ghat_rms",
+                    "dust/snr", "dust_snr/blocks.0", "dust_snr/blocks.1",
                     "dust/grad_norm", "dust/cosine", "dust_cosine/blocks.0",
                     "dust_cosine/blocks.1"):
             assert key in r and math.isfinite(r[key]), key

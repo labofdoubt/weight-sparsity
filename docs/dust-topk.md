@@ -182,6 +182,15 @@ Logged per window:
   tokens; `dust/ghat_rms`: RMS of the UNSCALED $\hat g$ over the pool
   entries of valid tokens (comparable across runs with different
   `dust_grad_scale`).
+- `dust/snr`, `dust_snr/<layer>`: the signal-to-noise ratio of the
+  population-averaged estimate, per token and then averaged over valid tokens
+  (and over bottlenecks for `dust/snr`). With one draw's estimate
+  $z^{(i)}_t = -r^{(i)}_t a^{(i)}_t / \sigma_t$, the population mean
+  $\hat\mu_t$ (which is $\hat g_t$ before the $1/N_{valid}$) and
+  $\hat\nu_t^2 = \frac{1}{K_l - 1}\sum_i \lVert z^{(i)}_t - \hat\mu_t \rVert^2$,
+  $\mathrm{SNR}_t = \sqrt{K_l}\, \lVert \hat\mu_t \rVert / \hat\nu_t$: above 1
+  the signal dominates the sampling noise, below 1 the noise does, and it
+  grows about as $\sqrt{K_l}$. Formed from running sums, no draw is stored.
 - `dust/grad_norm`: mean clipped gradient norm of the window's DUST steps,
   after `dust_grad_scale`.
 - `dust/cosine`, `dust_cosine/<layer>` (with `dust_cosine_every_steps` $> 0$,

@@ -238,7 +238,17 @@ def dust_estimate(z: torch.Tensor, cand_idx: torch.Tensor, sigma_t: torch.Tensor
     (``= -(1 / (K sigma_t)) sum_i r_t^(i) a_t^(i)``), accumulated as
     ``S_Ra - R~ S_a`` so that no draw is stored.  ``stats``: ``ell_sum`` (the
     perturbed losses summed over draws and tokens), ``reward_sq_sum``
-    (``sum_t sum_i (R_t^(i) - R~_t)^2``), ``draws``.
+    (``sum_t sum_i (R_t^(i) - R~_t)^2``), ``draws``, and ``snr`` ``[B, T]``,
+    the signal-to-noise ratio of the population-averaged estimate per token::
+
+        z_t^(i) = -r_t^(i) a_t^(i) / sigma_t          (one draw's estimate)
+        mu_t    = (1 / K) sum_i z_t^(i)               (= g^_t)
+        nu_t^2  = (1 / (K - 1)) sum_i ||z_t^(i) - mu_t||^2
+        SNR_t   = sqrt(K) ||mu_t|| / nu_t
+
+    with ``sum_i ||z_t^(i) - mu_t||^2 = sum_i ||z_t^(i)||^2 - K ||mu_t||^2``
+    and ``sum_i ||z_t^(i)||^2`` formed from the running sums of
+    ``R^2 ||a||^2``, ``R ||a||^2`` and ``||a||^2``; 0 where the draws agree.
     """
     z = z.detach()
     B, T, N = z.shape
@@ -249,6 +259,9 @@ def dust_estimate(z: torch.Tensor, cand_idx: torch.Tensor, sigma_t: torch.Tensor
     s_ra = torch.zeros(B, T, M, dtype=f32, device=dev)
     r_sum = torch.zeros(B, T, dtype=f32, device=dev)
     r2_sum = torch.zeros(B, T, dtype=f32, device=dev)
+    a2_sum = torch.zeros(B, T, dtype=f32, device=dev)      # sum_i ||a_i||^2
+    ra2_sum = torch.zeros(B, T, dtype=f32, device=dev)     # sum_i R_i ||a_i||^2
+    r2a2_sum = torch.zeros(B, T, dtype=f32, device=dev)    # sum_i R_i^2 ||a_i||^2
     ell_sum = torch.zeros((), dtype=f32, device=dev)
     draws = int(draws)
     chunk = max(1, min(int(chunk), draws))
@@ -268,14 +281,25 @@ def dust_estimate(z: torch.Tensor, cand_idx: torch.Tensor, sigma_t: torch.Tensor
         s_ra += (r.unsqueeze(-1) * a).sum(0)
         r_sum += r.sum(0)
         r2_sum += (r * r).sum(0)
+        a2 = (a * a).sum(-1)
+        a2_sum += a2.sum(0)
+        ra2_sum += (r * a2).sum(0)
+        r2a2_sum += (r * r * a2).sum(0)
         ell_sum += ell.sum()
         done += c
         del a, ell, r
     r_bar = r_sum / draws
     ghat = (s_ra - r_bar.unsqueeze(-1) * s_a) / (draws * sigma_t)
     reward_sq = (r2_sum - draws * r_bar * r_bar).clamp_min(0.0).sum()
+    # SNR of the population-averaged estimate, per token
+    sig2 = sigma_t.squeeze(-1).pow(2)
+    mu2 = ghat.pow(2).sum(-1)
+    z2_sum = (r2a2_sum - 2.0 * r_bar * ra2_sum + r_bar * r_bar * a2_sum) / sig2
+    nu2 = (z2_sum - draws * mu2).clamp_min(0.0) / max(draws - 1, 1)
+    snr = torch.where(nu2 > 0, math.sqrt(draws) * mu2.sqrt() / nu2.sqrt().clamp_min(
+        torch.finfo(f32).tiny), torch.zeros_like(mu2))
     return ghat, {"ell_sum": ell_sum, "reward_sq_sum": reward_sq,
-                  "draws": torch.tensor(float(draws), device=dev)}
+                  "draws": torch.tensor(float(draws), device=dev), "snr": snr}
 
 
 # --------------------------------------------------------------------------- #
@@ -355,14 +379,17 @@ class DustRunningStats:
         self.micro = 0
         self.steps = 0
         self.sums: Dict[str, float] = {}
+        self.snr_sums: Dict[str, float] = {}
         self.cos_sums: Dict[str, float] = {}
         self.cos_n = 0
         self.grad_norm_sum = 0.0
 
     def add(self, stats: Dict[str, float]) -> None:
         self.micro += 1
-        for key in ("ce_clean", "ce_perturbed", "ce_gap", "reward_rms", "ghat_rms"):
+        for key in ("ce_clean", "ce_perturbed", "ce_gap", "reward_rms", "ghat_rms", "snr"):
             self.sums[key] = self.sums.get(key, 0.0) + float(stats[key])
+        for name, value in stats.get("snr_layers", {}).items():
+            self.snr_sums[name] = self.snr_sums.get(name, 0.0) + float(value)
         cos = stats.get("cosine")
         if cos:
             self.cos_n += 1
@@ -376,9 +403,11 @@ class DustRunningStats:
     def metrics(self) -> Dict[str, float]:
         out = {"dust/steps": float(self.steps)}
         if self.micro:
-            for key in ("ce_perturbed", "ce_gap", "reward_rms", "ghat_rms"):
+            for key in ("ce_perturbed", "ce_gap", "reward_rms", "ghat_rms", "snr"):
                 out[f"dust/{key}"] = self.sums[key] / self.micro
             out["dust/ce_clean"] = self.sums["ce_clean"] / self.micro
+            for name, total in self.snr_sums.items():
+                out[f"dust_snr/{name}"] = total / self.micro
         if self.steps:
             out["dust/grad_norm"] = self.grad_norm_sum / self.steps
         if self.cos_n:
@@ -410,16 +439,19 @@ def dust_micro_step(model, controller, x: torch.Tensor, y: torch.Tensor,
     steps log as train/ce), ``ce_perturbed`` (mean over draws, bottlenecks
     and valid tokens of the perturbed CE), ``ce_gap`` (perturbed - clean),
     ``reward_rms`` (RMS over draws and valid tokens of ``R - R~``),
-    ``ghat_rms`` (RMS over the pool entries of valid tokens of ``g^``), and,
-    with ``want_cosine``, ``cosine``: per distinct encoder weight (keyed by
-    the first layer label holding it) the cosine between the DUST outer
-    product and the hard-backward gradient of the clean CE.
+    ``ghat_rms`` (RMS over the pool entries of valid tokens of ``g^``), ``snr``
+    (the per-token SNR of :func:`dust_estimate` averaged over valid tokens and
+    bottlenecks) with ``snr_layers`` per layer label, and, with
+    ``want_cosine``, ``cosine``: per distinct encoder weight (keyed by the
+    first layer label holding it) the cosine between the DUST outer product
+    and the hard-backward gradient of the clean CE.
     """
     from ..utils import autocast_context
 
     layers = list(controller.layers)
     modules = [m for _, m in layers]
     label_of = {}
+    layer_label = {id(m): label for label, m in layers}
     for label, m in layers:
         label_of.setdefault(id(m.in_proj.weight), label)
     L = len(modules)
@@ -458,6 +490,7 @@ def dust_micro_step(model, controller, x: torch.Tensor, y: torch.Tensor,
     reward_sq = torch.zeros((), dtype=f32, device=device)
     ghat_sq = torch.zeros((), dtype=f32, device=device)
     ghat_n = torch.zeros((), dtype=f32, device=device)
+    snr_layers: Dict[str, torch.Tensor] = {}
     model.eval()  # the tails: no dropout, no usage statistics, no diagnostics
     try:
         for rec in records:
@@ -483,6 +516,7 @@ def dust_micro_step(model, controller, x: torch.Tensor, y: torch.Tensor,
                 reward_sq += st["reward_sq_sum"]
                 ghat_sq += (ghat_pool.pow(2) * valid.unsqueeze(-1)).sum()  # unscaled
                 ghat_n += n_valid * ghat_pool.shape[-1]
+                snr_layers[layer_label[id(rec.module)]] = (st["snr"] * valid).sum() / n_valid
                 # dust_grad_scale: the gradient that enters the optimizer
                 ghat = torch.zeros(B, T, N, dtype=f32, device=device).scatter_(
                     -1, cand_idx, ghat_pool * state.grad_scale)
@@ -530,9 +564,13 @@ def dust_micro_step(model, controller, x: torch.Tensor, y: torch.Tensor,
                 cos = (est * ref.to(f32)).sum() / denom.clamp_min(torch.finfo(f32).tiny)
                 cosine[label_of[id(w)]] = float(cos)
     draws_total = float(per_l * L)
+    labels = list(snr_layers)
     vals = torch.stack([ce_clean, ell_sum / (draws_total * n_valid), reward_sq,
-                        ghat_sq / ghat_n.clamp_min(1.0), n_valid]).tolist()
-    ce_c, ce_p, rsq, gsq, nv = vals
+                        ghat_sq / ghat_n.clamp_min(1.0), n_valid]
+                       + [snr_layers[k] for k in labels]).tolist()
+    ce_c, ce_p, rsq, gsq, nv = vals[:5]
+    snr_vals = dict(zip(labels, vals[5:]))
     return {"ce_clean": ce_c, "ce_perturbed": ce_p, "ce_gap": ce_p - ce_c,
             "reward_rms": math.sqrt(rsq / (draws_total * nv)), "ghat_rms": math.sqrt(gsq),
-            "cosine": cosine}
+            "snr": (sum(snr_vals.values()) / len(snr_vals)) if snr_vals else 0.0,
+            "snr_layers": snr_vals, "cosine": cosine}
