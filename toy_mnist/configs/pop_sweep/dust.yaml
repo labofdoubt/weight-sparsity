@@ -1,7 +1,8 @@
 # Population sweep: hard.yaml with DUST steps ([1, 1]) over the whole input
 # (topk.j null -> j = 784 - k, every pixel perturbed), sigma 0.1 absolute,
 # encoder target, shared optimizer.  K and dust_population come from the job
-# line; dust_chunk_draws 512 keeps the tails to about 1.3 GB at hidden 1024.
+# line (populations 128, 512, 2000, 8000, 32000); dust_chunk_draws 512 keeps
+# the tails to about 1.1 GB at hidden 1024.
 _base_: [hard.yaml]
 train:
   run_name: dust

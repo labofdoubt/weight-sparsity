@@ -1,0 +1,38 @@
+{
+  "k4_hard": {
+    "k": 4,
+    "method": "hard",
+    "population": null,
+    "step": 5000,
+    "train_ce": 0.9185669153928757,
+    "val_ce": 0.9305175721645356,
+    "val_acc": 0.6803
+  },
+  "k8_hard": {
+    "k": 8,
+    "method": "hard",
+    "population": null,
+    "step": 5000,
+    "train_ce": 0.42029819041490557,
+    "val_ce": 0.48339342176914213,
+    "val_acc": 0.8468
+  },
+  "k16_hard": {
+    "k": 16,
+    "method": "hard",
+    "population": null,
+    "step": 5000,
+    "train_ce": 0.10773425977677106,
+    "val_ce": 0.21737219467759133,
+    "val_acc": 0.9341
+  },
+  "k32_hard": {
+    "k": 32,
+    "method": "hard",
+    "population": null,
+    "step": 5000,
+    "train_ce": 0.021497644018381834,
+    "val_ce": 0.14658368118107318,
+    "val_acc": 0.9605
+  }
+}

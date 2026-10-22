@@ -64,7 +64,7 @@ def main() -> None:
     ap.add_argument("--runs", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--ks", default="4,8,16,32")
-    ap.add_argument("--pops", default="512,2000,8000,32000,60000")
+    ap.add_argument("--pops", default="128,512,2000,8000,32000")
     args = ap.parse_args()
     ks = [int(v) for v in args.ks.split(",")]
     pops = [int(v) for v in args.pops.split(",")]
