@@ -1,0 +1,14 @@
+# AbsTopK_k(exp(g) * x) with the hard backward: g receives a gradient through
+# the active entries only.  j is the pool width beyond k that a DUST run
+# perturbs; the hard backward never reads it (kept here so that the dust
+# configs differ from this one in surrogate_mode and dust_* only).
+_base_: [base.yaml]
+train:
+  run_name: topk_hard
+rescale:
+  enabled: true
+topk:
+  enabled: true
+  k: 64
+  j: 64
+  surrogate_mode: hard

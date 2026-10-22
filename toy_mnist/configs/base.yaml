@@ -1,0 +1,29 @@
+# Shared defaults of the toy MNIST study.  Every shipped config includes this
+# file; a run name is set per config.
+data:
+  data_dir: data/mnist
+  normalize: none        # pixels in [0, 1]
+
+model:
+  hidden: 256
+  bias: true
+
+train:
+  optimizer: adamw
+  lr: 1.0e-3
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 0.0
+  grad_clip: 0.0
+  lr_schedule: cosine
+  warmup_steps: 100
+  min_lr_ratio: 0.1
+  batch_size: 128
+  max_steps: 3000        # 6.4 epochs of 60 000 images at batch 128
+  log_every_steps: 20
+  validate_every_steps: 200
+  val_batch_size: 1000
+  seed: 1337
+  device: auto
+  out_dir: runs_mnist
+  tensorboard: true

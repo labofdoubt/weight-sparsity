@@ -1,0 +1,7 @@
+# The diagonal rescaling exp(g) * x before the MLP, no gate (g trainable,
+# initialised at 0): the dense reference for the gated runs.
+_base_: [base.yaml]
+train:
+  run_name: rescale
+rescale:
+  enabled: true

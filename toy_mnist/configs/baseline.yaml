@@ -1,0 +1,4 @@
+# z = W2 relu(W1 x): no rescaling, no gate.
+_base_: [base.yaml]
+train:
+  run_name: baseline

@@ -220,6 +220,9 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
 
 ## Tests, git, notes
 
+- `toy_mnist/` is a self-contained MNIST study of support optimization for
+  a hard Top-K input gate (its own README, configs and tests:
+  `python -m pytest toy_mnist/tests -q`); it imports nothing from `wsparse`.
 - `python -m pytest tests/ -q` runs on CPU with synthetic data in a few
   minutes; run it before a campaign and after every pull. The 2-process DDP
   test is opt-in: `WSPARSE_DDP_TEST=1 python -m pytest tests/test_train_ddp.py -q`.

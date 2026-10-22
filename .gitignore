@@ -13,6 +13,7 @@ venv/
 # local artifacts
 data/
 runs/
+runs_mnist/
 checkpoints/
 wandb/
 *.bin

@@ -1,0 +1,9 @@
+# topk_dust.yaml with dust_target: backprop -- the estimated output error at
+# the gate input is backpropagated by autograd through the clean graph.  Only
+# g precedes the gate here, so this is the encoder target's gradient formed a
+# second way (a consistency check, kept for parity with the main repository).
+_base_: [topk_dust.yaml]
+train:
+  run_name: topk_dust_backprop
+topk:
+  dust_target: backprop
