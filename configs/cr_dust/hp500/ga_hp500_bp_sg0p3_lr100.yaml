@@ -1,0 +1,11 @@
+# hp500 grid cell (see base.yaml): dust_target backprop, dust_sigma 0.3, dust_lr_scale 100.
+_base_:
+  - base.yaml
+
+train:
+  run_name: ga_hp500_bp_sg0p3_lr100
+
+activation_bottleneck:
+  dust_target: backprop
+  dust_sigma: 0.3
+  dust_lr_scale: 100

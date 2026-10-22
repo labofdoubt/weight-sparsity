@@ -1,0 +1,11 @@
+# hp500 grid cell (see base.yaml): dust_target encoder, dust_sigma 0.1, dust_lr_scale 30.
+_base_:
+  - base.yaml
+
+train:
+  run_name: ny_hp500_enc_sg0p1_lr30
+
+activation_bottleneck:
+  dust_target: encoder
+  dust_sigma: 0.1
+  dust_lr_scale: 30

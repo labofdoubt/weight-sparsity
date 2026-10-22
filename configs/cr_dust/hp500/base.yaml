@@ -1,0 +1,22 @@
+# 500-step HP search of the DUST bottleneck optimization (2026-10-22): sigma x
+# dust_lr_scale, in both dust_target modes.  Base: the K=32 code-carried hard
+# model with DUST (../ga_cr_dust_k32_j480_p128_sep.yaml: J=480, population 128
+# = 8 x 16 draws, separate optimizer sharing the MD gains, cosine every 50 DUST
+# steps) with schedule [1, 1] (a DUST step every other step), NO gradient
+# clipping, validation every 50 steps, no checkpoints, chunk 2 (fits a 32 GB
+# 5090).  Each run trains 500 steps of the unchanged 20k-step LR schedule
+# (scripts/train_guard.py --stop-step 500); the window lies inside the 500-step
+# LR warmup, so the DUST steps' LR is lr(t) * dust_lr_scale with lr(t) ramping
+# to 6e-4.  Encoder grid on new_york (ny_hp500_enc_*), backprop grid on
+# georgia (ga_hp500_bp_*); jobs_enc.txt / jobs_bp.txt feed scripts/gpu_queue.sh.
+_base_:
+  - ../ga_cr_dust_k32_j480_p128_sep.yaml
+
+train:
+  grad_clip: 0.0
+  validate_every_steps: 50
+  checkpoint_every_steps: 0
+
+activation_bottleneck:
+  dust_schedule: [1, 1]
+  dust_chunk_draws: 2
