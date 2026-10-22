@@ -1,0 +1,16 @@
+# hp500 sigma sweep at population 1024 (8 bottlenecks x 128 draws per micro-batch),
+# dust_lr_scale 1, dust_target backprop, dust_sigma 0.1; everything else as base.yaml
+# (schedule [1, 1], no clipping, validation every 50 steps, 500 steps of the 20k
+# schedule).  A DUST step at this population takes ~94 s on a 5090; the whole
+# sweep (4 sigmas x 2 targets, jobs_p1024.txt) runs on new_york after the grid.
+_base_:
+  - base.yaml
+
+train:
+  run_name: ny_hp500_bp_p1024_sg0p1_lr1
+
+activation_bottleneck:
+  dust_population: 1024
+  dust_target: backprop
+  dust_sigma: 0.1
+  dust_lr_scale: 1
