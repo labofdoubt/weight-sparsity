@@ -1,0 +1,9 @@
+# sigma search x target, [6,1], 10k of 20k steps, georgia 2026-10-22; one GPU each
+ga_cr_dust_k32_j480_p128_s61_enc_sg0p03
+ga_cr_dust_k32_j480_p128_s61_enc_sg0p1
+ga_cr_dust_k32_j480_p128_s61_enc_sg0p3
+ga_cr_dust_k32_j480_p128_s61_enc_sg0p9
+ga_cr_dust_k32_j480_p128_s61_bp_sg0p03
+ga_cr_dust_k32_j480_p128_s61_bp_sg0p1
+ga_cr_dust_k32_j480_p128_s61_bp_sg0p3
+ga_cr_dust_k32_j480_p128_s61_bp_sg0p9
