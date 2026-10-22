@@ -1,0 +1,9 @@
+ga_hp500_hard_k32_nomd|configs/cr_dust/hp500/hard_k32_nomd.yaml|--stop-step 500
+ga_hp500_enc_p1024_nomd_sg0p03_lr1|configs/cr_dust/hp500/ga_hp500_enc_p1024_nomd_sg0p03_lr1.yaml|--stop-step 500
+ga_hp500_enc_p1024_nomd_sg0p1_lr1|configs/cr_dust/hp500/ga_hp500_enc_p1024_nomd_sg0p1_lr1.yaml|--stop-step 500
+ga_hp500_enc_p1024_nomd_sg0p3_lr1|configs/cr_dust/hp500/ga_hp500_enc_p1024_nomd_sg0p3_lr1.yaml|--stop-step 500
+ga_hp500_enc_p1024_nomd_sg0p9_lr1|configs/cr_dust/hp500/ga_hp500_enc_p1024_nomd_sg0p9_lr1.yaml|--stop-step 500
+ga_hp500_bp_p1024_nomd_sg0p03_lr1|configs/cr_dust/hp500/ga_hp500_bp_p1024_nomd_sg0p03_lr1.yaml|--stop-step 500
+ga_hp500_bp_p1024_nomd_sg0p1_lr1|configs/cr_dust/hp500/ga_hp500_bp_p1024_nomd_sg0p1_lr1.yaml|--stop-step 500
+ga_hp500_bp_p1024_nomd_sg0p3_lr1|configs/cr_dust/hp500/ga_hp500_bp_p1024_nomd_sg0p3_lr1.yaml|--stop-step 500
+ga_hp500_bp_p1024_nomd_sg0p9_lr1|configs/cr_dust/hp500/ga_hp500_bp_p1024_nomd_sg0p9_lr1.yaml|--stop-step 500

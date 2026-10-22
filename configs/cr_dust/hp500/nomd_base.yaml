@@ -1,0 +1,17 @@
+# The population-1024 sigma sweep (dust_lr_scale 1) WITHOUT magnitude-direction
+# decoupling: model.decouple=false with model.md_init=true (identical
+# initialization, ordinary AdamW with weight decay 0.1 for both optimizers, the
+# convention of docs/md-init-vs-decoupling.tex); everything else as base.yaml
+# ([1, 1], no clipping, validation every 50 steps, 500 steps of the 20k schedule).
+# ga_hp500_*_p1024_nomd_* (gamma 0) run on georgia, ny_hp500_*_p1024_nomd_g099_*
+# (gamma 0.99) on new_york.
+_base_:
+  - base.yaml
+
+model:
+  decouple: false
+  md_init: true
+
+activation_bottleneck:
+  dust_population: 1024
+  dust_lr_scale: 1

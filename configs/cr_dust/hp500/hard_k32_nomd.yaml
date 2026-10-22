@@ -1,0 +1,15 @@
+# The hp500 hard Top-32 baseline (hard_k32.yaml) WITHOUT magnitude-direction
+# decoupling: the same initialization (model.md_init=true applies the identical
+# md_init_ re-initialization at the same seed) trained with ordinary AdamW and
+# the configured weight decay 0.1, the convention of docs/md-init-vs-decoupling.tex.
+# Everything else as hard_k32.yaml (no clipping, validation every 50 steps, 500
+# steps of the 20k schedule).  Run on georgia.
+_base_:
+  - hard_k32.yaml
+
+model:
+  decouple: false
+  md_init: true
+
+train:
+  run_name: ga_hp500_hard_k32_nomd
