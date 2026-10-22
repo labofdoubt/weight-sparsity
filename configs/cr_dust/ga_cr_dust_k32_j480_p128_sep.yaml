@@ -1,0 +1,27 @@
+# The K=32 code-carried hard Top-K model of docs/kj-vs-hard-topk-code-residual.tex
+# (configs/cr_kj/ma_cr_hard_k32_pnorm.yaml: 8x768, MD decoupling, residual_out at
+# every block, code_residual, post-norm, batch 96 x 512, 20k steps) trained with
+# the DUST bottleneck optimization (docs/dust-topk.md): the J=480 pool receives
+# the noise, population 128 = 8 bottlenecks x 16 draws per micro-batch,
+# sigma 0.1 (absolute), schedule [1, 1], a separate optimizer for the DUST
+# steps (its own Adam statistics, the MD gains and radii shared with the main
+# one).  dust_target stays at the default, encoder; gamma 0; grad scale 1.
+_base_:
+  - ../cr_kj/ma_cr_hard_k32_pnorm.yaml
+
+train:
+  run_name: ga_cr_dust_k32_j480_p128_sep
+
+activation_bottleneck:
+  j: 480
+  surrogate_mode: dust
+  dust_population: 128
+  dust_sigma: 0.1
+  dust_schedule: [1, 1]
+  dust_optimizer: separate
+  # throughput only: 4 draws per tail forward (a DUST step takes ~18 s on an
+  # A100 at any chunk size; the hard step ~1 s)
+  dust_chunk_draws: 4
+  # the cosine of the DUST encoder gradient with the hard one, every 50 DUST
+  # steps (one extra backward per micro-batch when due)
+  dust_cosine_every_steps: 50
