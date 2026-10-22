@@ -356,7 +356,7 @@ def test_discounted_credit_sums_the_later_tokens_losses():
         assert torch.allclose(ghat, expected, atol=0.35), (gamma, (ghat - expected).abs().max())
 
 
-def test_snr_matches_the_direct_definition_and_grows_with_the_draws():
+def test_snr_matches_the_direct_definition_and_is_independent_of_the_draws():
     torch.manual_seed(7)
     B, T, N, M = 2, 4, 12, 6
     z = torch.randn(B, T, N)
@@ -379,15 +379,15 @@ def test_snr_matches_the_direct_definition_and_grows_with_the_draws():
     zi = -r.unsqueeze(-1) * a / sigma_t.unsqueeze(0)                     # one draw's estimate
     mu = zi.mean(0)
     nu2 = ((zi - mu) ** 2).sum(-1).sum(0) / (K - 1)
-    snr = math.sqrt(K) * mu.norm(dim=-1) / nu2.sqrt()
+    snr = mu.norm(dim=-1) / nu2.sqrt()                                   # per-draw SNR
     assert torch.allclose(mu, ghat, atol=1e-5)
     assert torch.allclose(st["snr"], snr, rtol=1e-4, atol=1e-5)
-    # more draws: the SNR grows about as sqrt(K)
+    # more draws: the per-draw SNR is a property of the estimator, not of K
     gen = torch.Generator().manual_seed(5)
     _, st4 = dust_estimate(z, cand, sigma_t, draws=4 * K, gamma=0.0, loss_fn=loss_fn,
                            generator=gen, chunk=K)
     ratio = (st4["snr"].mean() / st["snr"].mean()).item()
-    assert 1.5 < ratio < 2.7, ratio
+    assert 0.7 < ratio < 1.4, ratio
     # identical draws (a degenerate loss): no noise, SNR reported as 0, not inf/nan
     _, st0 = dust_estimate(z, cand, sigma_t, draws=4, gamma=0.0,
                            loss_fn=lambda zp: torch.zeros(zp.shape[:2]), generator=gen)

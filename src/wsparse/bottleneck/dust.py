@@ -239,12 +239,14 @@ def dust_estimate(z: torch.Tensor, cand_idx: torch.Tensor, sigma_t: torch.Tensor
     ``S_Ra - R~ S_a`` so that no draw is stored.  ``stats``: ``ell_sum`` (the
     perturbed losses summed over draws and tokens), ``reward_sq_sum``
     (``sum_t sum_i (R_t^(i) - R~_t)^2``), ``draws``, and ``snr`` ``[B, T]``,
-    the signal-to-noise ratio of the population-averaged estimate per token::
+    the per-draw signal-to-noise ratio of the estimator per token (the
+    intrinsic quality of one draw's estimate, independent of the population;
+    the population-averaged estimate has ``sqrt(K)`` times this)::
 
         z_t^(i) = -r_t^(i) a_t^(i) / sigma_t          (one draw's estimate)
         mu_t    = (1 / K) sum_i z_t^(i)               (= g^_t)
         nu_t^2  = (1 / (K - 1)) sum_i ||z_t^(i) - mu_t||^2
-        SNR_t   = sqrt(K) ||mu_t|| / nu_t
+        SNR_1,t = ||mu_t|| / nu_t
 
     with ``sum_i ||z_t^(i) - mu_t||^2 = sum_i ||z_t^(i)||^2 - K ||mu_t||^2``
     and ``sum_i ||z_t^(i)||^2`` formed from the running sums of
@@ -291,13 +293,13 @@ def dust_estimate(z: torch.Tensor, cand_idx: torch.Tensor, sigma_t: torch.Tensor
     r_bar = r_sum / draws
     ghat = (s_ra - r_bar.unsqueeze(-1) * s_a) / (draws * sigma_t)
     reward_sq = (r2_sum - draws * r_bar * r_bar).clamp_min(0.0).sum()
-    # SNR of the population-averaged estimate, per token
+    # per-draw SNR of the estimator, per token
     sig2 = sigma_t.squeeze(-1).pow(2)
     mu2 = ghat.pow(2).sum(-1)
     z2_sum = (r2a2_sum - 2.0 * r_bar * ra2_sum + r_bar * r_bar * a2_sum) / sig2
     nu2 = (z2_sum - draws * mu2).clamp_min(0.0) / max(draws - 1, 1)
-    snr = torch.where(nu2 > 0, math.sqrt(draws) * mu2.sqrt() / nu2.sqrt().clamp_min(
-        torch.finfo(f32).tiny), torch.zeros_like(mu2))
+    snr = torch.where(nu2 > 0, mu2.sqrt() / nu2.sqrt().clamp_min(torch.finfo(f32).tiny),
+                      torch.zeros_like(mu2))
     return ghat, {"ell_sum": ell_sum, "reward_sq_sum": reward_sq,
                   "draws": torch.tensor(float(draws), device=dev), "snr": snr}
 
