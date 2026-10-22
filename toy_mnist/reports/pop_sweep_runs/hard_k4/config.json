@@ -53,6 +53,7 @@
     "out_dir": "/workspace/runs_mnist/pop_sweep",
     "run_name": "hard_k4",
     "tensorboard": true,
-    "save_checkpoint": true
+    "save_checkpoint": true,
+    "checkpoint_every_steps": 500
   }
 }

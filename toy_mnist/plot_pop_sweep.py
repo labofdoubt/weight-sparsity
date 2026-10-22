@@ -121,7 +121,8 @@ def main() -> None:
             ax_acc.set_ylim(lo, 1.0 if max(accs) > 0.97 else max(accs) + 0.01)
         ax_ce.set_title(f"K = {k}: training loss", color=INK, fontsize=10, loc="left")
         ax_acc.set_title(f"K = {k}: test accuracy", color=INK, fontsize=10, loc="left")
-        leg = ax_acc.legend(fontsize=7, frameon=False, loc="lower right", labelcolor=INK2)
+        # the legend sits in the loss panel's empty upper right, clear of every curve
+        ax_ce.legend(fontsize=7, frameon=False, loc="upper right", labelcolor=INK2)
         fig.tight_layout()
         path = os.path.join(args.out, "figures", f"curves_k{k}.png")
         fig.savefig(path, facecolor=SURFACE)

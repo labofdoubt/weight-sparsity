@@ -42,7 +42,34 @@ accuracy are the deterministic hard forward on the 10\,000 test images.
 
 \section{Results}
 
-RESULTS-PLACEHOLDER
+Figures~\ref{fig:k4} to \ref{fig:k32} and Tables~\ref{tab:k4} to
+\ref{tab:k32} hold the measurements; all 24 runs finished.
+
+\textbf{Small $K$.}  At $K = 4$ and $K = 8$ every DUST run beats the hard
+backward by a wide margin: test accuracy 75.3--76.3\% against 67.1\% at
+$K = 4$ (test CE 0.69--0.72 against 0.96), and 86.9--88.0\% against 84.6\% at
+$K = 8$ (0.37--0.39 against 0.48).  The hard run's training CE is flat from
+about step 1500 while the DUST runs keep descending.  Under the hard
+backward $g_n$ moves only through samples that already select pixel $n$,
+so the support is fixed early; the DUST steps give every pixel a gradient
+and the support keeps changing.
+
+\textbf{Large $K$.}  At $K = 16$ and $K = 32$ the test accuracies of all six
+runs lie within 0.5 points of each other (93.3--93.9\% and 95.8--96.3\%).
+The DUST runs reach a lower test CE (0.197--0.213 against 0.218 at $K = 16$;
+0.123--0.132 against 0.140 at $K = 32$) with a higher training CE: at $K = 32$
+the hard run's training CE is 0.022 against its test CE of 0.140, while the
+DUST runs sit at 0.07 and 0.12.  Two effects are mixed here: the DUST runs
+have 2500 hard steps for $W_1, W_2$ against 5000, and their support keeps
+moving; this sweep does not separate them.
+
+\textbf{Population.}  The gain is already present at $P = 128$ (two tail
+forwards of batch 128 per DUST step) and grows little with $P$: from 128 to
+32\,000 the test accuracy moves by about one point at $K = 4$ and $K = 8$ and
+within noise at $K = 16$ and $K = 32$, and the training CE of the DUST runs
+drops by 0.01--0.03.  At this problem size the estimator's variance is not
+what limits the method; the cost of a DUST step is linear in $P$ (0.8 s at
+$P = 32\,000$ against 12 ms at $P = 512$ on an RTX 3090).
 
 \begin{figure}[H]
 \centering
