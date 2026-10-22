@@ -55,6 +55,10 @@ One DUST step, per micro-batch ``(x, y)`` of ``B`` sequences and ``T`` tokens:
              embedding -- accumulates it; the gates on the way pass the hard
              mask, as in a hard step.
 
+   ``dust_grad_scale`` multiplies ``g^`` before either target, so the whole
+   DUST gradient scales with it; the ``ghat_rms`` statistic is the unscaled
+   estimate.
+
 Deliberate choices, kept in sync with ``docs/dust-topk.md``:
 
 - The baseline is the mean over the SAME draws (the reference's).  For a
@@ -291,6 +295,9 @@ class DustTrainingState:
         self.target = str(cfg.dust_target)
         if self.target not in TARGETS:
             raise ValueError(f"unknown dust_target: {self.target!r}")
+        self.grad_scale = float(getattr(cfg, "dust_grad_scale", 1.0))
+        if not (math.isfinite(self.grad_scale) and self.grad_scale > 0):
+            raise ValueError("dust_grad_scale must be positive and finite")
         self.chunk = max(1, min(int(cfg.dust_chunk_draws), self.per_bottleneck))
         self.cosine_every = int(cfg.dust_cosine_every_steps)
         self.generator = make_generator(device, seed)
@@ -309,7 +316,8 @@ class DustTrainingState:
         return (f"schedule [{n_hard} hard, {n_dust} dust], population {self.population} "
                 f"= {self.n_bottlenecks} x {self.per_bottleneck} draws per micro-batch, "
                 f"sigma {self.sigma:g} ({self.sigma_mode}), gamma {self.gamma:g}, "
-                f"target {self.target}, {self.chunk} draw(s) per tail forward"
+                f"target {self.target}, grad scale {self.grad_scale:g}, "
+                f"{self.chunk} draw(s) per tail forward"
                 + (f", cosine every {self.cosine_every} dust steps"
                    if self.cosine_every > 0 else ""))
 
@@ -463,12 +471,13 @@ def dust_micro_step(model, controller, x: torch.Tensor, y: torch.Tensor,
                 ghat_pool, st = dust_estimate(z, cand_idx, sigma_t, per_l, state.gamma, loss_fn,
                                               state.generator, state.chunk)
                 ghat_pool = ghat_pool / n_valid
-                ghat = torch.zeros(B, T, N, dtype=f32, device=device).scatter_(
-                    -1, cand_idx, ghat_pool)
                 ell_sum += st["ell_sum"]
                 reward_sq += st["reward_sq_sum"]
-                ghat_sq += (ghat_pool.pow(2) * valid.unsqueeze(-1)).sum()
+                ghat_sq += (ghat_pool.pow(2) * valid.unsqueeze(-1)).sum()  # unscaled
                 ghat_n += n_valid * ghat_pool.shape[-1]
+                # dust_grad_scale: the gradient that enters the optimizer
+                ghat = torch.zeros(B, T, N, dtype=f32, device=device).scatter_(
+                    -1, cand_idx, ghat_pool * state.grad_scale)
                 if state.target == "encoder" or want_cosine:
                     w = rec.module.in_proj.weight
                     g_w = torch.einsum("btn,btd->nd", ghat,

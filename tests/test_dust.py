@@ -144,6 +144,9 @@ def test_population_is_split_evenly_with_at_least_two_draws_each():
     dict(dust_schedule=[1, 2, 3]),
     dict(dust_schedule=[-1, 1]),
     dict(dust_target="both"),
+    dict(dust_grad_scale=0.0),
+    dict(dust_grad_scale=-1.0),
+    dict(dust_grad_scale=float("inf")),
     dict(dust_sigma=0.0),
     dict(dust_sigma=float("nan")),
     dict(dust_sigma_mode="relative_span"),
@@ -167,12 +170,14 @@ def test_invalid_dust_configurations_are_rejected(bad):
 def test_dust_fields_survive_yaml_cli_dict_and_shipped_configs(tmp_path):
     path = tmp_path / "d.yaml"
     tree = {"activation_bottleneck": bn_kwargs(dust_schedule=[1, 3], dust_target="backprop",
-                                               dust_gamma=0.5, dust_sigma_mode="relative_rms")}
+                                               dust_gamma=0.5, dust_sigma_mode="relative_rms",
+                                               dust_grad_scale=0.01)}
     with open(path, "w") as f:
         yaml.safe_dump(tree, f)
     cfg = load_config(str(path))
     ab = cfg.activation_bottleneck
     assert ab.dust_schedule == [1, 3] and ab.dust_target == "backprop" and ab.dust_gamma == 0.5
+    assert ab.dust_grad_scale == 0.01
     cfg2 = load_config(str(path), ["--activation_bottleneck.dust_schedule=[2,1]",
                                    "--activation_bottleneck.dust_target=encoder",
                                    "--activation_bottleneck.dust_population=12"])
@@ -428,6 +433,26 @@ def test_micro_step_accumulation_scale_and_generator_reproducibility():
     for n, p in model.named_parameters():
         if n in g1:
             assert torch.allclose(p.grad * 4, g1[n], atol=1e-6)
+
+
+@pytest.mark.parametrize("target", ["encoder", "backprop"])
+def test_grad_scale_multiplies_the_dust_gradient_only(target):
+    model, ctl = tiny_model(n_layers=2, code_residual=(target == "backprop"))
+    st1, _ = micro_step_on(model, ctl, population=8, sigma=0.1, target=target,
+                           want_cosine=True, seed=4)
+    g1 = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+    st3, state = micro_step_on(model, ctl, population=8, sigma=0.1, target=target,
+                               want_cosine=True, seed=4, dust_grad_scale=3.0)
+    assert state.grad_scale == 3.0
+    g3 = {n: p.grad for n, p in model.named_parameters() if p.grad is not None}
+    assert set(g1) == set(g3)
+    for n in g1:
+        assert torch.allclose(g3[n], 3.0 * g1[n], atol=1e-6, rtol=1e-5), n
+    # the estimator statistics and the cosine are unscaled / scale-invariant
+    assert st3["ghat_rms"] == pytest.approx(st1["ghat_rms"])
+    assert st3["ce_perturbed"] == pytest.approx(st1["ce_perturbed"])
+    for k in st1["cosine"]:
+        assert st3["cosine"][k] == pytest.approx(st1["cosine"][k], abs=1e-5)
 
 
 def test_dust_state_round_trip_continues_the_noise_stream():

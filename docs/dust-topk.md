@@ -106,6 +106,11 @@ parameter has a gradient in that step, so the optimizer leaves it unchanged
 no weight decay is applied to them either). Under `share_projections` the
 one encoder receives the sum over bottlenecks.
 
+**`dust_grad_scale`** (positive, default 1) multiplies $\hat g$ before
+either target, so the whole DUST gradient scales linearly with it in both
+modes while the hard steps are untouched. Section 8 gives the measured
+ratio between the two gradient norms that motivates it.
+
 **`backprop`.** The clean forward runs with grad enabled; after the tails,
 one `torch.autograd.backward` from every $z_l$ with $\hat g_l$ as the
 incoming gradient. Every parameter preceding a gate input accumulates it:
@@ -144,9 +149,11 @@ Logged per window:
   bottlenecks and valid tokens, and its excess over the clean CE (the price
   of the noise at this $\sigma$).
 - `dust/reward_rms`: RMS of $R^{(i)}_t - \tilde R_t$ over draws and valid
-  tokens; `dust/ghat_rms`: RMS of $\hat g$ over the pool entries of valid
-  tokens.
-- `dust/grad_norm`: mean clipped gradient norm of the window's DUST steps.
+  tokens; `dust/ghat_rms`: RMS of the UNSCALED $\hat g$ over the pool
+  entries of valid tokens (comparable across runs with different
+  `dust_grad_scale`).
+- `dust/grad_norm`: mean clipped gradient norm of the window's DUST steps,
+  after `dust_grad_scale`.
 - `dust/cosine`, `dust_cosine/<layer>` (with `dust_cosine_every_steps` $> 0$,
   every that many DUST steps): the cosine between the encoder outer product
   of Section 3 and the hard-backward gradient of the clean CE for the same
@@ -197,3 +204,24 @@ ceiling below 1 (the hard backward and the smoothed, selection-aware
 estimate are different gradients). The estimate is unbiased for the
 smoothed loss at any $K_l$; what $K_l$, $J$ and the number of tokens buy is
 variance.
+
+The gradient norms, measured on `bn_dust.yaml` at initialization for the
+same ten encoder weights (one micro-batch of $16 \times 512$ tokens,
+`dust_grad_scale: 1`):
+
+| | hard gradient | DUST, $K_l = 4$ | $K_l = 16$ | $K_l = 64$ |
+|---|---|---|---|---|
+| norm over the 10 encoders | 0.112 | 82.3 | 46.0 | 23.6 |
+| ratio to the hard gradient | 1 | 735 | 410 | 210 |
+| cosine with the hard gradient | | 0.005 | 0.009 | 0.020 |
+
+The DUST norm falls as $1/\sqrt{K_l}$: it is set by the estimator's
+variance, while the signal component ($\cos \times$ norm, 0.4 to 0.5) is
+within a factor of 4 of the hard gradient. The per-encoder ratio runs from
+about 100 for the last block to about 50 000 for the first, because at
+initialization the hard gradient of the early encoders is tiny while the
+noise norm is nearly the same in every block. With `grad_clip: 1.0` and
+`dust_grad_scale: 1` every DUST step is clipped by a factor 20 to 80 and no
+hard step is, and Adam's second moments for the encoders are set by the
+DUST steps. `dust_grad_scale` is the knob for balancing the two kinds; the
+shipped configs keep it at 1.

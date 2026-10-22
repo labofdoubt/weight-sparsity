@@ -591,6 +591,15 @@ class ActivationBottleneckConfig:
     #             earlier bottlenecks through their hard masks and the carry,
     #             the embedding) accumulates it
     dust_target: str = "encoder"  # encoder | backprop
+    # Multiplier on the estimated output error g^ before it enters either
+    # target, so the whole DUST gradient scales with it (the hard steps are
+    # untouched).  Measured at initialization on bn_dust.yaml (micro-batch
+    # 16 x 512, K_l = 4): the DUST estimate's norm over the encoders is about
+    # 700x the hard gradient's and falls as 1/sqrt(K_l), because it is set by
+    # the estimator's variance; the signal component is within a factor of 4
+    # of the hard gradient.  dust/ghat_rms logs the UNSCALED estimate,
+    # dust/grad_norm the scaled gradient.
+    dust_grad_scale: float = 1.0
     # Throughput knob: draws stacked along the batch axis per tail forward.
     # Changes the realized noise sequence for a given seed, not the method.
     dust_chunk_draws: int = 1
@@ -1295,6 +1304,7 @@ class ActivationBottleneckConfig:
         "dust_gamma": 0.0,
         "dust_schedule": [1, 1],
         "dust_target": "encoder",
+        "dust_grad_scale": 1.0,
         "dust_chunk_draws": 1,
         "dust_cosine_every_steps": 0,
     }
@@ -1373,6 +1383,10 @@ class ActivationBottleneckConfig:
         if self.dust_target not in TARGETS:
             raise ValueError(f"unknown dust_target: {self.dust_target!r} "
                              f"({' | '.join(TARGETS)})")
+        scale = float(self.dust_grad_scale)
+        if not (math.isfinite(scale) and scale > 0):
+            raise ValueError(
+                f"dust_grad_scale must be positive and finite, got {self.dust_grad_scale!r}")
         if int(self.dust_chunk_draws) < 1:
             raise ValueError("dust_chunk_draws must be >= 1")
         if int(self.dust_cosine_every_steps) < 0:
