@@ -8,6 +8,7 @@
 \usepackage{enumitem}
 \usepackage[hidelinks]{hyperref}
 \usepackage{caption}
+\usepackage{float}
 
 \emergencystretch=1.5em
 \captionsetup{font=small,labelfont=bf,width=.92\textwidth}
@@ -34,14 +35,14 @@ Single runs, seed 1337; the encoder arm and the baseline trained on new\_york
 % ============================================================
 
 The model is the $K{=}32$ code-carried hard Top-32 model of
-\code{docs/kj-vs-hard-topk-code-residual.tex}
-(\code{configs/cr\_kj/ma\_cr\_hard\_k32\_pnorm.yaml}): 8 blocks of width 768,
+\path{docs/kj-vs-hard-topk-code-residual.tex}
+(\path{configs/cr_kj/ma_cr_hard_k32_pnorm.yaml}): 8 blocks of width 768,
 abs-TopK over $N = 1536$ features at \code{residual\_out} of every block, the
 code carried between blocks, post-norm, magnitude--direction (MD) decoupling,
 batch $96 \times 512$ tokens, a 20k-step cosine schedule with 500 warmup steps.
 
-Every DUST run (\code{configs/cr\_dust/hp500/}, method in
-\code{docs/dust-topk.md}) adds the DUST bottleneck optimization: the $J = 480$
+Every DUST run (\path{configs/cr_dust/hp500/}, method in
+\path{docs/dust-topk.md}) adds the DUST bottleneck optimization: the $J = 480$
 pool receives the noise, population 128 (16 draws per bottleneck), schedule
 $[1, 1]$ (every other optimizer step a DUST step), $\gamma = 0$, gradient
 scale 1, a separate optimizer for the DUST steps sharing the MD
@@ -54,14 +55,14 @@ value times \code{dust\_lr\_scale}), with validation every 50 steps on 40
 batches of 24 windows.
 
 The baseline is the same model trained with the same settings and no DUST
-steps (\code{ny\_hp500\_hard\_k32}); the original madrid run of the model
+steps (\path{ny_hp500_hard_k32}); the original madrid run of the model
 (gradient clipping at 1.0) is quoted for reference.
 
 % ============================================================
 \section{Encoder target}
 % ============================================================
 
-\begin{figure}[htb]\centering
+\begin{figure}[H]\centering
 \includegraphics[width=\textwidth]{figures/hp500_val_encoder.png}
 \caption{\code{dust\_target = encoder}: validation CE over the first 500 steps,
 one panel per $\sigma$, one curve per \code{dust\_lr\_scale} (one hue, light
@@ -91,7 +92,7 @@ hard Top-32, the original madrid run (clipping 1.0) & 2.6846 & & & & \\
 \section{Backprop target}
 % ============================================================
 
-\begin{figure}[htb]\centering
+\begin{figure}[H]\centering
 \includegraphics[width=\textwidth]{figures/hp500_val_backprop.png}
 \caption{\code{dust\_target = backprop}: the same layout. Curves above 8
 nats are off scale.}
@@ -157,7 +158,7 @@ be added here.
 Pending: the hard Top-32 run without MD decoupling (\code{model.decouple =
 false} with \code{model.md\_init = true}, so the initialization is identical
 and only the optimizer changes: ordinary AdamW with weight decay 0.1, the
-convention of \code{docs/md-init-vs-decoupling.tex}), the population-1024
+convention of \path{docs/md-init-vs-decoupling.tex}), the population-1024
 $\sigma$ sweep without decoupling at $\gamma = 0$ (georgia) and at
 $\gamma = 0.99$ (new\_york). To be added: the hard run with and without
 decoupling; and, per $\gamma$, a two-panel figure (encoder left, backprop
@@ -167,21 +168,19 @@ right) of the sweep against the hard run without decoupling, with its table.
 \section{Runs on Drive}
 % ============================================================
 
-Encoder arm, new\_york (\code{gdrive:weight-sparsity/runs\_new\_york/}):
-\code{ny\_hp500\_enc\_sg<s>\_lr<l>} for \code{<s>} $\in$ \{\code{0p03},
-\code{0p1}, \code{0p3}, \code{0p9}\} and \code{<l>} $\in$ \{1, 10, 30, 100,
-300\}, twenty runs.
+\begin{itemize}[leftmargin=1.4em]
+\item Encoder arm, new\_york: \path{gdrive:weight-sparsity/runs_new_york/ny_hp500_enc_sg<s>_lr<l>}
+  for \path{<s>} $\in$ \{\path{0p03}, \path{0p1}, \path{0p3}, \path{0p9}\} and
+  \path{<l>} $\in$ \{1, 10, 30, 100, 300\}, twenty runs.
+\item Baseline, new\_york: \path{gdrive:weight-sparsity/runs_new_york/ny_hp500_hard_k32}.
+\item Backprop arm, georgia: \path{gdrive:weight-sparsity/runs_georgia/ga_hp500_bp_sg<s>_lr<l>},
+  the same twenty cells.
+\item Original hard Top-32 run (reference value only):
+  \path{gdrive:weight-sparsity/runs_madrid/ma_cr_hard_k32_pnorm}.
+\end{itemize}
 
-Baseline, new\_york: \code{gdrive:weight-sparsity/runs\_new\_york/ny\_hp500\_hard\_k32}.
-
-Backprop arm, georgia (\code{gdrive:weight-sparsity/runs\_georgia/}):
-\code{ga\_hp500\_bp\_sg<s>\_lr<l>}, the same twenty cells.
-
-Original hard Top-32 run (reference value only):
-\code{gdrive:weight-sparsity/runs\_madrid/ma\_cr\_hard\_k32\_pnorm}.
-
-Figures and tables: \code{scripts/plot\_dust\_hp500.py} over the
-\code{metrics.jsonl} of these runs. The Markdown version of this note,
-\code{docs/dust/hp500-sigma-lr.md}, lists every run name in full.
+Figures and tables: \path{scripts/plot_dust_hp500.py} over the
+\path{metrics.jsonl} of these runs. The Markdown version of this note,
+\path{docs/dust/hp500-sigma-lr.md}, lists every run name in full.
 
 \end{document}
