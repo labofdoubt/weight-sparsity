@@ -144,6 +144,8 @@ def test_population_is_split_evenly_with_at_least_two_draws_each():
     dict(dust_schedule=[1, 2, 3]),
     dict(dust_schedule=[-1, 1]),
     dict(dust_target="both"),
+    dict(dust_optimizer="two"),
+    dict(surrogate_mode="hard", dust_optimizer="separate"),
     dict(dust_grad_scale=0.0),
     dict(dust_grad_scale=-1.0),
     dict(dust_grad_scale=float("inf")),
@@ -171,13 +173,13 @@ def test_dust_fields_survive_yaml_cli_dict_and_shipped_configs(tmp_path):
     path = tmp_path / "d.yaml"
     tree = {"activation_bottleneck": bn_kwargs(dust_schedule=[1, 3], dust_target="backprop",
                                                dust_gamma=0.5, dust_sigma_mode="relative_rms",
-                                               dust_grad_scale=0.01)}
+                                               dust_grad_scale=0.01, dust_optimizer="separate")}
     with open(path, "w") as f:
         yaml.safe_dump(tree, f)
     cfg = load_config(str(path))
     ab = cfg.activation_bottleneck
     assert ab.dust_schedule == [1, 3] and ab.dust_target == "backprop" and ab.dust_gamma == 0.5
-    assert ab.dust_grad_scale == 0.01
+    assert ab.dust_grad_scale == 0.01 and ab.dust_optimizer == "separate"
     cfg2 = load_config(str(path), ["--activation_bottleneck.dust_schedule=[2,1]",
                                    "--activation_bottleneck.dust_target=encoder",
                                    "--activation_bottleneck.dust_population=12"])
@@ -572,6 +574,80 @@ def test_training_shared_projections_and_tied_embeddings(tmp_path):
     cfg.train.max_steps = 2
     summary, snaps = snapshots_via_on_step(cfg)
     assert math.isfinite(summary["best_val_ce"])
+
+
+def optimizer_steps(payload_state, model, train_cfg, param):
+    """The Adam step count a saved optimizer state holds for ``param`` (None
+    when the parameter has no state), by rebuilding the builder's ordering."""
+    from wsparse.optim import build_optimizer
+    opt = build_optimizer(model, train_cfg)
+    flat = [p for g in opt.param_groups for p in g["params"]]
+    idx = next(i for i, p in enumerate(flat) if p is param)
+    st = payload_state["state"].get(idx)
+    return None if st is None else int(st["step"])
+
+
+def test_separate_optimizer_keeps_its_own_moments_and_step_count(tmp_path):
+    data = make_fake_dataset(tmp_path)
+    out = str(tmp_path / "runs")
+    cfg = smoke_config(data, out, run_name="sep", dust_target="encoder", dust_optimizer="separate")
+    summary, snaps = snapshots_via_on_step(cfg)
+    assert math.isfinite(summary["best_val_ce"])
+    for name in snaps[1]:  # step 1 is a DUST step: encoders only, as under shared
+        assert changed(snaps[1], snaps[2], name) == ("in_proj" in name), name
+    run_dir = tmp_path / "runs" / "sep"
+    payload = torch.load(run_dir / "latest.pt", weights_only=False)
+    assert "dust_optimizer" in payload
+    model, loaded, ctl = load_for_inference(str(run_dir / "latest.pt"))
+    enc = model.blocks[0].residual_out_bottleneck.in_proj.weight
+    head = model.lm_head.weight
+    # 4 steps: hard, dust, hard, dust.  The run's optimizer saw the two hard
+    # steps for every parameter; the DUST one the two DUST steps, encoders only
+    assert optimizer_steps(payload["optimizer"], model, loaded.train, enc) == 2
+    assert optimizer_steps(payload["optimizer"], model, loaded.train, head) == 2
+    assert optimizer_steps(payload["dust_optimizer"], model, loaded.train, enc) == 2
+    assert optimizer_steps(payload["dust_optimizer"], model, loaded.train, head) is None
+    assert len(payload["dust_optimizer"]["state"]) == 2  # the two encoder weights
+    # resume: both optimizers restored and advanced
+    cfg2 = smoke_config(data, out, run_name="sep", dust_target="encoder",
+                        dust_optimizer="separate")
+    cfg2.train.max_steps = 6
+    cfg2.train.resume = "auto"
+    train(cfg2)
+    payload = torch.load(run_dir / "latest.pt", weights_only=False)
+    assert optimizer_steps(payload["optimizer"], model, loaded.train, enc) == 3
+    assert optimizer_steps(payload["dust_optimizer"], model, loaded.train, enc) == 3
+    # the backprop target under the separate optimizer: state for everything
+    # before the gate inputs, none for the unembedding
+    cfg3 = smoke_config(data, out, run_name="sepbp", dust_target="backprop",
+                        dust_optimizer="separate")
+    cfg3.train.max_steps = 2
+    train(cfg3)
+    payload = torch.load(tmp_path / "runs" / "sepbp" / "latest.pt", weights_only=False)
+    model3, loaded3, _ = load_for_inference(str(tmp_path / "runs" / "sepbp" / "latest.pt"))
+    assert optimizer_steps(payload["dust_optimizer"], model3, loaded3.train,
+                           model3.blocks[0].attn.qkv.weight) == 1
+    assert optimizer_steps(payload["dust_optimizer"], model3, loaded3.train,
+                           model3.lm_head.weight) is None
+
+
+def test_separate_optimizer_resume_and_decouple_rules(tmp_path):
+    data = make_fake_dataset(tmp_path, 20_000, 4_000)
+    out = str(tmp_path / "runs")
+    shared = smoke_config(data, out, run_name="s")
+    shared.train.max_steps = 2
+    shared.train.checkpoint_every_steps = 2
+    train(shared)
+    cfg = smoke_config(data, out, run_name="s", dust_optimizer="separate")
+    cfg.train.max_steps = 4
+    cfg.train.resume = "auto"
+    with pytest.raises(ValueError, match="dust_optimizer"):
+        train(cfg)
+    cfg = smoke_config(data, out, run_name="md", dust_optimizer="separate")
+    cfg.model.decouple = True
+    cfg.model.pos_encoding = "rope"
+    with pytest.raises(ValueError, match="decouple"):
+        train(cfg)
 
 
 def test_resume_without_dust_state_is_rejected(tmp_path):

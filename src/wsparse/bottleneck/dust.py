@@ -57,7 +57,9 @@ One DUST step, per micro-batch ``(x, y)`` of ``B`` sequences and ``T`` tokens:
 
    ``dust_grad_scale`` multiplies ``g^`` before either target, so the whole
    DUST gradient scales with it; the ``ghat_rms`` statistic is the unscaled
-   estimate.
+   estimate.  ``dust_optimizer: separate`` applies the DUST gradient with a
+   second optimizer instance (own Adam moments and step count), so neither
+   step kind's gradient statistics set the other's step size (train.py).
 
 Deliberate choices, kept in sync with ``docs/dust-topk.md``:
 
@@ -88,6 +90,8 @@ from .laplace_policy import make_generator
 
 SIGMA_MODES = ("absolute", "relative_rms")
 TARGETS = ("encoder", "backprop")
+#: which optimizer applies the DUST gradient (see ActivationBottleneckConfig)
+OPTIMIZERS = ("shared", "separate")
 
 #: version of the optional ``dust_state`` checkpoint payload
 DUST_STATE_VERSION = 1

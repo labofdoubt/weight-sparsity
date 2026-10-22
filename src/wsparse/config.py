@@ -600,6 +600,17 @@ class ActivationBottleneckConfig:
     # of the hard gradient.  dust/ghat_rms logs the UNSCALED estimate,
     # dust/grad_norm the scaled gradient.
     dust_grad_scale: float = 1.0
+    # Which optimizer applies the DUST gradient.  shared: the run's one
+    # optimizer, so Adam's moments and step count mix both step kinds (the
+    # DUST estimate's variance then sets the encoders' second moments, see
+    # dust_grad_scale).  separate: a second instance built like the first
+    # (same hyperparameters, same LR schedule), used on the DUST steps only,
+    # with its own moments and step count; its state travels in the
+    # checkpoint as dust_optimizer and a resume needs it.  Not with
+    # model.decouple: the decoupled optimizer keeps the gains of its
+    # parameterization in its state, and two instances would each hold
+    # their own.
+    dust_optimizer: str = "shared"  # shared | separate
     # Throughput knob: draws stacked along the batch axis per tail forward.
     # Changes the realized noise sequence for a given seed, not the method.
     dust_chunk_draws: int = 1
@@ -1305,6 +1316,7 @@ class ActivationBottleneckConfig:
         "dust_schedule": [1, 1],
         "dust_target": "encoder",
         "dust_grad_scale": 1.0,
+        "dust_optimizer": "shared",
         "dust_chunk_draws": 1,
         "dust_cosine_every_steps": 0,
     }
@@ -1316,7 +1328,7 @@ class ActivationBottleneckConfig:
         number of installed bottlenecks) is only known once the bottlenecks
         are installed; the controller checks it.
         """
-        from .bottleneck.dust import SIGMA_MODES, TARGETS
+        from .bottleneck.dust import OPTIMIZERS, SIGMA_MODES, TARGETS
 
         if self.surrogate_mode != "dust":
             changed = [name for name, default in self._DUST_DEFAULTS.items()
@@ -1387,6 +1399,9 @@ class ActivationBottleneckConfig:
         if not (math.isfinite(scale) and scale > 0):
             raise ValueError(
                 f"dust_grad_scale must be positive and finite, got {self.dust_grad_scale!r}")
+        if self.dust_optimizer not in OPTIMIZERS:
+            raise ValueError(f"unknown dust_optimizer: {self.dust_optimizer!r} "
+                             f"({' | '.join(OPTIMIZERS)})")
         if int(self.dust_chunk_draws) < 1:
             raise ValueError("dust_chunk_draws must be >= 1")
         if int(self.dust_cosine_every_steps) < 0:

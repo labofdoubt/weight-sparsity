@@ -111,6 +111,22 @@ either target, so the whole DUST gradient scales linearly with it in both
 modes while the hard steps are untouched. Section 8 gives the measured
 ratio between the two gradient norms that motivates it.
 
+**`dust_optimizer`** (`shared` | `separate`, default `shared`). Under
+`shared` the run's one optimizer applies both kinds of gradient, so Adam's
+first and second moments and its step count mix them; the DUST estimate's
+variance then sets the second moments of every parameter it touches, and
+the hard-step updates of those parameters shrink accordingly. Under
+`separate` a second optimizer instance, built by the same `build_optimizer`
+with the same betas, eps, weight decay and LR schedule, applies the DUST
+gradient on DUST steps only, with its own moments and its own step count
+(so its bias correction follows the number of DUST steps). Each kind of
+update is then normalized by its own gradient statistics, and
+`dust_grad_scale` has no effect on the DUST update beyond Adam's eps. Its
+state is saved as `dust_optimizer` in the checkpoint and a resume requires
+it. Rejected with `model.decouple=true`: the decoupled optimizer keeps the
+gains of its parameterization in its own state, and two instances over one
+model would each hold their own.
+
 **`backprop`.** The clean forward runs with grad enabled; after the tails,
 one `torch.autograd.backward` from every $z_l$ with $\hat g_l$ as the
 incoming gradient. Every parameter preceding a gate input accumulates it:
@@ -167,8 +183,10 @@ Validation is unchanged: `val/ce` is the deterministic hard forward.
 The noise comes from a dedicated `torch.Generator` seeded from
 `train.seed`, independent of the data stream, dropout and sampling.
 Checkpoints carry `dust_state` (version, the generator state, the count of
-completed DUST steps that paces the cosine diagnostic); a resume restores it
-and refuses a checkpoint without it, as the policy mode does. The step kind
+completed DUST steps that paces the cosine diagnostic), and under
+`dust_optimizer: separate` the second optimizer's state as `dust_optimizer`;
+a resume restores them and refuses a checkpoint without them, as the policy
+mode does. The step kind
 is a function of the step index, so a resume continues the pattern.
 `dust_chunk_draws` changes the realized noise sequence for a given seed, not
 the method.

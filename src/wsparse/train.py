@@ -393,6 +393,21 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                                  seed=cfg.train.seed + 7777 + 104729 * rank)
         print(f"[train] dust: {dust.describe()}; train/ce is the clean hard-forward CE on "
               "both kinds of step, dust/* describe the DUST steps only")
+    # dust_optimizer: separate -> a second optimizer instance (same builder and
+    # hyperparameters, its own Adam moments and step count) applies the DUST
+    # gradient, the first one the hard gradient; the parameters are shared, the
+    # LR schedule is set on both.  The decoupled optimizer keeps the gains of
+    # its parameterization in its state, so two instances cannot share a model.
+    dust_optimizer = None
+    if dust is not None and cfg.activation_bottleneck.dust_optimizer == "separate":
+        if cfg.model.decouple:
+            raise ValueError(
+                "dust_optimizer='separate' is not supported with model.decouple=true: the "
+                "decoupled optimizer holds the gains of its parameterization in its own "
+                "state, and two instances would each hold their own")
+        dust_optimizer = build_optimizer(model, cfg.train)
+        print("[train] dust: separate optimizer for the DUST steps (own Adam moments and "
+              f"step count), param groups {count_parameter_groups(dust_optimizer)}")
 
     run_dir = os.path.join(cfg.train.out_dir, cfg.train.run_name)
     if is_main:
@@ -448,6 +463,14 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                     "its own checkpoint, or start a fresh run without train.resume")
             dust.load_state_dict(payload["dust_state"])
             print(f"[train] restored dust state: {dust.dust_steps} DUST steps done, noise RNG")
+        if dust_optimizer is not None:
+            if "dust_optimizer" not in payload:
+                raise ValueError(
+                    f"{resume_path} carries no dust_optimizer state; it was not saved by a run "
+                    "with dust_optimizer='separate'.  Resume such a run from its own "
+                    "checkpoint, or start a fresh run without train.resume")
+            dust_optimizer.load_state_dict(payload["dust_optimizer"])
+            print("[train] restored the separate DUST optimizer state")
         print(f"[train] resumed from {resume_path} at step {start_step}")
 
     if world > 1:
@@ -519,6 +542,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
     for step in range(start_step, cfg.train.max_steps):
         lr = lr_at(step, cfg.train)
         set_lr(optimizer, lr)
+        if dust_optimizer is not None:
+            set_lr(dust_optimizer, lr)
         # the only schedule here is laplace_policy's tau(step); every other
         # mode's temperature is constant and this returns 0.0 without touching
         # anything.  Before on_step and before any micro-batch, so the probe
@@ -615,15 +640,18 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                     internal_stop = internal_stop or (
                         f"non-finite deterministic probe CE at step {step1}")
 
+        # the optimizer that steps: the separate DUST one on a DUST step when
+        # configured, else the run's (zero_grad above cleared the shared .grad)
+        active_opt = dust_optimizer if (dust_step and dust_optimizer is not None) else optimizer
         grad_norm = torch.tensor(0.0)
         if cfg.train.grad_clip > 0:
-            scaler.unscale_(optimizer)
+            scaler.unscale_(active_opt)
             grad_norm = torch.nn.utils.clip_grad_norm_(weight_params, cfg.train.grad_clip)
         if ((policy is not None or dust_step) and internal_stop is None
                 and not scaler.is_enabled() and not math.isfinite(float(grad_norm))):
             internal_stop = f"non-finite gradient norm at step {step1}"
         if internal_stop is None:
-            scaler.step(optimizer)
+            scaler.step(active_opt)
             scaler.update()
         else:
             # a step from non-finite values would only corrupt the parameters
@@ -802,6 +830,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 extra["policy_state"] = policy_payload
             if dust is not None:
                 extra["dust_state"] = dust.state_dict()
+            if dust_optimizer is not None:
+                extra["dust_optimizer"] = dust_optimizer.state_dict()
             save_checkpoint(path, cfg, base, optimizer, step1, extra=extra)
             save_checkpoint(
                 os.path.join(run_dir, "latest.pt"),
