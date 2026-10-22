@@ -1,0 +1,16 @@
+# The hard Top-32 baseline of the hp500 grid: the K=32 code-carried hard model
+# of docs/kj-vs-hard-topk-code-residual.tex (../../cr_kj/ma_cr_hard_k32_pnorm.yaml)
+# with the grid's settings for everything but DUST -- no gradient clipping,
+# validation every 50 steps, no checkpoints -- trained for 500 steps of the
+# unchanged 20k-step schedule (train_guard --stop-step 500), so that a grid cell
+# differs from it in its DUST steps only.  The original run's validation CE at
+# step 500 (gdrive:weight-sparsity/runs_madrid/ma_cr_hard_k32_pnorm, clip 1.0,
+# a 5090) is 2.6846 for comparison.
+_base_:
+  - ../../cr_kj/ma_cr_hard_k32_pnorm.yaml
+
+train:
+  run_name: ny_hp500_hard_k32
+  grad_clip: 0.0
+  validate_every_steps: 50
+  checkpoint_every_steps: 0
