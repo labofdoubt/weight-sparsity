@@ -123,9 +123,16 @@ gradient on DUST steps only, with its own moments and its own step count
 update is then normalized by its own gradient statistics, and
 `dust_grad_scale` has no effect on the DUST update beyond Adam's eps. Its
 state is saved as `dust_optimizer` in the checkpoint and a resume requires
-it. Rejected with `model.decouple=true`: the decoupled optimizer keeps the
-gains of its parameterization in its own state, and two instances over one
-model would each hold their own.
+it. Under `model.decouple=true` the per-matrix state of `DecoupledAdamW`
+splits into the parameterization (the raw gains and the sphere radius
+$c_F$, which define how the fused weight is read) and the statistics (the
+Adam moments and step counts of the direction and of the gains); the DUST
+instance is built with `parameterization_from=` the main one, so it aliases
+the main instance's parameterization tensors, which whichever instance steps
+updates in place, and keeps its own statistics, the gains' moments included.
+The DUST instance's checkpoint payload holds its statistics only and is
+re-aliased to the main optimizer's loaded state on resume, so the main
+optimizer is loaded first.
 
 **`backprop`.** The clean forward runs with grad enabled; after the tails,
 one `torch.autograd.backward` from every $z_l$ with $\hat g_l$ as the

@@ -1,5 +1,6 @@
 """Magnitude-direction decoupling: init invariants, the optimizer step, resume."""
 
+import copy
 import math
 
 import pytest
@@ -286,3 +287,101 @@ def test_config_validation():
 
 def test_softplus_raw_gain_one():
     assert abs(F.softplus(torch.tensor(RAW_GAIN_ONE)).item() - 1.0) < 1e-7
+
+
+def _two_optimizers(gains="row_col", bottleneck=True):
+    model = _model(gains, bottleneck=bottleneck)
+    main = build_decoupled_optimizer(model, _Train, gain_mode=gains)
+    dust = build_decoupled_optimizer(model, _Train, gain_mode=gains, parameterization_from=main)
+    return model, main, dust
+
+
+def _loss_backward(model, seed):
+    torch.manual_seed(seed)
+    x = torch.randint(0, model.cfg.vocab_size, (2, 16))
+    _, loss = model(x, x)
+    model.zero_grad(set_to_none=True)
+    loss.backward()
+
+
+def _md_params(opt):
+    return [p for g in opt.param_groups if g["kind"] == "md" for p in g["params"]]
+
+
+def test_shared_parameterization_is_aliased_and_statistics_are_separate():
+    model, main, dust = _two_optimizers()
+    _loss_backward(model, 1)
+    dust.step()                                   # the sharing instance may step first
+    for p in _md_params(main):
+        a, b = main.state[p], dust.state[p]
+        assert a["step"] == 0 and b["step"] == 1
+        for key in DecoupledAdamW.PARAMETERIZATION_KEYS:
+            if key in a:
+                assert b[key] is a[key]           # the same tensor objects
+        assert torch.equal(a["m"], torch.zeros_like(a["m"])) and b["m"].abs().sum() > 0
+        if "grow_m" in a:
+            assert torch.equal(a["grow_m"], torch.zeros_like(a["grow_m"]))
+            assert b["grow_m"].abs().sum() > 0
+    _check_constraints(model, main)  # the gains are the shared ones
+    _loss_backward(model, 2)
+    main.step()
+    for p in _md_params(main):
+        a, b = main.state[p], dust.state[p]
+        assert a["step"] == 1 and b["step"] == 1
+        assert not torch.equal(a["m"], b["m"])
+        # a main step moved the shared gains: the sharing instance sees it
+        assert torch.equal(a["raw_grow"], b["raw_grow"]) if "raw_grow" in a else True
+    _check_constraints(model, dust)
+    # the fused weight is the direction times the SHARED gains, for either
+    p = _md_params(main)[0]
+    st = dust.state[p]
+    w_hat = p.detach().clone()
+    if "raw_grow" in st:
+        w_hat = w_hat / F.softplus(st["raw_grow"]).unsqueeze(1)
+    if "raw_gcol" in st:
+        w_hat = w_hat / F.softplus(st["raw_gcol"]).unsqueeze(0)
+    assert torch.allclose(w_hat.norm(), st["c_f"], rtol=1e-4)
+
+
+def test_shared_parameterization_state_dicts_and_resume_are_exact():
+    model, main, dust = _two_optimizers()
+    for seed, opt in ((1, main), (2, dust), (3, main)):
+        _loss_backward(model, seed)
+        opt.step()
+    # state_dict() packs references to the live tensors: copy, as a save does
+    sd_dust = copy.deepcopy(dust.state_dict())
+    assert sd_dust["shares_parameterization"] is True
+    assert all(k not in st for st in sd_dust["state"].values()
+               for k in DecoupledAdamW.PARAMETERIZATION_KEYS)
+    sd_main = copy.deepcopy(main.state_dict())
+    assert "shares_parameterization" not in sd_main
+    snapshot = {n: p.detach().clone() for n, p in model.named_parameters()}
+    # continue uninterrupted
+    for seed, opt in ((4, dust), (5, main)):
+        _loss_backward(model, seed)
+        opt.step()
+    reference = {n: p.detach().clone() for n, p in model.named_parameters()}
+    # rebuild, load (main first), continue: bit-exact
+    model2, main2, dust2 = _two_optimizers()
+    with torch.no_grad():
+        for n, p in model2.named_parameters():
+            p.copy_(snapshot[n])
+    main2.load_state_dict(sd_main)
+    dust2.load_state_dict(sd_dust)
+    for p in _md_params(main2):
+        if dust2.state.get(p):
+            for key in DecoupledAdamW.PARAMETERIZATION_KEYS:
+                if key in main2.state[p]:
+                    assert dust2.state[p][key] is main2.state[p][key]
+    for seed, opt in ((4, dust2), (5, main2)):
+        _loss_backward(model2, seed)
+        opt.step()
+    for n, p in model2.named_parameters():
+        assert torch.equal(p, reference[n]), n
+    # a sharing payload does not load into an owning instance and vice versa
+    with pytest.raises(ValueError, match="parameterization"):
+        main2.load_state_dict(sd_dust)
+    with pytest.raises(ValueError, match="parameterization"):
+        dust2.load_state_dict(sd_main)
+    with pytest.raises(ValueError, match="owning instance"):
+        build_decoupled_optimizer(model2, _Train, parameterization_from=dust2)

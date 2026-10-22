@@ -183,8 +183,9 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
   `train/grad_norm` is the last step's, whichever kind. `dust_population`
   must be a multiple of the number of installed bottlenecks with at least 2
   draws each; single process only; a resume needs the checkpoint's
-  `dust_state` (and `dust_optimizer` under `dust_optimizer: separate`, which
-  is not available with `model.decouple`). A DUST step with population P
+  `dust_state` (and `dust_optimizer` under `dust_optimizer: separate`; under
+  `decouple` that instance shares the MD gains and radii of the main one, so
+  load the main optimizer first). A DUST step with population P
   costs about 1 + 0.3 P forward equivalents (4x a hard step at P = 40).
 - **A run without `summary.json` did not finish.**
 - **The validation set is `val_batches` x `micro_batch_size` windows.** A run whose

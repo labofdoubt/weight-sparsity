@@ -41,6 +41,17 @@ Two gain placements are supported (``decouple_gains``):
                (the nGPT-style alternation: up-projections scale their new
                rows, down-projections their incoming columns)
 
+Two instances over one model (``parameterization_from``): the per-matrix
+state splits into the PARAMETERIZATION -- the raw gains and the sphere radius
+``c_F``, which define how the fused weight is read -- and the STATISTICS --
+the Adam moments and step counts of the direction and of the gains.  A second
+``DecoupledAdamW`` built with ``parameterization_from=first`` aliases the
+first instance's parameterization tensors (the same objects, updated in place
+by whichever instance steps) and keeps its own statistics, so two kinds of
+update can be normalized by their own gradient histories while the model
+keeps one well-defined parameterization.  The trainer uses this for
+``dust_optimizer: separate``.
+
 Deliberate deviations from the paper's *experimental setup* (not the method):
 the base optimizer here is Adam with this project's betas and one shared LR
 schedule for every group -- the paper fixes separate embedding/head LRs and
@@ -326,14 +337,36 @@ class DecoupledAdamW(torch.optim.Optimizer):
     No parameter kind uses weight decay.  ``lr`` is read from each group at
     step time, so the existing ``set_lr`` schedule drives gains too (the paper
     lets gains follow the matrix LR).
+
+    ``parameterization_from``: another instance over the same parameters whose
+    raw gains and sphere radii this one shares (see the module docstring).
+    The sharing instance creates no parameterization of its own: at first
+    sight of a matrix it takes the source's tensors (creating them there if
+    the source has not seen the matrix yet, so ``c_F`` is always captured
+    before any step), its ``state_dict`` leaves them out, and
+    ``load_state_dict`` re-aliases them from the source, which must be loaded
+    first.
     """
 
+    #: per-matrix state that defines the parameterization (shared between
+    #: instances over one model), as opposed to the Adam statistics
+    PARAMETERIZATION_KEYS = ("raw_grow", "raw_gcol", "c_f")
+
     def __init__(self, param_groups: List[Dict], betas=(0.9, 0.95), eps: float = 1e-8,
-                 gain_mode: str = "row_col"):
+                 gain_mode: str = "row_col",
+                 parameterization_from: Optional["DecoupledAdamW"] = None):
         if gain_mode not in GAIN_MODES:
             raise ValueError(f"unknown decouple_gains: {gain_mode!r}")
+        if parameterization_from is not None:
+            if not isinstance(parameterization_from, DecoupledAdamW):
+                raise TypeError("parameterization_from must be a DecoupledAdamW")
+            if parameterization_from._parameterization_source is not None:
+                raise ValueError("parameterization_from must be the owning instance, "
+                                 "not one that shares in turn")
         defaults = dict(lr=0.0, betas=betas, eps=eps, kind="plain",
                         gain_mode=gain_mode, is_mask=False)
+        # set before super().__init__: load_state_dict may run later and reads it
+        self._parameterization_source = parameterization_from
         super().__init__(param_groups, defaults)
 
     # ---- shared Adam kernel ------------------------------------------------ #
@@ -357,28 +390,88 @@ class DecoupledAdamW(torch.optim.Optimizer):
         state["m"] = torch.zeros_like(p)
         state["v"] = torch.zeros_like(p)
         if kind == "md":
-            row, col = _wants_gains(p.shape, gain_mode)
-            # (1, 1) unless md_spread_gain_ asked for different starting gains
-            g_row, g_col = getattr(p, "_md_gain0", (1.0, 1.0))
-            raw = (lambda g: RAW_GAIN_ONE if g == 1.0 else math.log(math.expm1(g)))
+            source = self._parameterization_source
+            if source is not None:
+                # the source's parameterization tensors, by reference; created
+                # there now if it has not seen this matrix yet (before any
+                # step, so the captured c_F is the direction's init norm)
+                shared = source._state_for(p, kind, gain_mode)
+                for key in self.PARAMETERIZATION_KEYS:
+                    if key in shared:
+                        state[key] = shared[key]
+                row, col = "raw_grow" in state, "raw_gcol" in state
+            else:
+                row, col = _wants_gains(p.shape, gain_mode)
+                # (1, 1) unless md_spread_gain_ asked for different starting gains
+                g_row, g_col = getattr(p, "_md_gain0", (1.0, 1.0))
+                raw = (lambda g: RAW_GAIN_ONE if g == 1.0 else math.log(math.expm1(g)))
+                if row:
+                    state["raw_grow"] = torch.full((p.shape[0],), raw(g_row),
+                                                   device=p.device, dtype=p.dtype)
+                if col:
+                    state["raw_gcol"] = torch.full((p.shape[1],), raw(g_col),
+                                                   device=p.device, dtype=p.dtype)
+                # The sphere radius is the DIRECTION's initialization norm, captured
+                # at first sight and kept in the state so resume preserves it.  With
+                # gains at 1 that is just ||W||; a spread gain divides back out.
+                c_f = p.detach().float().norm()
+                if (g_row, g_col) != (1.0, 1.0):
+                    c_f = c_f / ((g_row if row else 1.0) * (g_col if col else 1.0))
+                state["c_f"] = c_f.clone()
+            # the gains' Adam moments are statistics: this instance's own
             if row:
-                state["raw_grow"] = torch.full((p.shape[0],), raw(g_row),
-                                               device=p.device, dtype=p.dtype)
                 state["grow_m"] = torch.zeros_like(state["raw_grow"])
                 state["grow_v"] = torch.zeros_like(state["raw_grow"])
             if col:
-                state["raw_gcol"] = torch.full((p.shape[1],), raw(g_col),
-                                               device=p.device, dtype=p.dtype)
                 state["gcol_m"] = torch.zeros_like(state["raw_gcol"])
                 state["gcol_v"] = torch.zeros_like(state["raw_gcol"])
-            # The sphere radius is the DIRECTION's initialization norm, captured
-            # at first sight and kept in the state so resume preserves it.  With
-            # gains at 1 that is just ||W||; a spread gain divides back out.
-            c_f = p.detach().float().norm()
-            if (g_row, g_col) != (1.0, 1.0):
-                c_f = c_f / ((g_row if row else 1.0) * (g_col if col else 1.0))
-            state["c_f"] = c_f.clone()
         return state
+
+    # ---- sharing a parameterization across instances ------------------------ #
+    def state_dict(self):
+        """A sharing instance saves its statistics only: the parameterization
+        is the source's and is saved with it (``shares_parameterization``
+        marks the payload)."""
+        sd = super().state_dict()
+        if self._parameterization_source is not None:
+            sd["state"] = {k: {kk: vv for kk, vv in v.items()
+                               if kk not in self.PARAMETERIZATION_KEYS}
+                           for k, v in sd["state"].items()}
+            sd["shares_parameterization"] = True
+        return sd
+
+    def load_state_dict(self, state_dict):
+        """Load, then (for a sharing instance) re-alias the parameterization
+        from the source, whose own state must already be loaded: loading
+        copies tensors, so aliasing never survives a checkpoint on its own."""
+        sd = dict(state_dict)
+        shares = bool(sd.pop("shares_parameterization", False))
+        if shares != (self._parameterization_source is not None):
+            raise ValueError(
+                "optimizer state mismatch: the payload was saved by an instance that "
+                f"{'shares' if shares else 'owns'} its parameterization, this instance "
+                f"{'shares' if self._parameterization_source is not None else 'owns'} it")
+        super().load_state_dict(sd)
+        if self._parameterization_source is not None:
+            self._adopt_parameterization()
+
+    def _adopt_parameterization(self) -> None:
+        source = self._parameterization_source
+        for group in self.param_groups:
+            if group["kind"] != "md":
+                continue
+            for p in group["params"]:
+                state = self.state.get(p)
+                if not state:
+                    continue
+                shared = source.state.get(p)
+                if not shared or "c_f" not in shared:
+                    raise ValueError(
+                        "the source optimizer holds no parameterization for a matrix this "
+                        "sharing instance has stepped; load the source's state first")
+                for key in self.PARAMETERIZATION_KEYS:
+                    if key in shared:
+                        state[key] = shared[key]
 
     @torch.no_grad()
     def step(self, closure=None):  # noqa: C901 -- one method, three kinds
@@ -459,13 +552,15 @@ class DecoupledAdamW(torch.optim.Optimizer):
         return loss
 
 
-def build_decoupled_optimizer(model, train_cfg, gain_mode: str = "row_col"):
+def build_decoupled_optimizer(model, train_cfg, gain_mode: str = "row_col",
+                              parameterization_from: Optional[DecoupledAdamW] = None):
     """Group the model's parameters for :class:`DecoupledAdamW`.
 
     Embeddings (and the untied head) are the unit-row kind; every other dim>=2
     weight is a decoupled matrix; the rest (RMSNorm gains, biases) are plain
     Adam.  Weight decay is deliberately absent everywhere -- see the module
-    docstring.
+    docstring.  ``parameterization_from`` builds a second instance that
+    shares the first one's gains and sphere radii (its own statistics).
     """
     embed_ids = {id(model.tok_emb.weight), id(model.lm_head.weight)}
     md, embed, plain, seen = [], [], [], set()
@@ -488,4 +583,4 @@ def build_decoupled_optimizer(model, train_cfg, gain_mode: str = "row_col"):
     for g in groups:
         g["lr"] = train_cfg.lr
     return DecoupledAdamW(groups, betas=tuple(train_cfg.betas), eps=train_cfg.eps,
-                          gain_mode=gain_mode)
+                          gain_mode=gain_mode, parameterization_from=parameterization_from)

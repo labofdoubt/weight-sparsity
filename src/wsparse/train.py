@@ -396,18 +396,21 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
     # dust_optimizer: separate -> a second optimizer instance (same builder and
     # hyperparameters, its own Adam moments and step count) applies the DUST
     # gradient, the first one the hard gradient; the parameters are shared, the
-    # LR schedule is set on both.  The decoupled optimizer keeps the gains of
-    # its parameterization in its state, so two instances cannot share a model.
+    # LR schedule is set on both.  Under decouple the second instance shares
+    # the first one's parameterization (gains, sphere radii) and keeps its own
+    # statistics (wsparse.decouple, parameterization_from).
     dust_optimizer = None
     if dust is not None and cfg.activation_bottleneck.dust_optimizer == "separate":
         if cfg.model.decouple:
-            raise ValueError(
-                "dust_optimizer='separate' is not supported with model.decouple=true: the "
-                "decoupled optimizer holds the gains of its parameterization in its own "
-                "state, and two instances would each hold their own")
-        dust_optimizer = build_optimizer(model, cfg.train)
+            from .decouple import build_decoupled_optimizer
+            dust_optimizer = build_decoupled_optimizer(
+                model, cfg.train, gain_mode=cfg.model.decouple_gains,
+                parameterization_from=optimizer)
+        else:
+            dust_optimizer = build_optimizer(model, cfg.train)
         print("[train] dust: separate optimizer for the DUST steps (own Adam moments and "
-              f"step count), param groups {count_parameter_groups(dust_optimizer)}")
+              f"step count{', shared MD gains and sphere radii' if cfg.model.decouple else ''}"
+              f"), param groups {count_parameter_groups(dust_optimizer)}")
 
     run_dir = os.path.join(cfg.train.out_dir, cfg.train.run_name)
     if is_main:

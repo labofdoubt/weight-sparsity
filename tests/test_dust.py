@@ -92,6 +92,27 @@ def tiny_model(n_layers=2, **bn):
     return model, ctl
 
 
+def with_md(cfg):
+    """The config's model under magnitude-direction decoupling, built through
+    the dataclass so its validation runs (a reload re-validates it)."""
+    import dataclasses
+    cfg.model = ModelConfig(**{**dataclasses.asdict(cfg.model), "decouple": True,
+                               "pos_encoding": "rope", "logit_scale": "none"})
+    return cfg
+
+
+def md_constraints_hold(path):
+    """Rebuild the model and its decoupled optimizer from a checkpoint and
+    check the unit rows and the direction spheres with the saved gains."""
+    from test_decouple import _check_constraints
+    from wsparse.decouple import build_decoupled_optimizer
+    payload = torch.load(path, weights_only=False)
+    model, loaded, _ = load_for_inference(str(path))
+    opt = build_decoupled_optimizer(model, loaded.train, gain_mode=loaded.model.decouple_gains)
+    opt.load_state_dict(payload["optimizer"])
+    _check_constraints(model, opt)
+
+
 def snapshots_via_on_step(cfg):
     snaps = {}
 
@@ -643,11 +664,27 @@ def test_separate_optimizer_resume_and_decouple_rules(tmp_path):
     cfg.train.resume = "auto"
     with pytest.raises(ValueError, match="dust_optimizer"):
         train(cfg)
-    cfg = smoke_config(data, out, run_name="md", dust_optimizer="separate")
-    cfg.model.decouple = True
-    cfg.model.pos_encoding = "rope"
-    with pytest.raises(ValueError, match="decouple"):
-        train(cfg)
+    # under decouple the DUST instance shares the MD parameterization and keeps
+    # its own statistics; the constraints hold after both kinds of step
+    for target in ("encoder", "backprop"):
+        cfg = with_md(smoke_config(data, out, run_name=f"md_{target}",
+                                   dust_optimizer="separate", dust_target=target))
+        cfg.train.checkpoint_every_steps = 2
+        summary = train(cfg)
+        assert math.isfinite(summary["best_val_ce"])
+        run_dir = tmp_path / "runs" / f"md_{target}"
+        payload = torch.load(run_dir / "latest.pt", weights_only=False)
+        ds = payload["dust_optimizer"]
+        assert ds["shares_parameterization"] is True
+        assert all("c_f" not in st and "raw_grow" not in st for st in ds["state"].values())
+        assert any("c_f" in st for st in payload["optimizer"]["state"].values())
+        md_constraints_hold(run_dir / "latest.pt")
+        cfg2 = with_md(smoke_config(data, out, run_name=f"md_{target}",
+                                    dust_optimizer="separate", dust_target=target))
+        cfg2.train.max_steps = 6
+        cfg2.train.resume = "auto"
+        assert math.isfinite(train(cfg2)["best_val_ce"])
+        md_constraints_hold(run_dir / "latest.pt")
 
 
 def test_resume_without_dust_state_is_rejected(tmp_path):

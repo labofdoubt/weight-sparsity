@@ -606,10 +606,10 @@ class ActivationBottleneckConfig:
     # dust_grad_scale).  separate: a second instance built like the first
     # (same hyperparameters, same LR schedule), used on the DUST steps only,
     # with its own moments and step count; its state travels in the
-    # checkpoint as dust_optimizer and a resume needs it.  Not with
-    # model.decouple: the decoupled optimizer keeps the gains of its
-    # parameterization in its state, and two instances would each hold
-    # their own.
+    # checkpoint as dust_optimizer and a resume needs it.  Under
+    # model.decouple the second instance shares the first one's MD
+    # parameterization (raw gains, sphere radii) and keeps its own Adam
+    # statistics, the gains' included (wsparse.decouple).
     dust_optimizer: str = "shared"  # shared | separate
     # Throughput knob: draws stacked along the batch axis per tail forward.
     # Changes the realized noise sequence for a given seed, not the method.
