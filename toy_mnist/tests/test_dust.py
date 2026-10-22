@@ -45,6 +45,29 @@ def test_linear_loss_estimate_is_the_gradient_on_the_pool_only():
     assert torch.allclose(acc / reps, 0.5 * w[cand], atol=0.15)
 
 
+def test_full_pool_path_is_the_estimator_in_feature_order():
+    torch.manual_seed(4)
+    B, N = 3, 10
+    u = torch.randn(B, N)
+    w = torch.randn(N)
+    loss_fn = lambda up: (up * w).sum(-1)                                    # noqa: E731
+    ident = torch.arange(N).expand(B, N)
+    sigma_t = noise_scale("relative_rms", 0.3, u, ident)
+    assert torch.allclose(sigma_t, 0.3 * u.pow(2).mean(-1, keepdim=True).sqrt())
+    gen = torch.Generator().manual_seed(0)
+    ghat, st = dust_estimate(u, None, sigma_t, draws=20000, loss_fn=loss_fn, generator=gen,
+                             chunk=1000)
+    assert ghat.shape == (B, N)
+    # per-entry std is |w| / sqrt(draws) = 0.023 here; 0.1 is more than 4 sigma
+    assert torch.allclose(ghat, w.expand(B, N) * (1.0 - 1.0 / 20000), atol=0.1)
+    # the same noise stream through the scatter path with the identity pool
+    g2, _ = dust_estimate(u, ident, sigma_t, draws=50, loss_fn=loss_fn,
+                          generator=torch.Generator().manual_seed(1), chunk=10)
+    g1, _ = dust_estimate(u, None, sigma_t, draws=50, loss_fn=loss_fn,
+                          generator=torch.Generator().manual_seed(1), chunk=10)
+    assert torch.allclose(g1, g2, atol=1e-5)
+
+
 def test_estimate_matches_the_main_repository_with_one_token():
     """The same formulas as wsparse.bottleneck.dust on [B, T=1, N] inputs and
     the same noise stream (skipped where the main package is not importable)."""
@@ -73,7 +96,8 @@ def test_estimate_matches_the_main_repository_with_one_token():
 def _model(k, j=0, hidden=16, seed=0, n=N_PIXELS):
     torch.manual_seed(seed)
     cfg = load_config(values={"rescale": {"enabled": True},
-                              "topk": {"enabled": True, "k": k, "j": j},
+                              "topk": {"enabled": True, "k": k, "j": j,
+                                       "surrogate_mode": "dust" if j is None else "hard"},
                               "model": {"hidden": hidden}})
     model = ToyMLP(cfg)
     with torch.no_grad():
@@ -88,8 +112,9 @@ def _state(cfg, **over):
     return DustTrainingState(cfg.topk, torch.device("cpu"), seed=11)
 
 
-def test_micro_step_encoder_and_backprop_targets_give_the_same_gradient_on_g_only():
-    cfg, model = _model(k=16, j=16)
+@pytest.mark.parametrize("j", [16, None])
+def test_micro_step_encoder_and_backprop_targets_give_the_same_gradient_on_g_only(j):
+    cfg, model = _model(k=16, j=j)
     x = torch.rand(8, N_PIXELS)
     y = torch.randint(0, 10, (8,))
     grads = {}
@@ -111,6 +136,8 @@ def test_micro_step_encoder_and_backprop_targets_give_the_same_gradient_on_g_onl
     pool = torch.zeros(N_PIXELS, dtype=torch.bool)
     pool[pool_indices(u, model.gate.m).reshape(-1)] = True
     assert torch.equal(grads["encoder"][~pool], torch.zeros_like(grads["encoder"][~pool]))
+    if j is None:
+        assert model.gate.m == N_PIXELS and bool(pool.all())
 
 
 def test_trivial_gate_estimate_aligns_with_the_smooth_gradient():

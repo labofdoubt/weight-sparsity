@@ -59,6 +59,14 @@ from .config import OPTIMIZERS, SIGMA_MODES, TARGETS, TopKConfig  # noqa: F401  
 #: version of the ``dust_state`` checkpoint payload
 DUST_STATE_VERSION = 1
 
+#: The tails' matmuls run in TF32 on CUDA (10-bit mantissa products, float32
+#: accumulation; the main repository runs its tails in bf16, which is coarser).
+#: The clean forward, the hard steps and validation keep full float32.  The
+#: rounding error of a tail loss is about 1e-3, against reward differences of
+#: order 1e-2 to 1e-1 at the shipped sigma; it halves the cost of the first
+#: layer at hidden 1024.
+TAIL_TF32 = True
+
 
 # --------------------------------------------------------------------------- #
 # schedule and generator
@@ -110,17 +118,19 @@ def noise_scale(mode: str, sigma: float, u: torch.Tensor, cand_idx: torch.Tensor
     raise ValueError(f"unknown dust_sigma_mode: {mode!r}")
 
 
-def dust_estimate(u: torch.Tensor, cand_idx: torch.Tensor, sigma_t: torch.Tensor,
+def dust_estimate(u: torch.Tensor, cand_idx: Optional[torch.Tensor], sigma_t: torch.Tensor,
                   draws: int, loss_fn: Callable[[torch.Tensor], torch.Tensor],
                   generator: Optional[torch.Generator] = None, chunk: int = 1
                   ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """The reference's Eq. 2 on the pool, before the ``1 / B`` factor.
 
-    ``u`` ``[B, N]`` (detached inside), ``cand_idx`` ``[B, M]`` the pool,
-    ``sigma_t`` ``[B, 1]`` float32.  ``loss_fn(u')`` maps a perturbed
-    ``[c * B, N]`` tensor (``c`` draws stacked along the batch axis, in ``u``'s
-    dtype) to per-sample losses ``[c * B]``.  Returns ``(g^_pool, stats)`` with
-    ``g^_pool`` ``[B, M]`` float32::
+    ``u`` ``[B, N]`` (detached inside), ``cand_idx`` ``[B, M]`` the pool, or
+    ``None`` when the pool is the whole input (then the noise is drawn in
+    feature order and no scatter is formed; ``M = N``), ``sigma_t`` ``[B, 1]``
+    float32.  ``loss_fn(u')`` maps a perturbed ``[c * B, N]`` tensor (``c``
+    draws stacked along the batch axis, in ``u``'s dtype) to per-sample losses
+    ``[c * B]``.  Returns ``(g^_pool, stats)`` with ``g^_pool`` ``[B, M]``
+    float32 (in pool order, or feature order for the whole input)::
 
         g^_t = (1 / (K sigma_t)) sum_i (R_t^(i) - R~_t) a_t^(i)
 
@@ -130,7 +140,7 @@ def dust_estimate(u: torch.Tensor, cand_idx: torch.Tensor, sigma_t: torch.Tensor
     """
     u = u.detach()
     B, N = u.shape
-    M = cand_idx.shape[-1]
+    M = N if cand_idx is None else cand_idx.shape[-1]
     dev = u.device
     f32 = torch.float32
     s_a = torch.zeros(B, M, dtype=f32, device=dev)
@@ -145,10 +155,13 @@ def dust_estimate(u: torch.Tensor, cand_idx: torch.Tensor, sigma_t: torch.Tensor
     while done < draws:
         c = min(chunk, draws - done)
         a = torch.randn((c, B, M), generator=generator, dtype=f32, device=dev)
-        noise = torch.zeros((c, B, N), dtype=f32, device=dev)
-        noise.scatter_(-1, cand_idx.unsqueeze(0).expand(c, B, M), sigma_t.unsqueeze(0) * a)
-        up = (uf + noise).to(u.dtype).reshape(c * B, N)
-        del noise
+        if cand_idx is None:
+            up = (uf + sigma_t.unsqueeze(0) * a).to(u.dtype).reshape(c * B, N)
+        else:
+            noise = torch.zeros((c, B, N), dtype=f32, device=dev)
+            noise.scatter_(-1, cand_idx.unsqueeze(0).expand(c, B, M), sigma_t.unsqueeze(0) * a)
+            up = (uf + noise).to(u.dtype).reshape(c * B, N)
+            del noise
         r = loss_fn(up).reshape(c, B).to(f32)  # R_t^(i) = ell_t^(i): no later tokens
         del up
         s_a += a.sum(0)
@@ -311,9 +324,14 @@ def dust_micro_step(model, x: torch.Tensor, y: torch.Tensor, state: DustTraining
     del ce
 
     f32 = torch.float32
-    cand_idx = pool_indices(u, gate.m)
-    sigma_t = noise_scale(state.sigma_mode, state.sigma, u, cand_idx)
+    full_pool = gate.m >= N
+    cand_idx = None if full_pool else pool_indices(u, gate.m)
+    sigma_t = noise_scale(state.sigma_mode, state.sigma, u,
+                          torch.arange(N, device=u.device).expand(B, N) if full_pool else cand_idx)
     model.eval()  # the tails: no usage statistics
+    tf32_prior = torch.backends.cuda.matmul.allow_tf32
+    if TAIL_TF32 and u.is_cuda:
+        torch.backends.cuda.matmul.allow_tf32 = True
     try:
         def loss_fn(up: torch.Tensor) -> torch.Tensor:
             c = up.shape[0] // B
@@ -328,12 +346,16 @@ def dust_micro_step(model, x: torch.Tensor, y: torch.Tensor, state: DustTraining
             ghat_sq = ghat_pool.pow(2).sum()
             ghat_n = float(B * ghat_pool.shape[-1])
             # dust_grad_scale: the gradient that enters the optimizer
-            ghat = torch.zeros(B, N, dtype=f32, device=u.device).scatter_(
-                -1, cand_idx, ghat_pool * state.grad_scale)
+            if full_pool:
+                ghat = ghat_pool * state.grad_scale
+            else:
+                ghat = torch.zeros(B, N, dtype=f32, device=u.device).scatter_(
+                    -1, cand_idx, ghat_pool * state.grad_scale)
             # the "encoder" is the diagonal rescaling: d u_n / d g_n = exp(g_n) x_n
             g_est = (ghat * x.to(f32) * torch.exp(g.detach().to(f32))).sum(0)
     finally:
         model.train(was_training)
+        torch.backends.cuda.matmul.allow_tf32 = tf32_prior
 
     if state.target == "encoder":
         with torch.no_grad():

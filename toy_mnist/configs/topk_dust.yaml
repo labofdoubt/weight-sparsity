@@ -1,10 +1,10 @@
 # topk_hard.yaml with DUST steps alternating with the hard steps
 # (toy_mnist/dust.py; the main repository's docs/dust-topk.md adapted to one
 # gate and no sequence axis).  On a DUST step the clean Top(k+j) pool of every
-# sample's gate input u = exp(g) * x is perturbed with N(0, sigma^2) noise in
-# dust_population draws, the tail is rerun from the gate, and the
-# reward-weighted noise estimates dL/du on the pool; the estimate reaches g
-# through d u_n / d g_n = exp(g_n) x_n.
+# sample's gate input u = exp(g) * x -- the whole input, since topk.j is null
+# -- is perturbed with N(0, sigma^2) noise in dust_population draws, the tail
+# is rerun from the gate, and the reward-weighted noise estimates dL/du on
+# the pool; the estimate reaches g through d u_n / d g_n = exp(g_n) x_n.
 #   dust_target: encoder   the closed-form update of g (backprop: the same
 #                          gradient formed by autograd from u)
 # sigma is in gate-input units (pixels in [0, 1], exp(g) = 1 at init).  The

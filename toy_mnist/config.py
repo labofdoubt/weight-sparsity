@@ -12,7 +12,7 @@ import dataclasses
 import math
 import os
 from dataclasses import dataclass, field, fields, is_dataclass
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import yaml
 
@@ -56,10 +56,12 @@ class TopKConfig:
     # AbsTopK on the (rescaled) input: keeps the k entries of largest |u| per
     # sample, zero elsewhere.  j is the J of the Top(K+J) pool that receives
     # the DUST noise (as in the main repository); the hard backward never
-    # reads it.
+    # reads it.  null (the default) resolves to the whole input under
+    # surrogate_mode: dust (j = 784 - k, every pixel is perturbed) and to 0
+    # under hard; an integer is used as given.
     enabled: bool = False
     k: int = 64
-    j: int = 0
+    j: Optional[int] = None
     # hard: the gradient passes the hard mask (active entries only)
     # dust: the hard gate, with ordinary hard steps alternating with DUST
     #       steps that estimate dL/du on the pool by reward-weighted noise
@@ -79,6 +81,13 @@ class TopKConfig:
     dust_lr_scale: float = 1.0
     dust_chunk_draws: int = 1
     dust_cosine_every_steps: int = 0
+
+    def resolved_j(self) -> int:
+        """The pool width beyond k: ``j`` as given, else the whole input under
+        dust and 0 under hard."""
+        if self.j is not None:
+            return int(self.j)
+        return max(0, N_PIXELS - int(self.k)) if self.surrogate_mode == "dust" else 0
 
 
 @dataclass
@@ -141,8 +150,8 @@ class Config:
         if t.enabled:
             if t.k < 1 or t.k > N_PIXELS:
                 raise ValueError(f"topk.k must be in [1, {N_PIXELS}], got {t.k}")
-            if t.j < 0:
-                raise ValueError("topk.j must be >= 0")
+            if t.j is not None and t.j < 0:
+                raise ValueError("topk.j must be >= 0 (or null: the whole input under dust)")
         changed = [k for k, v in self.DUST_DEFAULTS.items() if getattr(t, k) != v]
         if t.surrogate_mode != "dust":
             if changed:
@@ -238,6 +247,11 @@ def load_yaml_with_bases(path: str) -> Dict[str, Any]:
 
 def _coerce(value: Any, typ: Any, where: str) -> Any:
     origin = getattr(typ, "__origin__", None)
+    if origin is Union:  # Optional[T]
+        args = [a for a in getattr(typ, "__args__", ()) if a is not type(None)]
+        if value is None or (isinstance(value, str) and value.strip().lower() in ("none", "null", "")):
+            return None
+        return _coerce(value, args[0], where) if len(args) == 1 else value
     if origin in (list, List):
         if isinstance(value, str):
             value = yaml.safe_load(value)

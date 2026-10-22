@@ -75,11 +75,14 @@ class AbsTopKGate(nn.Module):
         """Indices of the Top-``m`` pool by ``|u|``, sorted, ``[B, m]``."""
         return torch.topk(u.detach().abs(), self.m, dim=-1, largest=True, sorted=True).indices
 
+    def support(self, u: torch.Tensor) -> torch.Tensor:
+        """Indices of the ``k`` entries of largest ``|u|`` per row, ``[B, k]``."""
+        return torch.topk(u.detach().abs(), self.k, dim=-1, largest=True, sorted=False).indices
+
     def hard_mask(self, u: torch.Tensor) -> torch.Tensor:
         if self.trivial:
             return torch.ones_like(u)
-        idx = self.pool(u)
-        return torch.zeros_like(u).scatter(-1, idx[..., : self.k], 1.0)
+        return torch.zeros_like(u).scatter(-1, self.support(u), 1.0)
 
     def forward(self, u: torch.Tensor) -> torch.Tensor:
         if self._dust_capture is not None:
@@ -108,7 +111,8 @@ class ToyMLP(nn.Module):
         super().__init__()
         n = N_PIXELS
         self.rescale = DiagonalRescale(n) if cfg.rescale.enabled else None
-        self.gate = AbsTopKGate(n, cfg.topk.k, cfg.topk.j) if cfg.topk.enabled else None
+        self.gate = (AbsTopKGate(n, cfg.topk.k, cfg.topk.resolved_j())
+                     if cfg.topk.enabled else None)
         self.fc1 = nn.Linear(n, cfg.model.hidden, bias=cfg.model.bias)
         self.fc2 = nn.Linear(cfg.model.hidden, N_CLASSES, bias=cfg.model.bias)
 

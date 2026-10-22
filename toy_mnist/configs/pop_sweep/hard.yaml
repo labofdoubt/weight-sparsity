@@ -1,0 +1,14 @@
+# Population sweep (2026-10-22): hard AbsTopK_k(exp(g) * x) at hidden 1024,
+# 5000 steps.  K and the run name come from the job line.
+_base_: [../base.yaml]
+model:
+  hidden: 1024
+train:
+  max_steps: 5000
+  run_name: hard
+rescale:
+  enabled: true
+topk:
+  enabled: true
+  k: 32
+  surrogate_mode: hard

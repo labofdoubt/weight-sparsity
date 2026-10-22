@@ -22,6 +22,23 @@ def test_shipped_configs_load(name):
     if name.startswith("topk_dust"):
         assert cfg.topk.surrogate_mode == "dust" and cfg.rescale.enabled
         assert cfg.topk.dust_target == ("backprop" if name.endswith("backprop") else "encoder")
+        assert cfg.topk.j is None and cfg.topk.resolved_j() == 784 - cfg.topk.k
+    if name == "topk_hard":
+        assert cfg.topk.j is None and cfg.topk.resolved_j() == 0
+
+
+def test_pool_width_default_and_override():
+    base = {"rescale": {"enabled": True}, "topk": {"enabled": True, "k": 16}}
+    assert load_config(values=base).topk.resolved_j() == 0
+    dust = {"rescale": {"enabled": True},
+            "topk": {"enabled": True, "k": 16, "surrogate_mode": "dust"}}
+    assert load_config(values=dust).topk.resolved_j() == 768
+    cfg = load_config(values=dust, overrides=["topk.j=5"])
+    assert cfg.topk.j == 5 and cfg.topk.resolved_j() == 5
+    cfg = load_config(values=dust, overrides=["topk.j=null"])
+    assert cfg.topk.j is None
+    with pytest.raises(ValueError, match="topk.j"):
+        load_config(values=dust, overrides=["topk.j=-1"])
 
 
 def test_base_includes_and_overrides(tmp_path):
