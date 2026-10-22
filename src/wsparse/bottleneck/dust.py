@@ -302,6 +302,9 @@ class DustTrainingState:
         self.grad_scale = float(getattr(cfg, "dust_grad_scale", 1.0))
         if not (math.isfinite(self.grad_scale) and self.grad_scale > 0):
             raise ValueError("dust_grad_scale must be positive and finite")
+        self.lr_scale = float(getattr(cfg, "dust_lr_scale", 1.0))
+        if not (math.isfinite(self.lr_scale) and self.lr_scale > 0):
+            raise ValueError("dust_lr_scale must be positive and finite")
         self.chunk = max(1, min(int(cfg.dust_chunk_draws), self.per_bottleneck))
         self.cosine_every = int(cfg.dust_cosine_every_steps)
         self.generator = make_generator(device, seed)
@@ -321,6 +324,7 @@ class DustTrainingState:
                 f"= {self.n_bottlenecks} x {self.per_bottleneck} draws per micro-batch, "
                 f"sigma {self.sigma:g} ({self.sigma_mode}), gamma {self.gamma:g}, "
                 f"target {self.target}, grad scale {self.grad_scale:g}, "
+                f"lr scale {self.lr_scale:g}, "
                 f"{self.chunk} draw(s) per tail forward"
                 + (f", cosine every {self.cosine_every} dust steps"
                    if self.cosine_every > 0 else ""))

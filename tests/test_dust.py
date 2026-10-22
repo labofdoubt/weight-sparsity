@@ -166,6 +166,9 @@ def test_population_is_split_evenly_with_at_least_two_draws_each():
     dict(dust_schedule=[-1, 1]),
     dict(dust_target="both"),
     dict(dust_optimizer="two"),
+    dict(dust_lr_scale=0.0),
+    dict(dust_lr_scale=-0.5),
+    dict(surrogate_mode="hard", dust_lr_scale=0.5),
     dict(surrogate_mode="hard", dust_optimizer="separate"),
     dict(dust_grad_scale=0.0),
     dict(dust_grad_scale=-1.0),
@@ -194,13 +197,15 @@ def test_dust_fields_survive_yaml_cli_dict_and_shipped_configs(tmp_path):
     path = tmp_path / "d.yaml"
     tree = {"activation_bottleneck": bn_kwargs(dust_schedule=[1, 3], dust_target="backprop",
                                                dust_gamma=0.5, dust_sigma_mode="relative_rms",
-                                               dust_grad_scale=0.01, dust_optimizer="separate")}
+                                               dust_grad_scale=0.01, dust_optimizer="separate",
+                                               dust_lr_scale=0.25)}
     with open(path, "w") as f:
         yaml.safe_dump(tree, f)
     cfg = load_config(str(path))
     ab = cfg.activation_bottleneck
     assert ab.dust_schedule == [1, 3] and ab.dust_target == "backprop" and ab.dust_gamma == 0.5
     assert ab.dust_grad_scale == 0.01 and ab.dust_optimizer == "separate"
+    assert ab.dust_lr_scale == 0.25
     cfg2 = load_config(str(path), ["--activation_bottleneck.dust_schedule=[2,1]",
                                    "--activation_bottleneck.dust_target=encoder",
                                    "--activation_bottleneck.dust_population=12"])
@@ -650,6 +655,29 @@ def test_separate_optimizer_keeps_its_own_moments_and_step_count(tmp_path):
                            model3.blocks[0].attn.qkv.weight) == 1
     assert optimizer_steps(payload["dust_optimizer"], model3, loaded3.train,
                            model3.lm_head.weight) is None
+
+
+@pytest.mark.parametrize("opt", ["shared", "separate"])
+def test_lr_scale_applies_to_the_dust_steps_only(tmp_path, opt):
+    data = make_fake_dataset(tmp_path, 20_000, 4_000)
+    out = str(tmp_path / "runs")
+    # a vanishing DUST LR: the encoders stand still on DUST steps (Adam's update
+    # is ~lr per coordinate) while the hard steps move everything as usual
+    cfg = smoke_config(data, out, run_name=f"lr_{opt}", dust_optimizer=opt,
+                       dust_target="encoder", dust_lr_scale=1e-9)
+    _, snaps = snapshots_via_on_step(cfg)
+    enc = "blocks.0.residual_out_bottleneck.in_proj.weight"
+    assert changed(snaps[0], snaps[1], enc) and changed(snaps[0], snaps[1], "lm_head.weight")
+    assert torch.allclose(snaps[1][enc], snaps[2][enc], atol=1e-7)       # step 1: DUST
+    assert torch.equal(snaps[1]["lm_head.weight"], snaps[2]["lm_head.weight"])
+    assert changed(snaps[2], snaps[3], enc)                               # step 2: hard
+    rows = [json.loads(l) for l in open(tmp_path / "runs" / f"lr_{opt}" / "metrics.jsonl")]
+    tr = [r for r in rows if "train/ce" in r]
+    assert all(r["dust/lr"] == pytest.approx(r["train/lr"] * 1e-9) for r in tr)
+    cfg = smoke_config(data, out, run_name=f"lr1_{opt}", dust_optimizer=opt,
+                       dust_target="encoder")
+    _, snaps = snapshots_via_on_step(cfg)
+    assert (snaps[2][enc] - snaps[1][enc]).abs().max() > 1e-5              # scale 1 moves it
 
 
 def test_separate_optimizer_resume_and_decouple_rules(tmp_path):

@@ -611,6 +611,12 @@ class ActivationBottleneckConfig:
     # parameterization (raw gains, sphere radii) and keeps its own Adam
     # statistics, the gains' included (wsparse.decouple).
     dust_optimizer: str = "shared"  # shared | separate
+    # Multiplier on the learning rate of the DUST steps: the schedule's value
+    # lr(t) times this on a DUST step (applied to the separate optimizer at
+    # every step, or to the shared optimizer on DUST steps only, the next
+    # step restoring lr(t)).  The schedule and the hard steps are untouched;
+    # train/lr logs the schedule, dust/lr the value a DUST step used.
+    dust_lr_scale: float = 1.0
     # Throughput knob: draws stacked along the batch axis per tail forward.
     # Changes the realized noise sequence for a given seed, not the method.
     dust_chunk_draws: int = 1
@@ -1317,6 +1323,7 @@ class ActivationBottleneckConfig:
         "dust_target": "encoder",
         "dust_grad_scale": 1.0,
         "dust_optimizer": "shared",
+        "dust_lr_scale": 1.0,
         "dust_chunk_draws": 1,
         "dust_cosine_every_steps": 0,
     }
@@ -1399,6 +1406,10 @@ class ActivationBottleneckConfig:
         if not (math.isfinite(scale) and scale > 0):
             raise ValueError(
                 f"dust_grad_scale must be positive and finite, got {self.dust_grad_scale!r}")
+        lr_scale = float(self.dust_lr_scale)
+        if not (math.isfinite(lr_scale) and lr_scale > 0):
+            raise ValueError(
+                f"dust_lr_scale must be positive and finite, got {self.dust_lr_scale!r}")
         if self.dust_optimizer not in OPTIMIZERS:
             raise ValueError(f"unknown dust_optimizer: {self.dust_optimizer!r} "
                              f"({' | '.join(OPTIMIZERS)})")

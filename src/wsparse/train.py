@@ -545,8 +545,13 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
     for step in range(start_step, cfg.train.max_steps):
         lr = lr_at(step, cfg.train)
         set_lr(optimizer, lr)
+        # the kind of this step (dust), decided from the step index; the DUST
+        # steps' LR is the schedule's value times dust_lr_scale
+        dust_step = dust is not None and dust.kind(step) == "dust"
         if dust_optimizer is not None:
-            set_lr(dust_optimizer, lr)
+            set_lr(dust_optimizer, lr * dust.lr_scale)
+        elif dust_step:
+            set_lr(optimizer, lr * dust.lr_scale)  # this step only; reset above next step
         # the only schedule here is laplace_policy's tau(step); every other
         # mode's temperature is constant and this returns 0.0 without touching
         # anything.  Before on_step and before any micro-batch, so the probe
@@ -564,7 +569,6 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         optimizer.zero_grad(set_to_none=True)
         ce_sum = 0.0
         step1 = step + 1
-        dust_step = dust is not None and dust.kind(step) == "dust"
         if dust_step:
             # ---- dust ----------------------------------------------------- #
             # The clean forward, K_l tails per bottleneck, and the DUST
@@ -695,6 +699,7 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 dm = dust_stats.metrics()
                 dust_stats.reset()
                 metrics.update(dm)
+                metrics["dust/lr"] = lr * dust.lr_scale
             if policy is not None:
                 # train/ce IS the sampled-support CE; the explicit alias makes
                 # the comparison with the deterministic probe unambiguous

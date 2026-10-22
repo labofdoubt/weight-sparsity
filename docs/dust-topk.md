@@ -134,6 +134,13 @@ The DUST instance's checkpoint payload holds its statistics only and is
 re-aliased to the main optimizer's loaded state on resume, so the main
 optimizer is loaded first.
 
+**`dust_lr_scale`** (positive, default 1) multiplies the learning rate of
+the DUST steps: a DUST step uses $\eta(t) \cdot$ `dust_lr_scale` with
+$\eta(t)$ the schedule's value, applied to the separate optimizer at every
+step or to the shared optimizer on DUST steps only (the next step's
+`set_lr` restores $\eta(t)$). The schedule and the hard steps are
+untouched; `train/lr` logs $\eta(t)$, `dust/lr` the DUST steps' value.
+
 **`backprop`.** The clean forward runs with grad enabled; after the tails,
 one `torch.autograd.backward` from every $z_l$ with $\hat g_l$ as the
 incoming gradient. Every parameter preceding a gate input accumulates it:
