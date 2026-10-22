@@ -1,0 +1,187 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{caption}
+
+\emergencystretch=1.5em
+\captionsetup{font=small,labelfont=bf,width=.92\textwidth}
+\setlength{\parskip}{4pt plus 1pt}
+\setlength{\parindent}{0pt}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\bst}[1]{\textbf{#1}}
+
+\title{DUST on the $K{=}32$ code-carried model:\\ the 500-step $\sigma \times$ \code{dust\_lr\_scale} grid\\[2pt]
+\large Research note}
+\author{}
+\date{2026-10-22.}
+
+\begin{document}
+\maketitle
+\vspace{-2em}
+
+Single runs, seed 1337; the encoder arm and the baseline trained on new\_york
+(8$\times$ RTX 5090), the backprop arm on georgia (8$\times$ A100).
+
+% ============================================================
+\section{Setup}
+% ============================================================
+
+The model is the $K{=}32$ code-carried hard Top-32 model of
+\code{docs/kj-vs-hard-topk-code-residual.tex}
+(\code{configs/cr\_kj/ma\_cr\_hard\_k32\_pnorm.yaml}): 8 blocks of width 768,
+abs-TopK over $N = 1536$ features at \code{residual\_out} of every block, the
+code carried between blocks, post-norm, magnitude--direction (MD) decoupling,
+batch $96 \times 512$ tokens, a 20k-step cosine schedule with 500 warmup steps.
+
+Every DUST run (\code{configs/cr\_dust/hp500/}, method in
+\code{docs/dust-topk.md}) adds the DUST bottleneck optimization: the $J = 480$
+pool receives the noise, population 128 (16 draws per bottleneck), schedule
+$[1, 1]$ (every other optimizer step a DUST step), $\gamma = 0$, gradient
+scale 1, a separate optimizer for the DUST steps sharing the MD
+parameterization, and no gradient clipping. The grid is \code{dust\_target}
+$\in \{\text{encoder}, \text{backprop}\}$ $\times$ $\sigma \in \{0.03, 0.1, 0.3,
+0.9\}$ $\times$ \code{dust\_lr\_scale} $\in \{1, 10, 30, 100, 300\}$. Each run
+trains 500 steps of the unchanged 20k-step schedule, so the window lies inside
+the LR warmup ($1.2 \cdot 10^{-6}$ to $6 \cdot 10^{-4}$; the DUST steps use that
+value times \code{dust\_lr\_scale}), with validation every 50 steps on 40
+batches of 24 windows.
+
+The baseline is the same model trained with the same settings and no DUST
+steps (\code{ny\_hp500\_hard\_k32}); the original madrid run of the model
+(gradient clipping at 1.0) is quoted for reference.
+
+% ============================================================
+\section{Encoder target}
+% ============================================================
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/hp500_val_encoder.png}
+\caption{\code{dust\_target = encoder}: validation CE over the first 500 steps,
+one panel per $\sigma$, one curve per \code{dust\_lr\_scale} (one hue, light
+to dark with the multiplier); dashed black, the hard Top-32 baseline. Curves
+above 8 nats are off scale.}
+\end{figure}
+
+Validation CE at step 500 (bold: the best cell):
+
+\begin{center}\small
+\begin{tabular}{lccccc}
+\toprule
+$\sigma \,\backslash\, $\code{dust\_lr\_scale} & 1 & 10 & 30 & 100 & 300 \\
+\midrule
+$0.03$ & 3.0220 & 3.2500 & 4.0055 & 4.8971 & 5.2906 \\
+$0.1$  & 3.0096 & 3.1989 & 3.8673 & 5.0334 & 5.5611 \\
+$0.3$  & 3.0101 & 3.2891 & 4.5535 & 4.9989 & 5.3168 \\
+$0.9$  & \bst{2.9957} & 3.5009 & 4.2972 & 4.9715 & 5.5825 \\
+\midrule
+hard Top-32 baseline (no DUST steps, same settings) & 2.6875 & & & & \\
+hard Top-32, the original madrid run (clipping 1.0) & 2.6846 & & & & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ============================================================
+\section{Backprop target}
+% ============================================================
+
+\begin{figure}[htb]\centering
+\includegraphics[width=\textwidth]{figures/hp500_val_backprop.png}
+\caption{\code{dust\_target = backprop}: the same layout. Curves above 8
+nats are off scale.}
+\end{figure}
+
+Validation CE at step 500:
+
+\begin{center}\small
+\begin{tabular}{lccccc}
+\toprule
+$\sigma \,\backslash\, $\code{dust\_lr\_scale} & 1 & 10 & 30 & 100 & 300 \\
+\midrule
+$0.03$ & 3.1246 & 4.6930 & 6.2055 & 13.0487 & 9.7345 \\
+$0.1$  & 3.1169 & 5.3437 & 6.0478 & 8.8164 & 9.9774 \\
+$0.3$  & \bst{3.0794} & 5.9428 & 6.2382 & 11.9248 & 9.6194 \\
+$0.9$  & 3.1646 & 5.8732 & 5.5386 & 5.7687 & 9.2661 \\
+\midrule
+hard Top-32 baseline (no DUST steps, same settings) & 2.6875 & & & & \\
+hard Top-32, the original madrid run (clipping 1.0) & 2.6846 & & & & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ============================================================
+\section{Results}
+% ============================================================
+
+No cell reaches the baseline. In both arms the validation CE at step 500
+rises monotonically with \code{dust\_lr\_scale}, and the multiplier 1 is the
+best value at every $\sigma$: 2.996 to 3.022 in the encoder arm, 0.31 to 0.33
+nats above the baseline, and 3.08 to 3.16 in the backprop arm. The dependence
+on $\sigma$ is weak at the multiplier 1 (a spread of 0.03 nats in the encoder
+arm and 0.09 in the backprop arm) and does not change the ordering by the
+multiplier anywhere.
+
+The two targets differ in how the larger multipliers fail. In the encoder arm
+the curves keep descending at every setting, only more slowly and from a
+higher level as the multiplier grows; at 100 and 300 they plateau near 5 to
+5.6 nats within the window. In the backprop arm, where the estimate is
+backpropagated to every parameter before the gate inputs, every multiplier
+from 10 on stalls near 5 to 6 nats, and 100 and 300 diverge at every $\sigma$
+(final values of 5.8 to 13 nats), with the pre-activation scale growing by
+orders of magnitude within the first tens of steps.
+
+Within the first 500 steps the DUST steps therefore cost against hard steps
+at every setting of the grid, least when the DUST learning rate is the
+schedule's own, and the encoder target is less harmful than the backprop
+target at every $\sigma$ and multiplier.
+
+% ============================================================
+\section{Sigma sweep at population 1024}
+% ============================================================
+
+Pending: the eight runs (\code{dust\_lr\_scale} 1, population 1024 = 128
+draws per bottleneck, both targets, the four $\sigma$ values, otherwise the
+grid's settings) are training on new\_york; their two figures and table will
+be added here.
+
+% ============================================================
+\section{Without MD decoupling}
+% ============================================================
+
+Pending: the hard Top-32 run without MD decoupling (\code{model.decouple =
+false} with \code{model.md\_init = true}, so the initialization is identical
+and only the optimizer changes: ordinary AdamW with weight decay 0.1, the
+convention of \code{docs/md-init-vs-decoupling.tex}), the population-1024
+$\sigma$ sweep without decoupling at $\gamma = 0$ (georgia) and at
+$\gamma = 0.99$ (new\_york). To be added: the hard run with and without
+decoupling; and, per $\gamma$, a two-panel figure (encoder left, backprop
+right) of the sweep against the hard run without decoupling, with its table.
+
+% ============================================================
+\section{Runs on Drive}
+% ============================================================
+
+Encoder arm, new\_york (\code{gdrive:weight-sparsity/runs\_new\_york/}):
+\code{ny\_hp500\_enc\_sg<s>\_lr<l>} for \code{<s>} $\in$ \{\code{0p03},
+\code{0p1}, \code{0p3}, \code{0p9}\} and \code{<l>} $\in$ \{1, 10, 30, 100,
+300\}, twenty runs.
+
+Baseline, new\_york: \code{gdrive:weight-sparsity/runs\_new\_york/ny\_hp500\_hard\_k32}.
+
+Backprop arm, georgia (\code{gdrive:weight-sparsity/runs\_georgia/}):
+\code{ga\_hp500\_bp\_sg<s>\_lr<l>}, the same twenty cells.
+
+Original hard Top-32 run (reference value only):
+\code{gdrive:weight-sparsity/runs\_madrid/ma\_cr\_hard\_k32\_pnorm}.
+
+Figures and tables: \code{scripts/plot\_dust\_hp500.py} over the
+\code{metrics.jsonl} of these runs. The Markdown version of this note,
+\code{docs/dust/hp500-sigma-lr.md}, lists every run name in full.
+
+\end{document}

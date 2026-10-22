@@ -45,3 +45,4 @@ wandb/
 !docs/kj-vs-hard-topk-code-residual.pdf
 !docs/laplace-policy-code-residual.pdf
 !toy_mnist/reports/*.pdf
+!docs/dust/hp500-sigma-lr.pdf
