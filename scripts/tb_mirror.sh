@@ -30,6 +30,7 @@ while :; do
       --filter '+ */summary.json' \
       --filter '- *' \
       --transfers 8 --checkers 16 --stats-one-line 2>&1 | tail -2
-  echo "[tb-mirror] synced $(find "$DST" -name 'events.out.tfevents*' 2>/dev/null | wc -l) event files  $(date -Is)"
+  # date -u +%FT%TZ: macOS date has no -I (the mirror also runs on a laptop)
+  echo "[tb-mirror] synced $(find "$DST" -name 'events.out.tfevents*' 2>/dev/null | wc -l) event files  $(date -u +%FT%TZ)"
   sleep "$INTERVAL"
 done

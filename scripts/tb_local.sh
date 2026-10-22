@@ -77,4 +77,6 @@ fi
 # parent keeps the box's own subdirectory layout (dc/..., lens_1/...) intact and
 # runs from different machines stay separate series.
 echo "[tb] serving $LOCAL on http://localhost:$PORT   (ctrl-C to stop)"
-exec "$VENV/bin/tensorboard" --logdir "$LOCAL" --port "$PORT" --bind_all=false
+# no --bind_all: the default is localhost only (and tensorboard >= 2.21 rejects
+# an explicit "--bind_all=false")
+exec "$VENV/bin/tensorboard" --logdir "$LOCAL" --port "$PORT"
