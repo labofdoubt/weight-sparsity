@@ -1,7 +1,8 @@
 # dust_sigma search x dust_target, 2026-10-22 (georgia): the K=32 code-carried
 # hard model with the DUST bottleneck optimization (ga_cr_dust_k32_j480_p128_sep.yaml:
 # J=480, population 128 = 8 x 16 draws, separate optimizer sharing the MD gains,
-# chunk 4, cosine every 50 DUST steps), schedule [6, 1] (one DUST step in seven,
+# cosine every 50 DUST steps; chunk 2 here, since chunk 4 held 36 GB with the
+# encoder target and the backprop target keeps the clean graph too), schedule [6, 1] (one DUST step in seven,
 # about 5.2x the hard run's time per step), dust_target backprop, dust_sigma 0.3.
 # Trained for 10k steps of an unchanged 20k-step LR schedule
 # (scripts/train_guard.py --stop-step 10000).  Grid: target in {encoder, backprop}
@@ -16,3 +17,4 @@ activation_bottleneck:
   dust_schedule: [6, 1]
   dust_target: backprop
   dust_sigma: 0.3
+  dust_chunk_draws: 2
