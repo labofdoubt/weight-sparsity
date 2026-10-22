@@ -187,6 +187,15 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
   `decouple` that instance shares the MD gains and radii of the main one, so
   load the main optimizer first). A DUST step with population P
   costs about 1 + 0.3 P forward equivalents (4x a hard step at P = 40).
+- **Every run saves checkpoints, and they reach Drive.** Never set
+  `checkpoint_every_steps: 0`, not even for a short run: without a checkpoint a
+  run cannot be probed later (SNR of the DUST estimate, swap audits, state
+  preservation), resumed, or compared, and the 40-run hp500 grids of
+  2026-10-22 had to be left without any. For runs of a few hundred steps use an
+  interval that leaves the midpoint and the endpoint (500 steps: 250 with
+  `keep_last_checkpoints: 2`). `backup_ckpt` with `--all-checkpoints` (step 7)
+  uploads them; before a box goes, `backup_runs.sh ... --all-checkpoints` and
+  `rclone check --one-way`.
 - **A run without `summary.json` did not finish.**
 - **The validation set is `val_batches` x `micro_batch_size` windows.** A run whose
   micro-batch differs from its references must scale `val_batches` (micro 8 ->

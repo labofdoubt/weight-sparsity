@@ -4,7 +4,9 @@
 # = 8 x 16 draws, separate optimizer sharing the MD gains, cosine every 50 DUST
 # steps) with schedule [1, 1] (a DUST step every other step), NO gradient
 # clipping, validation every 50 steps, no checkpoints, chunk 2 (fits a 32 GB
-# 5090).  Each run trains 500 steps of the unchanged 20k-step LR schedule
+# 5090).  Checkpoints every 250 steps, the last two kept (added 2026-10-22
+# ~22:00 UTC: the grid runs and the MD sweep before that saved none).
+# Each run trains 500 steps of the unchanged 20k-step LR schedule
 # (scripts/train_guard.py --stop-step 500); the window lies inside the 500-step
 # LR warmup, so the DUST steps' LR is lr(t) * dust_lr_scale with lr(t) ramping
 # to 6e-4.  Encoder grid on new_york (ny_hp500_enc_*), backprop grid on
@@ -15,7 +17,8 @@ _base_:
 train:
   grad_clip: 0.0
   validate_every_steps: 50
-  checkpoint_every_steps: 0
+  checkpoint_every_steps: 250
+  keep_last_checkpoints: 2
 
 activation_bottleneck:
   dust_schedule: [1, 1]

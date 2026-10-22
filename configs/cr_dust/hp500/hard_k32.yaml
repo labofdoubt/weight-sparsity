@@ -13,4 +13,5 @@ train:
   run_name: ny_hp500_hard_k32
   grad_clip: 0.0
   validate_every_steps: 50
-  checkpoint_every_steps: 0
+  checkpoint_every_steps: 250
+  keep_last_checkpoints: 2
