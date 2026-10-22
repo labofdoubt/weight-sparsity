@@ -27,3 +27,4 @@ train:
   device: auto
   out_dir: runs_mnist
   tensorboard: true
+  checkpoint_every_steps: 500   # ckpt_step*.pt, ~3 MB each at hidden 1024; final.pt at the end

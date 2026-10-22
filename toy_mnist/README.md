@@ -104,8 +104,18 @@ set lives on the training device.
 
 A run directory `train.out_dir/train.run_name` holds `config.json`,
 `metrics.jsonl`, TensorBoard events (when `tensorboard` is installed),
-`summary.json` (best and final validation, status) and `final.pt`.  A run
-without `summary.json` did not finish.
+`summary.json` (best and final validation, status), `ckpt_step<N>.pt` every
+`train.checkpoint_every_steps` steps (default 500; the full payload of model,
+optimizer and DUST state, about 3 MB at hidden 1024, written atomically) and
+`final.pt`.  A run without `summary.json` did not finish.
+
+On a box, the whole run directory is synced to Drive, checkpoints included,
+by a plain watcher (the main repository's backup scripts filter `.pt` files):
+
+```bash
+tmux new -d -s backup_mnist "while true; do rclone copy /workspace/runs_mnist \
+    gdrive:weight-sparsity/runs_<box> --exclude '*.tmp' --drive-chunk-size 128M; sleep 120; done"
+```
 
 Metrics: `train/ce`, `train/acc` (the clean hard forward on both kinds of
 step), `train/lr`, `train/grad_norm` (the last step's total norm, whichever

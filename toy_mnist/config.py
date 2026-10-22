@@ -111,7 +111,11 @@ class TrainConfig:
     out_dir: str = "runs_mnist"
     run_name: str = "default"
     tensorboard: bool = True
-    save_checkpoint: bool = True
+    save_checkpoint: bool = True       # final.pt at the end of the run
+    # ckpt_step<N>.pt every this many steps (0 = none; the last step is
+    # final.pt), each the full payload (model, optimizer, dust state): about
+    # 3 MB at hidden 1024.  Nothing is pruned.
+    checkpoint_every_steps: int = 500
 
 
 @dataclass
@@ -207,6 +211,8 @@ class Config:
             raise ValueError("train.max_steps, batch_size and val_batch_size must be >= 1")
         if tr.log_every_steps < 1 or tr.validate_every_steps < 0:
             raise ValueError("train.log_every_steps >= 1 and validate_every_steps >= 0")
+        if tr.checkpoint_every_steps < 0:
+            raise ValueError("train.checkpoint_every_steps must be >= 0")
         return self
 
     def to_dict(self) -> Dict[str, Any]:

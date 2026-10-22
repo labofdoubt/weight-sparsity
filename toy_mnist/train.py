@@ -9,7 +9,9 @@ the step kind follows ``dust_schedule`` and a DUST step runs
 directory ``train.out_dir/train.run_name`` receives ``config.json``,
 ``metrics.jsonl`` (one record per log window and per validation),
 TensorBoard events (when the package is installed), ``summary.json`` at the
-end and ``final.pt``.
+end, ``ckpt_step<N>.pt`` every ``train.checkpoint_every_steps`` steps and
+``final.pt``; checkpoints are written to a temporary name and renamed, so a
+backup watcher never copies a partial file.
 
 Metrics: ``train/ce`` and ``train/acc`` are the clean hard-forward values on
 both kinds of step; ``train/grad_norm`` is the last step's total gradient
@@ -221,6 +223,21 @@ def train(cfg: Config, data: Optional[MNISTData] = None,
         print(f"[val] step {step1} ce {ce:.4f} acc {acc:.4f} (best ce {best_val_ce:.4f} "
               f"at {best_step})")
 
+    def checkpoint_payload(step1: int) -> Dict[str, object]:
+        payload = {"model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                   "config": cfg.to_dict(), "step": step1}
+        if dust is not None:
+            payload["dust_state"] = dust.state_dict()
+        if dust_optimizer is not None:
+            payload["dust_optimizer"] = dust_optimizer.state_dict()
+        return payload
+
+    def save_checkpoint(name: str, step1: int) -> None:
+        path = os.path.join(run_dir, name)
+        tmp = path + ".tmp"
+        torch.save(checkpoint_payload(step1), tmp)
+        os.replace(tmp, path)
+
     for step in range(tr.max_steps):
         lr = lr_at(step, tr)
         set_lr(optimizer, lr)
@@ -310,6 +327,9 @@ def train(cfg: Config, data: Optional[MNISTData] = None,
         if tr.validate_every_steps > 0 and step1 % tr.validate_every_steps == 0 \
                 and step1 != tr.max_steps:
             validate(step1)
+        if tr.checkpoint_every_steps > 0 and step1 % tr.checkpoint_every_steps == 0 \
+                and step1 != tr.max_steps:
+            save_checkpoint(f"ckpt_step{step1}.pt", step1)
 
     validate(step1)
     train_time = time.time() - t_start
@@ -330,13 +350,7 @@ def train(cfg: Config, data: Optional[MNISTData] = None,
     with open(os.path.join(run_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     if tr.save_checkpoint:
-        payload = {"model": model.state_dict(), "optimizer": optimizer.state_dict(),
-                   "config": cfg.to_dict(), "step": step1}
-        if dust is not None:
-            payload["dust_state"] = dust.state_dict()
-        if dust_optimizer is not None:
-            payload["dust_optimizer"] = dust_optimizer.state_dict()
-        torch.save(payload, os.path.join(run_dir, "final.pt"))
+        save_checkpoint("final.pt", step1)
     logger.close()
     print(f"[train] {status}; {step1} steps in {train_time:.1f} s; best val ce "
           f"{best_val_ce:.4f} acc {best_val_acc:.4f} at step {best_step}")

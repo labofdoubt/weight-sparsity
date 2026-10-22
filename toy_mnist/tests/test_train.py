@@ -117,3 +117,19 @@ def test_cache_is_written_atomically_and_a_damaged_cache_is_rebuilt(tmp_path, mo
     with np.load(cache) as z:
         assert np.array_equal(z["test_x"], arrays["test_x"])
     assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+
+
+def test_intermediate_checkpoints_are_written_at_the_cadence(tmp_path):
+    cfg = small_config(tmp_path, "topk_dust", train={"checkpoint_every_steps": 2},
+                       topk={"dust_population": 4, "dust_chunk_draws": 4})
+    summary = train(cfg, synthetic_data())
+    run_dir = summary["run_dir"]
+    names = sorted(n for n in os.listdir(run_dir) if n.endswith(".pt"))
+    assert names == ["ckpt_step2.pt", "ckpt_step4.pt", "final.pt"]  # step 6 is final.pt
+    assert not [n for n in os.listdir(run_dir) if n.endswith(".tmp")]
+    payload = torch.load(os.path.join(run_dir, "ckpt_step4.pt"), weights_only=False)
+    assert payload["step"] == 4 and payload["dust_state"]["dust_steps"] == 2
+    assert "rescale.log_scale" in payload["model"] and "optimizer" in payload
+    cfg = small_config(tmp_path, "baseline", train={"checkpoint_every_steps": 0})
+    summary = train(cfg, synthetic_data())
+    assert sorted(n for n in os.listdir(summary["run_dir"]) if n.endswith(".pt")) == ["final.pt"]
