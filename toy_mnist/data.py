@@ -12,6 +12,7 @@ import hashlib
 import os
 import struct
 import urllib.request
+import zipfile
 from typing import Dict, Iterator, Optional, Tuple
 
 import numpy as np
@@ -83,10 +84,14 @@ def load_arrays(data_dir: str) -> Dict[str, np.ndarray]:
     """``train_x [60000, 28, 28] uint8, train_y [60000] uint8, test_x, test_y``;
     cached as ``mnist.npz`` after the first parse."""
     cache = os.path.join(data_dir, CACHE)
+    arrays = None
     if os.path.exists(cache):
-        with np.load(cache) as z:
-            arrays = {k: z[k] for k in ("train_x", "train_y", "test_x", "test_y")}
-    else:
+        try:
+            with np.load(cache) as z:
+                arrays = {k: z[k] for k in ("train_x", "train_y", "test_x", "test_y")}
+        except (zipfile.BadZipFile, EOFError, KeyError, ValueError, OSError):
+            arrays = None  # another process is still writing it, or it is damaged
+    if arrays is None:
         paths = download(data_dir)
         arrays = {
             "train_x": parse_idx(paths["train_images"]),
@@ -94,7 +99,11 @@ def load_arrays(data_dir: str) -> Dict[str, np.ndarray]:
             "test_x": parse_idx(paths["test_images"]),
             "test_y": parse_idx(paths["test_labels"]),
         }
-        np.savez(cache, **arrays)
+        # atomic: concurrent runs starting together must never read a partial file
+        tmp = f"{cache}.{os.getpid()}.tmp"
+        with open(tmp, "wb") as f:
+            np.savez(f, **arrays)
+        os.replace(tmp, cache)
     expect = {"train_x": (60000, 28, 28), "train_y": (60000,),
               "test_x": (10000, 28, 28), "test_y": (10000,)}
     for k, shape in expect.items():

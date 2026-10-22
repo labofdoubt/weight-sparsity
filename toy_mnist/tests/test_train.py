@@ -96,3 +96,24 @@ def test_separate_optimizer_and_lr_scale(tmp_path):
     recs = [r for r in _read_metrics(summary["run_dir"]) if "dust/lr" in r]
     for r in recs:
         assert r["dust/lr"] == pytest.approx(0.25 * r["train/lr"])
+
+
+def test_cache_is_written_atomically_and_a_damaged_cache_is_rebuilt(tmp_path, monkeypatch):
+    import numpy as np
+    from toy_mnist import data as D
+    rng = np.random.default_rng(0)
+    arrays = {"train_x": rng.integers(0, 256, (60000, 28, 28), dtype=np.uint8),
+              "train_y": rng.integers(0, 10, 60000).astype(np.uint8),
+              "test_x": rng.integers(0, 256, (10000, 28, 28), dtype=np.uint8),
+              "test_y": rng.integers(0, 10, 10000).astype(np.uint8)}
+    names = {"train_images": "train_x", "train_labels": "train_y",
+             "test_images": "test_x", "test_labels": "test_y"}
+    monkeypatch.setattr(D, "download", lambda d: {k: k for k in names})
+    monkeypatch.setattr(D, "parse_idx", lambda key: arrays[names[key]])
+    cache = tmp_path / D.CACHE
+    cache.write_bytes(b"PK\x03\x04 partial")  # a half-written file
+    out = D.load_arrays(str(tmp_path))
+    assert np.array_equal(out["train_y"], arrays["train_y"])
+    with np.load(cache) as z:
+        assert np.array_equal(z["test_x"], arrays["test_x"])
+    assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
