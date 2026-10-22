@@ -177,6 +177,14 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
   averaged over blocks (§9b).
 - **Keep `train.compile=False`.** A graph break around the hand-written gate
   backward can zero gradients silently while the loss keeps falling (§11).
+- **`surrogate_mode: dust` alternates hard steps with zeroth-order DUST steps**
+  (`dust_schedule`, docs/dust-topk.md). `train/ce` is the clean hard-forward
+  CE on both kinds of step; `dust/*` describe the DUST steps only, and
+  `train/grad_norm` is the last step's, whichever kind. `dust_population`
+  must be a multiple of the number of installed bottlenecks with at least 2
+  draws each; single process only; a resume needs the checkpoint's
+  `dust_state`. A DUST step with population P costs about 1 + 0.3 P forward
+  equivalents (4x a hard step at P = 40).
 - **A run without `summary.json` did not finish.**
 - **The validation set is `val_batches` x `micro_batch_size` windows.** A run whose
   micro-batch differs from its references must scale `val_batches` (micro 8 ->

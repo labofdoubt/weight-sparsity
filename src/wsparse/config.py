@@ -437,6 +437,13 @@ class ActivationBottleneckConfig:
     #                policy_* fields below; wsparse.bottleneck.laplace_policy).
     #                Evaluation is clean deterministic Top-K unless sampling is
     #                requested explicitly (train.policy_val_samples).
+    # dust        -> the hard gate (forward AND backward identical to "hard"),
+    #                trained by alternating ordinary hard-mask steps with
+    #                zeroth-order DUST steps: the clean Top(K+J) pool of every
+    #                token's pre-activation is perturbed with Gaussian noise,
+    #                the forward is rerun from that gate on, and the
+    #                reward-weighted noise estimates dL/dz there (the dust_*
+    #                fields below; wsparse.bottleneck.dust).
     surrogate_mode: str = "hard"
 
     # Stochastic support width (surrogate_mode="hard" only, training only): per
@@ -541,6 +548,57 @@ class ActivationBottleneckConfig:
     # over (1 = the forward's own draw; R > 1 adds R - 1 draws that only re-rank
     # the pool in the backward, same linearization point)
     policy_rb_samples: int = 1
+
+    # ---- dust (surrogate_mode: dust) ---------------------------------------- #
+    # See wsparse.bottleneck.dust.  Every field here is read by that mode only;
+    # a non-default value under another mode is an error.  Ordinary hard
+    # Top-K steps alternate with DUST steps.  In a DUST step, per micro-batch,
+    # each of the L installed bottlenecks gets K_l = dust_population / L draws
+    # (dust_population must be a multiple of L with K_l >= 2: the baseline is
+    # the mean over the bottleneck's own draws).  Draw i adds independent
+    # N(0, sigma^2) noise to the signed pre-activation z_t of every token on
+    # its clean Top(K+J) pool (before the absolute value under abs_topk; j is
+    # the J of the pool, as in rblapsum), reruns the forward from that gate
+    # on and reads the per-token CE ell_s^(i).  With the discounted credit
+    #     R_t^(i) = sum_{s >= t} gamma^(s - t) ell_s^(i),
+    # the baseline R~_t = mean_i R_t^(i) and the reward r_t^(i) = R~_t - R_t^(i),
+    # the estimated output error is
+    #     g^_t = -(1 / (K_l sigma N_valid)) sum_i r_t^(i) a_t^(i)
+    # (the website's Eq. 2, divided by the number of valid targets so that it
+    # estimates the gradient of the MEAN token CE that the hard steps use).
+    # gamma = 0 credits a token's noise with its own loss change only.
+    dust_population: int = 32
+    # Noise scale.  absolute: sigma in pre-activation units for every token;
+    # relative_rms: sigma times the per-token RMS of the clean pool
+    # pre-activations (detached), so the perturbation follows the scale of z
+    # across blocks and over training.
+    dust_sigma: float = 0.1
+    dust_sigma_mode: str = "absolute"  # absolute | relative_rms
+    dust_gamma: float = 0.0
+    # [n_hard, n_dust]: each period of n_hard + n_dust optimizer steps starts
+    # with n_hard ordinary hard-mask steps and ends with n_dust DUST steps
+    # ([1, 3]: one hard step, then three DUST steps).  Decided from the step
+    # index, so a resume continues the same pattern.  n_dust >= 1; n_hard = 0
+    # is pure DUST.
+    dust_schedule: List[int] = field(default_factory=lambda: [1, 1])
+    # Where the estimated output error goes:
+    #   encoder   only the perturbed bottleneck's encoder is updated, with the
+    #             outer product G^_W = scale * sum_t g^_t x_t^T of the error and
+    #             the encoder input (scale = code_residual_scale for a
+    #             code-residual update, else 1); nothing else moves in a DUST step
+    #   backprop  g^_l is backpropagated from the gate input z_l through the
+    #             clean graph: every parameter preceding z_l (earlier blocks,
+    #             earlier bottlenecks through their hard masks and the carry,
+    #             the embedding) accumulates it
+    dust_target: str = "encoder"  # encoder | backprop
+    # Throughput knob: draws stacked along the batch axis per tail forward.
+    # Changes the realized noise sequence for a given seed, not the method.
+    dust_chunk_draws: int = 1
+    # Diagnostic cadence, in DUST steps (0 = off): the cosine between the
+    # encoder outer product above and the hard-backward gradient of the clean
+    # CE for the same weight (one extra backward per micro-batch when due),
+    # logged as dust/cosine and dust_cosine/<layer>.
+    dust_cosine_every_steps: int = 0
 
 
     # ---- rblapsum (surrogate_mode: rblapsum | rblapsum_sf) ------------------ #
@@ -868,10 +926,10 @@ class ActivationBottleneckConfig:
                 "(topk | abs_topk | gated_topk)"
             )
         if self.surrogate_mode not in ("lapsum", "rblapsum", "rblapsum_sf", "hard",
-                                       "soft_ste", "laplace_policy"):
+                                       "soft_ste", "laplace_policy", "dust"):
             raise ValueError(
                 f"unknown surrogate_mode: {self.surrogate_mode} "
-                "(lapsum | rblapsum | rblapsum_sf | hard | soft_ste | laplace_policy)"
+                "(lapsum | rblapsum | rblapsum_sf | hard | soft_ste | laplace_policy | dust)"
             )
         if self.stochastic_width not in ("none", "uniform", "two_point", "geometric"):
             raise ValueError(
@@ -1051,6 +1109,7 @@ class ActivationBottleneckConfig:
             if not self.code_residual_scale > 0:
                 raise ValueError("code_residual_scale must be positive")
         self._validate_policy_fields()
+        self._validate_dust_fields()
         # shape rules live with the gate so the module can be built standalone
         from .bottleneck.gate import validate_gate_shapes
 
@@ -1226,6 +1285,98 @@ class ActivationBottleneckConfig:
                              "relative width "
                              "(relative_b | relative_span): an absolute width has no "
                              "activation scale to differentiate")
+
+    #: the dust fields and their defaults (a non-default value under another
+    #: surrogate mode is rejected, see _validate_dust_fields)
+    _DUST_DEFAULTS = {
+        "dust_population": 32,
+        "dust_sigma": 0.1,
+        "dust_sigma_mode": "absolute",
+        "dust_gamma": 0.0,
+        "dust_schedule": [1, 1],
+        "dust_target": "encoder",
+        "dust_chunk_draws": 1,
+        "dust_cosine_every_steps": 0,
+    }
+
+    def _validate_dust_fields(self) -> None:
+        """dust: reject unsupported combinations before any model runs.
+
+        The per-bottleneck population (``dust_population`` divided by the
+        number of installed bottlenecks) is only known once the bottlenecks
+        are installed; the controller checks it.
+        """
+        from .bottleneck.dust import SIGMA_MODES, TARGETS
+
+        if self.surrogate_mode != "dust":
+            changed = [name for name, default in self._DUST_DEFAULTS.items()
+                       if getattr(self, name) != default]
+            if changed:
+                raise ValueError(
+                    f"{', '.join(changed)}: the dust_* fields apply to "
+                    f"surrogate_mode='dust' only, got {self.surrogate_mode!r}")
+            return
+        if self.selection_mode not in ("topk", "abs_topk"):
+            raise ValueError(
+                "surrogate_mode='dust' supports selection_mode 'topk' and 'abs_topk' "
+                f"only (not gated_topk), got {self.selection_mode!r}")
+        from .bottleneck.controller import parse_placements
+        placements = parse_placements(self.placement)
+        if placements not in (["residual"], ["residual_out"]):
+            raise ValueError(
+                "surrogate_mode='dust' reruns the forward from a bottleneck's gate, "
+                "which is implemented for one stream placement (residual | "
+                f"residual_out) only, got {self.placement!r}")
+        if self.rblapsum_surrogate_scope != "pool":
+            raise ValueError(
+                f"rblapsum_surrogate_scope={self.rblapsum_surrogate_scope!r} is RBLapSum "
+                "routing; dust requires the default 'pool'")
+        rb_defaults = {
+            "rblapsum_boundary_grad_mode": "detach", "rblapsum_support_scale": 1.0,
+            "rblapsum_rho_random_perm_prob_grad": 0.0, "rblapsum_relative_temperature": False,
+            "rblapsum_kernel_width": "fixed", "rblapsum_support_strength": None,
+            "rblapsum_center_tokens": False, "rblapsum_sf_value_grad": "pool",
+            "rblapsum_carry_decay": 1.0, "rblapsum_radial_project": False,
+        }
+        stray = [n for n, d in rb_defaults.items() if getattr(self, n) != d]
+        if stray:
+            raise ValueError(
+                f"{', '.join(stray)}: RBLapSum settings do not alter dust; "
+                "leave them at their defaults")
+        if float(self.rblapsum_boundary_floor) != 0.0:
+            raise ValueError("dust runs the plain hard Top-K forward; a positive "
+                             "rblapsum_boundary_floor does not apply to it")
+        if not self.hard_inference:
+            raise ValueError("hard_inference=false has no meaning under dust "
+                             "(there is no soft forward)")
+        if int(self.dust_population) < 1:
+            raise ValueError("dust_population must be >= 1")
+        sigma = float(self.dust_sigma)
+        if not (math.isfinite(sigma) and sigma > 0):
+            raise ValueError(f"dust_sigma must be positive and finite, got {self.dust_sigma!r}")
+        if self.dust_sigma_mode not in SIGMA_MODES:
+            raise ValueError(f"unknown dust_sigma_mode: {self.dust_sigma_mode!r} "
+                             f"({' | '.join(SIGMA_MODES)})")
+        gamma = float(self.dust_gamma)
+        if not (math.isfinite(gamma) and 0.0 <= gamma <= 1.0):
+            raise ValueError(f"dust_gamma must be in [0, 1], got {self.dust_gamma!r}")
+        sched = self.dust_schedule
+        if (not isinstance(sched, (list, tuple)) or len(sched) != 2
+                or any(int(v) != v or int(v) < 0 for v in sched)):
+            raise ValueError(
+                f"dust_schedule must be [n_hard, n_dust] with non-negative integers, "
+                f"got {sched!r}")
+        self.dust_schedule = [int(v) for v in sched]
+        if self.dust_schedule[1] < 1:
+            raise ValueError("dust_schedule needs n_dust >= 1 (with no DUST steps use "
+                             "surrogate_mode='hard')")
+        if self.dust_target not in TARGETS:
+            raise ValueError(f"unknown dust_target: {self.dust_target!r} "
+                             f"({' | '.join(TARGETS)})")
+        if int(self.dust_chunk_draws) < 1:
+            raise ValueError("dust_chunk_draws must be >= 1")
+        if int(self.dust_cosine_every_steps) < 0:
+            raise ValueError("dust_cosine_every_steps must be >= 0")
 
 
 # --------------------------------------------------------------------------- #

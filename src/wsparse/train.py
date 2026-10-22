@@ -24,6 +24,7 @@ from .data import build_streams, load_meta
 from .model import build_model
 from .optim import build_optimizer, count_parameter_groups, lr_at, set_lr
 from .bottleneck import ActivationBottleneckController, apply_activation_bottleneck
+from .bottleneck.dust import DustRunningStats, DustTrainingState, dust_micro_step
 from .bottleneck.laplace_policy import (PolicyForwardSettings, PolicyTrainingState,
                                         make_generator, policy_backward_loss)
 from .bottleneck.rblapsum import first_order_backward
@@ -377,6 +378,22 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
               + (f"every {det_every} steps (one extra noise-off forward per micro-batch)"
                  if det_every > 0 else "off"))
 
+    # dust: the alternation state and the dedicated noise generator (seeded
+    # independently of everything else, as the policy generator is)
+    dust: Optional[DustTrainingState] = None
+    dust_stats = DustRunningStats()
+    if bottleneck.enabled and cfg.activation_bottleneck.surrogate_mode == "dust":
+        if world > 1:
+            raise ValueError("surrogate_mode='dust' is single-process only: the DUST step "
+                             "does not go through DDP's gradient reduction")
+        if dtype is torch.float16:
+            raise ValueError("surrogate_mode='dust' needs bfloat16 or float32 "
+                             "(no GradScaler path for the DUST gradients)")
+        dust = DustTrainingState(cfg.activation_bottleneck, len(bottleneck.layers), device,
+                                 seed=cfg.train.seed + 7777 + 104729 * rank)
+        print(f"[train] dust: {dust.describe()}; train/ce is the clean hard-forward CE on "
+              "both kinds of step, dust/* describe the DUST steps only")
+
     run_dir = os.path.join(cfg.train.out_dir, cfg.train.run_name)
     if is_main:
         logger = Logger(
@@ -421,6 +438,16 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             policy.load_state_dict(payload["policy_state"], rank, world)
             print(f"[train] restored laplace_policy state: baseline {policy.baseline:.4f} "
                   f"after {policy.updates} updates, noise RNG of rank {rank}")
+        if dust is not None:
+            # the noise RNG and the DUST-step count travel with the checkpoint;
+            # as for laplace_policy, a checkpoint without them is not a resume
+            if "dust_state" not in payload:
+                raise ValueError(
+                    f"{resume_path} carries no dust_state (noise RNG, DUST-step count); it "
+                    "was not saved by a dust run of this version.  Resume such a run from "
+                    "its own checkpoint, or start a fresh run without train.resume")
+            dust.load_state_dict(payload["dust_state"])
+            print(f"[train] restored dust state: {dust.dust_steps} DUST steps done, noise RNG")
         print(f"[train] resumed from {resume_path} at step {start_step}")
 
     if world > 1:
@@ -509,7 +536,24 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         optimizer.zero_grad(set_to_none=True)
         ce_sum = 0.0
         step1 = step + 1
-        if policy is None:
+        dust_step = dust is not None and dust.kind(step) == "dust"
+        if dust_step:
+            # ---- dust ----------------------------------------------------- #
+            # The clean forward, K_l tails per bottleneck, and the DUST
+            # gradient (encoder outer products, or a backward from the gate
+            # inputs) in .grad; no CE backward.  ce_sum is the clean CE, so
+            # train/ce stays the hard-forward CE on every step.
+            want_cos = dust.cosine_due()
+            for _ in range(accum):
+                x, y = train_stream.batch(micro_bs, device)
+                st = dust_micro_step(unwrap_model(model), bottleneck, x, y, dust, device,
+                                     dtype, accum=accum, want_cosine=want_cos)
+                ce_sum += st["ce_clean"]
+                dust_stats.add(st)
+            dust.dust_steps += 1
+            if not math.isfinite(ce_sum):
+                internal_stop = f"non-finite training CE at step {step1} (dust step)"
+        elif policy is None:
             for _ in range(accum):
                 x, y = train_stream.batch(micro_bs, device)
                 with autocast_context(device, dtype):
@@ -575,8 +619,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         if cfg.train.grad_clip > 0:
             scaler.unscale_(optimizer)
             grad_norm = torch.nn.utils.clip_grad_norm_(weight_params, cfg.train.grad_clip)
-        if (policy is not None and internal_stop is None and not scaler.is_enabled()
-                and not math.isfinite(float(grad_norm))):
+        if ((policy is not None or dust_step) and internal_stop is None
+                and not scaler.is_enabled() and not math.isfinite(float(grad_norm))):
             internal_stop = f"non-finite gradient norm at step {step1}"
         if internal_stop is None:
             scaler.step(optimizer)
@@ -589,6 +633,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             # the once-per-step baseline update, from detached statistics of
             # every micro-batch and (a collective) every rank
             policy.finish_step(world)
+        if dust_step:
+            dust_stats.add_step(float(grad_norm))
 
         ce_mean = ce_sum / accum
         running_ce += ce_mean
@@ -611,6 +657,13 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             bn = bottleneck.stats(per_layer=policy is not None)
             metrics.update(bn)
             metrics["train/loss"] = metrics["train/ce"]
+            dm: Dict[str, float] = {}
+            if dust is not None:
+                # DUST-step statistics of the window; train/grad_norm above is
+                # the last step's, whichever kind it was
+                dm = dust_stats.metrics()
+                dust_stats.reset()
+                metrics.update(dm)
             if policy is not None:
                 # train/ce IS the sampled-support CE; the explicit alias makes
                 # the comparison with the deterministic probe unambiguous
@@ -646,6 +699,11 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                     line += f" | det {metrics['train_deterministic_probe/ce']:.4f}"
                 if "bottleneck/policy_exchange_frac" in bn:
                     line += f" | xchg {bn['bottleneck/policy_exchange_frac']:.3f}"
+            if dm.get("dust/steps"):
+                line += (f" | dust {int(dm['dust/steps'])} gap {dm['dust/ce_gap']:+.4f}"
+                         f" ghat {dm['dust/ghat_rms']:.2e}")
+                if "dust/cosine" in dm:
+                    line += f" cos {dm['dust/cosine']:.3f}"
             if "bottleneck/temperature" in bn:
                 line += f" | t {bn['bottleneck/temperature']:.3g}"
                 if "bottleneck/budget_residual" in bn:
@@ -742,6 +800,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             extra: Dict[str, Any] = {"metrics": last_metrics}
             if policy_payload is not None:
                 extra["policy_state"] = policy_payload
+            if dust is not None:
+                extra["dust_state"] = dust.state_dict()
             save_checkpoint(path, cfg, base, optimizer, step1, extra=extra)
             save_checkpoint(
                 os.path.join(run_dir, "latest.pt"),

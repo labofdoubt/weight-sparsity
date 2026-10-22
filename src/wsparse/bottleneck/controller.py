@@ -167,10 +167,14 @@ class ActivationBottleneckController:
                 # each selected layer *and* placement gets its own module -- and
                 # its own parameters, unless they are shared
                 setattr(block, _PLACEMENT_ATTR[name], bottleneck)
+                bottleneck._site = (i, name)  # where a DUST tail resumes from
                 label = f"blocks.{i}" if len(placements) == 1 else f"blocks.{i}.{name}"
                 self.layers.append((label, bottleneck))
         if getattr(cfg, "code_residual", False):
             self._install_code_residual(indices, len(blocks))
+        if cfg.surrogate_mode == "dust":
+            from .dust import draws_per_bottleneck
+            draws_per_bottleneck(int(cfg.dust_population), len(self.layers))  # raises
         self._restore_decoder_scale(d_model)
         # the model's forward installs per-forward policy settings on these;
         # a plain attribute (like code_residual), so state_dicts are unchanged

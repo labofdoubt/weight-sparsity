@@ -88,8 +88,11 @@ def effective_backward_support(cfg) -> float:
     has to change.
     """
     k, j = int(cfg.k), int(cfg.j)
-    if cfg.surrogate_mode == "hard":
-        return float(k)  # j is inert in the backward, diagnostics only
+    if cfg.surrogate_mode in ("hard", "dust"):
+        # j is inert in the hard backward (diagnostics only; under dust it is
+        # the width of the perturbed pool, which never enters the gate's
+        # backward)
+        return float(k)
     if cfg.surrogate_mode == "laplace_policy":
         # The decoder's input is a sampled hard support of exactly K values,
         # so its value Jacobian has K active coordinates; the gate's own
@@ -242,6 +245,13 @@ class SparseTopKBottleneck(nn.Module):
         # from model.bottleneck_decoder_scale.  1.0 is the identity and takes
         # the untouched forward path below.
         self.decoder_scale = 1.0
+        # dust (wsparse.bottleneck.dust): while a DUST clean forward runs, a
+        # list that receives one record per gate call (the encoder input and
+        # the gate input); None otherwise, so the forward is unchanged.  The
+        # controller sets ``_site`` to (block index, placement) at install.
+        # Plain attributes, not state.
+        self._dust_capture = None
+        self._site = None
 
     def _adopt_projections(self, source: "SparseTopKBottleneck", bias: bool) -> None:
         """Take ``source``'s projections as this module's own (share_projections).
@@ -329,11 +339,22 @@ class SparseTopKBottleneck(nn.Module):
         bias = self.out_proj.bias
         return out if bias is None else out + bias
 
+    def _dust_record(self, enc_input: torch.Tensor, z: torch.Tensor,
+                     scale: float = 1.0) -> None:
+        """Record one gate call for a DUST step: ``z`` is the gate input, the
+        pre-activation the DUST noise perturbs, and ``enc_input`` the input of
+        ``in_proj`` with ``d z / d(W enc_input) = scale`` (the code-residual
+        update enters the carried code times ``code_residual_scale``)."""
+        if self._dust_capture is not None:
+            from .dust import DustRecord
+            self._dust_capture.append(DustRecord(self, enc_input, z, float(scale)))
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         value = self.in_proj(x)
         if self.gated:
             y = self.decode(self.gate(self.score_proj(x), value))
         else:
+            self._dust_record(x, value)
             y = self.decode(self.gate(value))
         # Identity unless post_norm was requested; Identity holds no parameters
         # or buffers, so state_dicts are unchanged when the option is off.

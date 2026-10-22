@@ -442,13 +442,19 @@ class TransformerLM(nn.Module):
             try:
                 if code is None:
                     # block 0: the installed stream bottleneck, up to its gate
-                    code = bot.gate(bot.in_proj(block.body(x)))
+                    h = block.body(x)
+                    z = bot.in_proj(h)
+                    bot._dust_record(h, z)
+                    code = bot.gate(z)
                 else:
-                    update = alpha * bot.in_proj(block.branches(x))
+                    delta = block.branches(x)
+                    update = alpha * bot.in_proj(delta)
                     if getattr(bot.gate, "rblapsum_surrogate_scope", "pool").startswith("update"):
                         code = self._split_surrogate(bot.gate, code, update)
                     else:
-                        code = bot.gate(code + update)
+                        z = code + update
+                        bot._dust_record(delta, z, alpha)
+                        code = bot.gate(z)
             finally:
                 if chain is not None:
                     bot.gate._carry_chain, bot.gate._carry_index = None, -1
@@ -457,6 +463,59 @@ class TransformerLM(nn.Module):
                 code, read = split_carry_read(code, chain, index)
             x = bot.post_norm(bot.decode(read))
         return x
+
+    def forward_from_gate(self, block_index: int, placement: str, z: torch.Tensor,
+                          head_dtype: Optional[torch.dtype] = None) -> torch.Tensor:
+        """Logits from the gate input ``z`` of the bottleneck at ``placement``
+        in block ``block_index``: the forward from that gate on (DUST tails).
+
+        Mirrors ``forward`` / ``_code_residual_stack`` from the gate call
+        onward, so with the clean ``z`` it reproduces the clean logits.  The
+        stream placements only: ``residual_out`` continues with the decoder
+        (and post-norm) and the later blocks, ``residual`` with the rest of
+        its own block first.  Under ``code_residual`` the gate's output is the
+        carried code and the later blocks add their encoded updates to it, as
+        in the stack.  ``head_dtype`` runs the final norm and the unembedding
+        outside autocast in that dtype (float32 for the DUST rewards, whose
+        per-token loss differences are of the order of the noise; ``None``
+        keeps the ambient precision).  No carry chain, no capture, no
+        surrogate: meant for ``no_grad`` in ``eval()`` mode.
+        """
+        from .bottleneck.controller import _PLACEMENT_ATTR
+        if placement not in ("residual", "residual_out"):
+            raise ValueError(f"forward_from_gate supports the stream placements only, "
+                             f"got {placement!r}")
+        blocks = self.blocks
+        block = blocks[block_index]
+        bot = getattr(block, _PLACEMENT_ATTR[placement])
+        if getattr(self, "code_residual", False):
+            if placement != "residual_out":
+                raise ValueError("code_residual bottlenecks sit at residual_out")
+            alpha = float(getattr(self, "code_residual_scale", 1.0))
+            code = bot.gate(z)
+            x = bot.post_norm(bot.decode(code))
+            for later in blocks[block_index + 1:]:
+                nxt = later.residual_out_bottleneck
+                update = alpha * nxt.in_proj(later.branches(x))
+                code = nxt.gate(code + update)
+                x = nxt.post_norm(nxt.decode(code))
+        else:
+            x = bot.post_norm(bot.decode(bot.gate(z)))
+            if placement == "residual":
+                x = block.body(x)
+                x = block.residual_out_bottleneck(x)
+            for later in blocks[block_index + 1:]:
+                x = later(x)
+        if head_dtype is None:
+            x = self.norm_f(x)
+            logits = self.lm_head(x)
+        else:
+            with torch.autocast(device_type=x.device.type, enabled=False):
+                x = self.norm_f(x.to(head_dtype))
+                logits = F.linear(x, self.lm_head.weight.to(head_dtype))
+        if self.logit_mult != 1.0:
+            logits = logits * self.logit_mult
+        return logits
 
     @staticmethod
     def _split_surrogate(gate: nn.Module, carry: torch.Tensor,

@@ -1,0 +1,42 @@
+# Hard Top-K activation bottleneck trained by alternating ordinary hard-mask
+# steps with zeroth-order DUST steps (surrogate_mode: dust;
+# wsparse.bottleneck.dust, docs/dust-topk.md).  Architecture, data, optimizer
+# and the gate's forward are bn_hard.yaml's.  Every other optimizer step is a
+# DUST step: per micro-batch, each of the 10 bottlenecks perturbs the clean
+# Top(K+J) pool of every token's signed pre-activation with N(0, sigma^2)
+# noise in 4 draws (population 40), reruns the forward from that gate on,
+# and the reward-weighted noise estimates dL/dz there.
+#   dust_target: encoder   the estimate updates the perturbed bottleneck's
+#                          encoder only (bn_dust_backprop.yaml backpropagates
+#                          it to everything before the gate input instead)
+# sigma, the population and the schedule are starting values, not tuned ones:
+# sigma is in pre-activation units (the clean |z| of the pool is O(1) under
+# this init), gamma = 0 credits a token's noise with its own loss only.
+_base_:
+  - model/mid80.yaml
+  - train/default.yaml
+
+train:
+  run_name: bn_dust
+  compile: false
+
+activation_bottleneck:
+  enabled: true
+  layers: all
+  placement: residual_out
+  n_features: 1536
+  k: 32
+  j: 480
+  selection_mode: abs_topk
+  surrogate_mode: dust
+  dust_population: 40
+  dust_sigma: 0.1
+  dust_sigma_mode: absolute
+  dust_gamma: 0.0
+  dust_schedule: [1, 1]
+  dust_target: encoder
+  dust_chunk_draws: 1
+  # the cosine between the DUST encoder gradient and the hard-backward one,
+  # every 50 DUST steps (one extra backward per micro-batch when due)
+  dust_cosine_every_steps: 50
+  init_mode: sqrt_k_selection_corrected

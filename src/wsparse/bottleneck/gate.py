@@ -108,10 +108,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
                 f"unknown selection_mode: {selection_mode!r} (topk | abs_topk | gated_topk)"
             )
         if surrogate_mode not in ("lapsum", "rblapsum", "rblapsum_sf", "hard", "soft_ste",
-                                  "laplace_policy"):
+                                  "laplace_policy", "dust"):
             raise ValueError(
                 f"unknown surrogate_mode: {surrogate_mode!r} "
-                "(lapsum | rblapsum | rblapsum_sf | hard | soft_ste | laplace_policy)"
+                "(lapsum | rblapsum | rblapsum_sf | hard | soft_ste | laplace_policy | dust)"
             )
         if temperature <= 0:
             raise ValueError("temperature must be positive")
@@ -337,7 +337,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
         return a.abs() if self.selection_mode == "abs_topk" else a
 
     def surrogate_active(self) -> bool:
-        if self.surrogate_mode == "hard":
+        # dust: the gate IS the hard gate; the DUST estimate is formed outside
+        # it (wsparse.bottleneck.dust) and never enters its backward
+        if self.surrogate_mode in ("hard", "dust"):
             return False
         if not torch.is_grad_enabled():
             return False  # the surrogate term is identically zero without grad
@@ -940,9 +942,10 @@ def validate_gate_shapes(
     the support) and ``k = n_features`` (every feature active -- a *trivial*
     bottleneck isolating the projection pair's parameter cost).  laplace_policy
     shares the hard rules: with no possible exchange it bypasses noise and
-    density and IS the hard gate.
+    density and IS the hard gate.  So does dust, whose gate is the hard gate
+    (``j = 0`` perturbs the active members only).
     """
-    if surrogate_mode in ("hard", "laplace_policy"):
+    if surrogate_mode in ("hard", "laplace_policy", "dust"):
         if not 1 <= k <= n_features:
             raise ValueError(
                 f"require 1 <= k <= n_features, got k={k}, n_features={n_features}"

@@ -1,0 +1,13 @@
+# bn_dust.yaml with dust_target: backprop -- the estimated output error at
+# each gate input is backpropagated through the clean graph, so every
+# parameter before it (earlier blocks, earlier bottlenecks through their hard
+# masks, the embedding) receives the DUST gradient; the perturbed
+# bottleneck's own decoder, the final norm and the unembedding do not.
+_base_:
+  - bn_dust.yaml
+
+train:
+  run_name: bn_dust_backprop
+
+activation_bottleneck:
+  dust_target: backprop
