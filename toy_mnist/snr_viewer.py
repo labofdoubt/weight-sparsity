@@ -105,19 +105,28 @@ def main():
     fig.patch.set_facecolor(SURFACE)
     if xscale == "log":
         bins = np.logspace(np.log10(lo), np.log10(hi), 60)
-        ax.hist(np.clip(vals[vals > 0], lo, hi), bins=bins, color=BLUE, edgecolor=SURFACE,
-                linewidth=0.6)
-        ax.set_xscale("log")
-        ax.set_xlabel("SNR = sqrt(P) |mu| / nu  (log axis, fixed range over the slider)",
-                      color=INK2, fontsize=9)
+        centers = np.sqrt(bins[:-1] * bins[1:])
     else:
         bins = np.linspace(0.0, hi, 60)
-        ax.hist(np.clip(vals, 0.0, hi), bins=bins, color=BLUE, edgecolor=SURFACE, linewidth=0.6)
-        ax.set_xlim(0.0, hi)
-        ax.set_xlabel("SNR = sqrt(P) |mu| / nu  (linear axis, fixed range over the slider)",
-                      color=INK2, fontsize=9)
+        centers = 0.5 * (bins[:-1] + bins[1:])
+    ax.hist(np.clip(vals, bins[0], hi), bins=bins, color=BLUE, edgecolor=SURFACE, linewidth=0.6,
+            label="measured")
+    # pure-noise reference: a coordinate without signal has sqrt(P) |mu| / nu
+    # distributed as |N(0, 1)| (median 0.674), independent of P (as in
+    # analysis/dust_snr_viewer.py)
+    ref = np.abs(np.random.default_rng(0).standard_normal(200_000))
+    counts, _ = np.histogram(np.clip(ref, bins[0], hi), bins=bins)
+    ax.plot(centers, counts * (vals.size / ref.size), color=MUTED, lw=1.3, ls="--",
+            label="pure-noise reference |N(0,1)|")
     ax.axvline(1.0, color=MUTED, linewidth=1.0)
+    ax.legend(fontsize=7, frameon=False, loc="upper right")
+    if xscale == "log":
+        ax.set_xscale("log")
+    else:
+        ax.set_xlim(0.0, hi)
     style(ax)
+    ax.set_xlabel(f"SNR = sqrt(P) |mu| / nu  ({xscale} axis, fixed range over the slider; "
+                  "the line marks 1)", color=INK2, fontsize=9)
     ax.set_ylabel("coordinates", color=INK2, fontsize=9)
     ax.set_title(f"K = {k}, P = {pop}, {labels[i]}: distribution over {vals.size} coordinates",
                  color=INK, fontsize=10, loc="left")
@@ -143,7 +152,11 @@ def main():
     s1, s2, s3, s4, s5 = st.columns(5)
     s1.metric("median SNR", f"{np.median(vals):.3f}" if vals.size else "nan")
     s2.metric("mean SNR", f"{vals.mean():.3f}" if vals.size else "nan")
-    s3.metric("coordinates with SNR > 1", f"{int((vals > 1).sum())} / {vals.size}")
+    n_above = int((vals > 1).sum())
+    s3.metric("coordinates with SNR > 1", f"{n_above} / {vals.size}",
+              delta=f"{n_above - 0.3173 * vals.size:+.0f} vs pure noise",
+              help="For a coordinate without signal, SNR > 1 with probability 0.317; "
+                   "the delta is the excess over that expectation.")
     s4.metric("clean CE of the batch", f"{float(d['ce_clean'][i]):.4f}")
     s5.metric("perturbed - clean CE", f"{float(d['ce_perturbed'][i] - d['ce_clean'][i]):+.4f}")
     if (~finite).sum():
