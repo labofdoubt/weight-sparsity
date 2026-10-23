@@ -67,6 +67,13 @@ def load_snr(path: str):
         return z["snr"].astype(np.float32), z["snr_vec"], z["valid"], json.loads(str(z["meta"]))
 
 
+@st.cache_data(show_spinner=False, max_entries=24)
+def load_array(path: str, key: str):
+    """``mu_abs`` or ``nu`` of a probe file, float32."""
+    with np.load(path, allow_pickle=False) as z:
+        return z[key].astype(np.float32)
+
+
 @st.cache_data(show_spinner=False, max_entries=64)
 def summary_over_tokens(path: str, layer: int, sample: int):
     """Per checkpoint: median and quartiles over (valid tokens x pool coordinates)
@@ -120,9 +127,16 @@ def label(n: int) -> str:
     return f"step {n} (after {n // 2} DUST steps and {n - n // 2} hard steps)"
 
 
-def histogram_and_metrics(container, row, range_values, title, logx, nbins):
-    """The per-coordinate histogram with the pure-noise reference, and the
-    summary metrics; ``range_values`` fixes the axis range."""
+QUANTITIES = {"SNR_K": ("snr", "SNR_K = sqrt(K) |mu| / nu per coordinate"),
+              "|mu| (population mean of the estimate)": ("mu_abs", "|mu| per coordinate"),
+              "nu (per-draw standard deviation)": ("nu", "nu per coordinate")}
+
+
+def histogram_and_metrics(container, row, range_values, title, logx, nbins, quantity="SNR_K"):
+    """The per-coordinate histogram (with the pure-noise reference for the
+    SNR), and the summary metrics; ``range_values`` fixes the axis range."""
+    key, xlabel = QUANTITIES[quantity]
+    is_snr = key == "snr"
     vals = row[row > 0]
     pos = range_values[range_values > 0]
     lo, hi = (float(np.percentile(pos, 0.1)), float(pos.max())) if pos.size else (1e-3, 1e1)
@@ -138,33 +152,39 @@ def histogram_and_metrics(container, row, range_values, title, logx, nbins):
         centers = 0.5 * (bins[:-1] + bins[1:])
     ax.hist(np.clip(vals, bins[0], hi), bins=bins, color=BLUE, edgecolor=SURFACE,
             linewidth=0.6 if nbins <= 100 else 0.0, label="measured")
-    # pure-noise reference: a coordinate without signal has sqrt(K) |mu| / nu
-    # distributed as |N(0, 1)| (median 0.674), independent of K
-    ref = np.abs(np.random.default_rng(0).standard_normal(200_000))
-    counts, _ = np.histogram(np.clip(ref, bins[0], hi), bins=bins)
-    ax.plot(centers, counts * (vals.size / ref.size), color=ORANGE, lw=1.6, ls="--",
-            label="pure-noise reference |N(0,1)|")
-    ax.axvline(1.0, color=MUTED, linewidth=1.0)
-    ax.legend(fontsize=8, frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.26), ncol=2)
+    if is_snr:
+        # pure-noise reference: a coordinate without signal has sqrt(K) |mu| / nu
+        # distributed as |N(0, 1)| (median 0.674), independent of K
+        ref = np.abs(np.random.default_rng(0).standard_normal(200_000))
+        counts, _ = np.histogram(np.clip(ref, bins[0], hi), bins=bins)
+        ax.plot(centers, counts * (vals.size / ref.size), color=ORANGE, lw=1.6, ls="--",
+                label="pure-noise reference |N(0,1)|")
+        ax.axvline(1.0, color=MUTED, linewidth=1.0)
+        ax.legend(fontsize=8, frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.26),
+                  ncol=2)
     if logx:
         ax.set_xscale("log")
     style(ax)
-    ax.set_xlabel("SNR_K = sqrt(K) |mu| / nu per coordinate  "
-                  f"({'log' if logx else 'linear'} axis; range fixed over the sliders; "
-                  "the line marks 1)", color=INK2, fontsize=9)
+    ax.set_xlabel(f"{xlabel}  ({'log' if logx else 'linear'} axis; range fixed over the sliders"
+                  f"{'; the line marks 1' if is_snr else ''})", color=INK2, fontsize=9)
     ax.set_ylabel("coordinates", color=INK2, fontsize=9)
     ax.set_title(title, color=INK, fontsize=10, loc="left")
     fig.tight_layout()
     left.pyplot(fig, use_container_width=True)
     plt.close(fig)
     m1, m2, m3 = container.columns(3)
-    m1.metric("median SNR_K", f"{np.median(vals):.3f}" if vals.size else "nan")
-    m2.metric("mean SNR_K", f"{vals.mean():.3f}" if vals.size else "nan")
-    n_above = int((vals > 1).sum())
-    m3.metric("coordinates with SNR_K > 1", f"{n_above} / {vals.size}",
-              delta=f"{n_above - 0.3173 * vals.size:+.0f} vs pure noise",
-              help="For a coordinate without signal, SNR_K > 1 with probability 0.317; "
-                   "the delta is the excess over that expectation.")
+    name = quantity.split(" ")[0]
+    fmt = "{:.3f}" if is_snr else "{:.3e}"
+    m1.metric(f"median {name}", fmt.format(np.median(vals)) if vals.size else "nan")
+    m2.metric(f"mean {name}", fmt.format(vals.mean()) if vals.size else "nan")
+    if is_snr:
+        n_above = int((vals > 1).sum())
+        m3.metric("coordinates with SNR_K > 1", f"{n_above} / {vals.size}",
+                  delta=f"{n_above - 0.3173 * vals.size:+.0f} vs pure noise",
+                  help="For a coordinate without signal, SNR_K > 1 with probability 0.317; "
+                       "the delta is the excess over that expectation.")
+    else:
+        m3.metric(f"max {name}", fmt.format(vals.max()) if vals.size else "nan")
     return vals
 
 
@@ -264,19 +284,21 @@ def tab_single(args):
         return
     meta = metas[key]
     T, S = int(meta["seq_len"]), int(meta["sequences"])
-    s3, s4, s5, s6 = st.columns([2, 1, 1, 1])
+    s3, s4, s5, s6, s7 = st.columns([2, 1, 2, 1, 1])
     tok = s3.slider("token position", 0, T - 1, T // 2, key="sg_tok")
     sample = s4.slider("sample", 0, S - 1, 0, key="sg_sample")
-    logx = s5.toggle("log x-axis", value=True, key="sg_logx")
-    nbins = s6.slider("bins", 20, 400, 60, step=10, key="sg_bins")
+    quantity = s5.selectbox("histogram of", list(QUANTITIES), index=0, key="sg_quantity")
+    logx = s6.toggle("log x-axis", value=True, key="sg_logx")
+    nbins = s7.slider("bins", 20, 400, 60, step=10, key="sg_bins")
     st.caption(f"model {meta['run']} at step {step} (trained at population {pop}, sigma "
                f"{meta['train_sigma']:g}); this probe perturbs block {block} only, with "
                f"{draws} draws at sigma {sigma:g}; pool {meta['pool']} of {meta['n_features']} "
                f"features.")
     snr, snr_vec, valid, _ = load_snr(files[key])
+    arr = snr if QUANTITIES[quantity][0] == "snr" else load_array(files[key], QUANTITIES[quantity][0])
     title = (f"block {block}, sigma {sigma:g}, K = {draws} draws, step {step}, token {tok}, "
-             f"sample {sample}: {int((snr[sample, 0, tok] > 0).sum())} coordinates")
-    histogram_and_metrics(st, snr[sample, 0, tok], snr, title, logx, nbins)
+             f"sample {sample}: {int((arr[sample, 0, tok] > 0).sum())} coordinates")
+    histogram_and_metrics(st, arr[sample, 0, tok], arr, title, logx, nbins, quantity)
     m4, m5 = st.columns(2)
     m4.metric("vector SNR_K of this token", f"{float(snr_vec[sample, 0, tok]):.3f}")
     m5.metric("token valid", "yes" if bool(valid[sample, tok]) else "no (ignored target)")
