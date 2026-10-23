@@ -233,9 +233,13 @@ def main() -> None:
                 "sequences": S, "seq_len": T, "val_offset": 0, "seed": args.seed,
                 "clean_ce_tokens_mean": float(ell_clean[valid].mean()),
                 "layer_labels": [lab for lab, _ in layers], "checkpoint": os.path.basename(path)}
-        np.savez_compressed(out_path, snr=snr, mu_abs=mu_abs, nu=nu, snr_vec=snr_vec,
+        # written to a temporary name and renamed: the viewer and the Drive
+        # watcher must never see a half-written file
+        tmp_path = out_path + ".tmp.npz"
+        np.savez_compressed(tmp_path, snr=snr, mu_abs=mu_abs, nu=nu, snr_vec=snr_vec,
                             valid=valid.cpu().numpy(), tokens=x.cpu().numpy(),
                             meta=json.dumps(meta))
+        os.replace(tmp_path, out_path)
         print(f"[probe] wrote {out_path} ({os.path.getsize(out_path) / 1e6:.0f} MB) in "
               f"{time.time() - t0:.0f} s", flush=True)
         del model, ctl, records

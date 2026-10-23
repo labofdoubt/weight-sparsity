@@ -137,8 +137,17 @@ def main():
     fig, ax = plt.subplots(figsize=(9, 3.6), dpi=150)
     fig.patch.set_facecolor(SURFACE)
     bins = np.logspace(np.log10(lo), np.log10(hi), 60)
-    ax.hist(np.clip(vals, lo, hi), bins=bins, color=BLUE, edgecolor=SURFACE, linewidth=0.6)
+    ax.hist(np.clip(vals, lo, hi), bins=bins, color=BLUE, edgecolor=SURFACE, linewidth=0.6,
+            label="measured")
+    # pure-noise reference: a coordinate without signal has sqrt(K) |mu| / nu
+    # distributed as |N(0, 1)| (median 0.674), independent of K
+    ref = np.abs(np.random.default_rng(0).standard_normal(200_000))
+    counts, _ = np.histogram(np.clip(ref, lo, hi), bins=bins)
+    centers = np.sqrt(bins[:-1] * bins[1:])
+    ax.plot(centers, counts * (vals.size / ref.size), color=MUTED, lw=1.3, ls="--",
+            label="pure-noise reference |N(0,1)|")
     ax.axvline(1.0, color=MUTED, linewidth=1.0)
+    ax.legend(fontsize=8, frameon=False, loc="upper right")
     ax.set_xscale("log")
     style(ax)
     ax.set_xlabel("SNR_K = sqrt(K) |mu| / nu per coordinate  (log axis; range fixed over the sliders; "
@@ -153,7 +162,8 @@ def main():
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("median SNR_K", f"{np.median(vals):.3f}" if vals.size else "nan")
     m2.metric("mean SNR_K", f"{vals.mean():.3f}" if vals.size else "nan")
-    m3.metric("coordinates with SNR_K > 1", f"{int((vals > 1).sum())} / {vals.size}")
+    m3.metric("coordinates with SNR_K > 1", f"{int((vals > 1).sum())} / {vals.size} "
+              f"(noise: {int(0.3173 * vals.size)})")
     m4.metric("vector SNR_K of this token", f"{float(snr_vec[sample, layer, tok]):.3f}")
     m5.metric("token valid", "yes" if bool(valid[sample, tok]) else "no (ignored target)")
 
