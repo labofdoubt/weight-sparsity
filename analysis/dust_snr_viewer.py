@@ -136,8 +136,8 @@ def main():
     lo, hi = (float(np.percentile(pos, 0.1)), float(pos.max())) if pos.size else (1e-3, 1e1)
     lo, hi = max(lo, 1e-4), max(hi, lo * 10)
 
-    # the toy_mnist viewer's layout: the histogram at 7 x 3.6 in a 60%-width
-    # column, the over-checkpoints plot at 11 x 2.8 across the page
+    # the histogram at 7 x 3.6 and the over-checkpoints plot at 7 x 2.8, both in
+    # a 60%-width column (the toy_mnist viewer's histogram placement)
     left, _ = st.columns([3, 2])
     fig, ax = plt.subplots(figsize=(7, 3.6), dpi=200)
     fig.patch.set_facecolor(SURFACE)
@@ -182,7 +182,8 @@ def main():
     m4.metric("vector SNR_K of this token", f"{float(snr_vec[sample, layer, tok]):.3f}")
     m5.metric("token valid", "yes" if bool(valid[sample, tok]) else "no (ignored target)")
 
-    fig, ax = plt.subplots(figsize=(11, 2.8), dpi=200)
+    left2, _ = st.columns([3, 2])  # the same 60% column as the histogram
+    fig, ax = plt.subplots(figsize=(7, 2.8), dpi=200)
     fig.patch.set_facecolor(SURFACE)
     rows = [summary_over_tokens(files[n], layer, sample) for n in steps]
     med = np.array([r[0] for r in rows]); q25 = np.array([r[1] for r in rows])
@@ -207,7 +208,7 @@ def main():
                  fontsize=10, loc="left")
     ax.legend(fontsize=8, frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.32), ncol=2)
     fig.tight_layout()
-    st.pyplot(fig, use_container_width=True)
+    left2.pyplot(fig, use_container_width=True)
     plt.close(fig)
     st.caption(f"{S} validation windows of {T} tokens (offset {meta['val_offset']}), noise seed "
                f"{meta['seed']}; run {meta['run']}; source {args.root}")
