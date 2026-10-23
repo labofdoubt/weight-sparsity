@@ -90,6 +90,10 @@ def main():
     labels = [label(int(n)) for n in steps]
     i = st.slider("checkpoint", 0, len(steps) - 1, 0, format="%d", key="ckpt_choice")
     i = min(i, len(steps) - 1)
+    n_bins = st.slider("histogram bins", 20, 400, 60, step=10, key="bins_choice",
+                       help="the number of equal-width bins (in log or linear SNR, per the "
+                            "switch) over the fixed range; the pure-noise reference uses the "
+                            "same bins")
     st.caption(f"checkpoint {i}: **{labels[i]}** — completed optimizer steps N = {int(steps[i])}; "
                f"an odd N is the state the DUST step N + 1 acts on.")
     snr_all = d[f"snr_{key}"]
@@ -104,10 +108,10 @@ def main():
     fig, ax = plt.subplots(figsize=(7, 3.6), dpi=150)
     fig.patch.set_facecolor(SURFACE)
     if xscale == "log":
-        bins = np.logspace(np.log10(lo), np.log10(hi), 60)
+        bins = np.logspace(np.log10(lo), np.log10(hi), n_bins + 1)
         centers = np.sqrt(bins[:-1] * bins[1:])
     else:
-        bins = np.linspace(0.0, hi, 60)
+        bins = np.linspace(0.0, hi, n_bins + 1)
         centers = 0.5 * (bins[:-1] + bins[1:])
     ax.hist(np.clip(vals, bins[0], hi), bins=bins, color=BLUE, edgecolor=SURFACE, linewidth=0.6,
             label="measured")
