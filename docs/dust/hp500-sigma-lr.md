@@ -76,9 +76,32 @@ sigma and multiplier.
 
 ## Sigma sweep at population 1024
 
-Pending: the eight runs (`dust_lr_scale` 1, population 1024 = 128 draws per
-bottleneck, both targets, the four sigma values, otherwise the grid's settings)
-are training on new_york; their two figures and table will be added here.
+`dust_lr_scale` 1, population 1024 (128 draws per bottleneck, eight times the
+grid's), both targets, the four sigma values, otherwise the grid's settings;
+all eight runs on new_york.
+
+![population 1024, encoder](figures/hp500_p1024_val_encoder.png)
+
+![population 1024, backprop](figures/hp500_p1024_val_backprop.png)
+
+Validation CE at step 500 (population 128 at `dust_lr_scale` 1 in parentheses):
+
+| dust_target \ sigma | 0.03 | 0.1 | 0.3 | 0.9 |
+|---|---|---|---|---|
+| encoder | 3.0117 (3.0220) | 2.9975 (3.0096) | 2.9923 (3.0101) | **2.9790** (2.9957) |
+| backprop | 3.0896 (3.1246) | 3.0930 (3.1169) | 3.2166 (3.0794) | 3.7286 (3.1646) |
+| hard Top-32 baseline (no DUST steps, same settings) | 2.6875 | | | |
+| hard Top-32, the original madrid run (clipping 1.0) | 2.6846 | | | |
+
+Eight times the population lowers the encoder arm's CE at step 500 by 0.010
+to 0.018 nats at every sigma, and the four curves are indistinguishable until
+the last 100 steps, where they order by sigma with the largest best. The
+backprop arm improves by 0.02 to 0.04 at sigma 0.03 and 0.1 and worsens at
+0.3 and 0.9, where the curves turn upward after step 350 (sigma 0.9 ends at
+3.73). The gap to the baseline, 0.29 nats in the encoder arm at best, is
+therefore not a matter of the estimate's variance at this population: the
+estimate's variance is eight times smaller and the gap moved by a few
+hundredths.
 
 ## Runs on Drive
 
@@ -93,6 +116,12 @@ Encoder arm, new_york (`gdrive:weight-sparsity/runs_new_york/`):
 `ny_hp500_enc_sg0p9_lr100`, `ny_hp500_enc_sg0p9_lr300`.
 
 Baseline, new_york: `gdrive:weight-sparsity/runs_new_york/ny_hp500_hard_k32`.
+
+Population-1024 sweep, new_york (`gdrive:weight-sparsity/runs_new_york/`):
+`ny_hp500_enc_p1024_sg0p03_lr1`, `ny_hp500_enc_p1024_sg0p1_lr1`,
+`ny_hp500_enc_p1024_sg0p3_lr1`, `ny_hp500_enc_p1024_sg0p9_lr1`,
+`ny_hp500_bp_p1024_sg0p03_lr1`, `ny_hp500_bp_p1024_sg0p1_lr1`,
+`ny_hp500_bp_p1024_sg0p3_lr1`, `ny_hp500_bp_p1024_sg0p9_lr1`.
 
 Backprop arm, georgia (`gdrive:weight-sparsity/runs_georgia/`):
 `ga_hp500_bp_sg0p03_lr1`, `ga_hp500_bp_sg0p03_lr10`, `ga_hp500_bp_sg0p03_lr30`,

@@ -146,10 +146,48 @@ target at every $\sigma$ and multiplier.
 \section{Sigma sweep at population 1024}
 % ============================================================
 
-Pending: the eight runs (\code{dust\_lr\_scale} 1, population 1024 = 128
-draws per bottleneck, both targets, the four $\sigma$ values, otherwise the
-grid's settings) are training on new\_york; their two figures and table will
-be added here.
+\code{dust\_lr\_scale} 1, population 1024 (128 draws per bottleneck, eight
+times the grid's), both targets, the four $\sigma$ values, otherwise the
+grid's settings; all eight runs on new\_york.
+
+\begin{figure}[H]\centering
+\includegraphics[width=.72\textwidth]{figures/hp500_p1024_val_encoder.png}
+\caption{Population 1024, \code{dust\_target = encoder}: validation CE over
+the first 500 steps, one curve per $\sigma$ (one hue, light to dark with
+$\sigma$); dashed black, the hard Top-32 baseline.}
+\end{figure}
+
+\begin{figure}[H]\centering
+\includegraphics[width=.72\textwidth]{figures/hp500_p1024_val_backprop.png}
+\caption{Population 1024, \code{dust\_target = backprop}: the same layout.}
+\end{figure}
+
+Validation CE at step 500 (population 128 at \code{dust\_lr\_scale} 1 in
+parentheses):
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+\code{dust\_target} $\backslash\, \sigma$ & $0.03$ & $0.1$ & $0.3$ & $0.9$ \\
+\midrule
+encoder  & 3.0117 (3.0220) & 2.9975 (3.0096) & 2.9923 (3.0101) & \bst{2.9790} (2.9957) \\
+backprop & 3.0896 (3.1246) & 3.0930 (3.1169) & 3.2166 (3.0794) & 3.7286 (3.1646) \\
+\midrule
+hard Top-32 baseline (no DUST steps, same settings) & 2.6875 & & & \\
+hard Top-32, the original madrid run (clipping 1.0) & 2.6846 & & & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Eight times the population lowers the encoder arm's CE at step 500 by 0.010
+to 0.018 nats at every $\sigma$, and the four curves are indistinguishable
+until the last 100 steps, where they order by $\sigma$ with the largest best.
+The backprop arm improves by 0.02 to 0.04 at $\sigma = 0.03$ and $0.1$ and
+worsens at $0.3$ and $0.9$, where the curves turn upward after step 350
+($\sigma = 0.9$ ends at 3.73). The gap to the baseline, 0.29 nats in the
+encoder arm at best, is therefore not a matter of the estimate's variance at
+this population: the estimate's variance is eight times smaller and the gap
+moved by a few hundredths.
 
 % ============================================================
 \section{Without MD decoupling}
@@ -173,6 +211,8 @@ right) of the sweep against the hard run without decoupling, with its table.
   for \path{<s>} $\in$ \{\path{0p03}, \path{0p1}, \path{0p3}, \path{0p9}\} and
   \path{<l>} $\in$ \{1, 10, 30, 100, 300\}, twenty runs.
 \item Baseline, new\_york: \path{gdrive:weight-sparsity/runs_new_york/ny_hp500_hard_k32}.
+\item Population-1024 sweep, new\_york: \path{gdrive:weight-sparsity/runs_new_york/ny_hp500_<a>_p1024_sg<s>_lr1}
+  for \path{<a>} $\in$ \{\path{enc}, \path{bp}\}, eight runs.
 \item Backprop arm, georgia: \path{gdrive:weight-sparsity/runs_georgia/ga_hp500_bp_sg<s>_lr<l>},
   the same twenty cells.
 \item Original hard Top-32 run (reference value only):
