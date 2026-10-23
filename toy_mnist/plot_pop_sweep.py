@@ -63,7 +63,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--ks", default="4,8,16,32")
+    ap.add_argument("--ks", default="2,4,8,16,32")
     ap.add_argument("--pops", default="128,512,2000,8000,32000")
     args = ap.parse_args()
     ks = [int(v) for v in args.ks.split(",")]
@@ -90,13 +90,16 @@ def main() -> None:
         if not series:
             continue
 
-        fig, (ax_ce, ax_acc) = plt.subplots(1, 2, figsize=(7.2, 2.9), dpi=200)
+        fig, (ax_ce, ax_vce, ax_acc) = plt.subplots(1, 3, figsize=(10.8, 2.9), dpi=200)
         fig.patch.set_facecolor(SURFACE)
         for label, color, ls, m, kind, p in series:
             steps = [r["step"] for r in m["train"]]
             ax_ce.plot(steps, [r["train/ce"] for r in m["train"]], color=color, ls=ls,
                        lw=1.5, label=label, solid_joinstyle="round", solid_capstyle="round")
             vsteps = [r["step"] for r in m["val"]]
+            ax_vce.plot(vsteps, [r["val/ce"] for r in m["val"]], color=color, ls=ls, lw=1.5,
+                        marker="o", ms=3.5, markeredgecolor=SURFACE, markeredgewidth=0.8,
+                        label=label)
             ax_acc.plot(vsteps, [r["val/acc"] for r in m["val"]], color=color, ls=ls, lw=1.5,
                         marker="o", ms=3.5, markeredgecolor=SURFACE, markeredgewidth=0.8,
                         label=label)
@@ -107,19 +110,23 @@ def main() -> None:
                 "train_ce": final_train["train/ce"], "val_ce": final_val["val/ce"],
                 "val_acc": final_val["val/acc"],
             }
-        ax_ce.set_yscale("log")
-        ces = [r["train/ce"] for _, _, _, m, _, _ in series for r in m["train"]]
-        ticks = [t for t in (0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0) if min(ces) * 0.9 <= t <= max(ces) * 1.1]
-        ax_ce.set_yticks(ticks)
-        ax_ce.set_yticklabels([f"{t:g}" for t in ticks])
-        ax_ce.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        for ax, key, part in ((ax_ce, "train/ce", "train"), (ax_vce, "val/ce", "val")):
+            ax.set_yscale("log")
+            ces = [r[key] for _, _, _, m, _, _ in series for r in m[part]]
+            ticks = [t for t in (0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 1.5, 2.0)
+                     if min(ces) * 0.8 <= t <= max(ces) * 1.2]
+            ax.set_yticks(ticks)
+            ax.set_yticklabels([f"{t:g}" for t in ticks])
+            ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
         style_axes(ax_ce, "step", "training CE (20-step windows)")
+        style_axes(ax_vce, "step", "test CE")
         style_axes(ax_acc, "step", "test accuracy")
         accs = [r["val/acc"] for _, _, _, m, _, _ in series for r in m["val"][1:]]
         if accs:
             lo = max(0.0, min(accs) - 0.01)
             ax_acc.set_ylim(lo, 1.0 if max(accs) > 0.97 else max(accs) + 0.01)
         ax_ce.set_title(f"K = {k}: training loss", color=INK, fontsize=10, loc="left")
+        ax_vce.set_title(f"K = {k}: test loss", color=INK, fontsize=10, loc="left")
         ax_acc.set_title(f"K = {k}: test accuracy", color=INK, fontsize=10, loc="left")
         # the legend sits in the loss panel's empty upper right, clear of every curve
         ax_ce.legend(fontsize=7, frameon=False, loc="upper right", labelcolor=INK2)

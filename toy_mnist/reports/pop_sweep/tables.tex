@@ -1,5 +1,23 @@
 \begin{table}[H]
 \centering
+\caption{$K = 2$: values at the final step (5000). Training CE is the mean of the last 20-step window of the clean hard forward; test CE and accuracy are the deterministic hard forward on the 10\,000 test images.}
+\label{tab:k2}
+\begin{tabular}{llrrr}
+\toprule
+    method & population & train CE & test CE & test acc (\%) \\
+\midrule
+    hard Top-$K$ & -- & 1.5802 & 1.5629 & 44.02 \\
+    DUST & 128 & 1.1730 & 1.1477 & 60.15 \\
+    DUST & 512 & 1.1223 & 1.1090 & 61.41 \\
+    DUST & 2,000 & 1.0802 & 1.1120 & 60.97 \\
+    DUST & 8,000 & 1.0509 & 1.0754 & 62.40 \\
+    DUST & 32,000 & 1.0792 & 1.0878 & 61.98 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
 \caption{$K = 4$: values at the final step (5000). Training CE is the mean of the last 20-step window of the clean hard forward; test CE and accuracy are the deterministic hard forward on the 10\,000 test images.}
 \label{tab:k4}
 \begin{tabular}{llrrr}

@@ -36,23 +36,28 @@ $$
 $$
 is applied to $g$ by the shared optimizer; nothing else moves on a DUST step,
 so a DUST run has 2500 hard steps for $W_1, W_2$ against 5000 for the hard
-run.  $K \in \{4, 8, 16, 32\}$, $P \in \{128, 512, 2000, 8000, 32000\}$.
+run.  $K \in \{2, 4, 8, 16, 32\}$, $P \in \{128, 512, 2000, 8000, 32000\}$.
 Training CE is the clean hard forward on both kinds of step; test CE and
 accuracy are the deterministic hard forward on the 10\,000 test images.
+The $K \ge 4$ runs were trained on one 4$\times$RTX~3090 box, the $K = 2$ runs
+on another of the same type with the identical training configuration (those
+runs also save the extra checkpoints of the SNR study).
 
 \section{Results}
 
-Figures~\ref{fig:k4} to \ref{fig:k32} and Tables~\ref{tab:k4} to
-\ref{tab:k32} hold the measurements; all 24 runs finished.
+Figures~\ref{fig:k2} to \ref{fig:k32} and Tables~\ref{tab:k2} to
+\ref{tab:k32} hold the measurements; all 30 runs finished.
 
-\textbf{Small $K$.}  At $K = 4$ and $K = 8$ every DUST run beats the hard
-backward by a wide margin: test accuracy 75.3--76.3\% against 67.1\% at
-$K = 4$ (test CE 0.69--0.72 against 0.96), and 86.9--88.0\% against 84.6\% at
-$K = 8$ (0.37--0.39 against 0.48).  The hard run's training CE is flat from
-about step 1500 while the DUST runs keep descending.  Under the hard
-backward $g_n$ moves only through samples that already select pixel $n$,
-so the support is fixed early; the DUST steps give every pixel a gradient
-and the support keeps changing.
+\textbf{Small $K$.}  At $K = 2$, $4$ and $8$ every DUST run beats the hard
+backward by a wide margin: test accuracy 60.2--62.4\% against 44.0\% at
+$K = 2$ (test CE 1.08--1.15 against 1.56), 75.3--76.3\% against 67.1\% at
+$K = 4$ (0.69--0.72 against 0.96), and 86.9--88.0\% against 84.6\% at
+$K = 8$ (0.37--0.39 against 0.48).  The gap widens as $K$ shrinks.  The hard
+run's training and test CE are flat from about step 1500 (at $K = 2$ its
+best test CE is at step 600) while the DUST runs keep descending.  Under the
+hard backward $g_n$ moves only through samples that already select pixel
+$n$, so the support is fixed early; the DUST steps give every pixel a
+gradient and the support keeps changing.
 
 \textbf{Large $K$.}  At $K = 16$ and $K = 32$ the test accuracies of all six
 runs lie within 0.5 points of each other (93.3--93.9\% and 95.8--96.3\%).
@@ -65,37 +70,44 @@ moving; this sweep does not separate them.
 
 \textbf{Population.}  The gain is already present at $P = 128$ (two tail
 forwards of batch 128 per DUST step) and grows little with $P$: from 128 to
-32\,000 the test accuracy moves by about one point at $K = 4$ and $K = 8$ and
-within noise at $K = 16$ and $K = 32$, and the training CE of the DUST runs
-drops by 0.01--0.03.  At this problem size the estimator's variance is not
+32\,000 the test accuracy moves by about two points at $K = 2$, one point at
+$K = 4$ and $K = 8$ and within noise at $K = 16$ and $K = 32$, and the
+training CE of the DUST runs drops by 0.01--0.1 (the most at $K = 2$).  At this problem size the estimator's variance is not
 what limits the method; the cost of a DUST step is linear in $P$ (0.8 s at
 $P = 32\,000$ against 12 ms at $P = 512$ on an RTX 3090).
 
 \begin{figure}[H]
 \centering
+\includegraphics[width=\linewidth]{curves_k2.png}
+\caption{$K = 2$: training CE (left, log scale, 20-step window means), test CE (middle, log scale, every 200 steps) and test accuracy (right) for the hard backward and DUST at five populations.}
+\label{fig:k2}
+\end{figure}
+
+\begin{figure}[H]
+\centering
 \includegraphics[width=\linewidth]{curves_k4.png}
-\caption{$K = 4$: training CE (left, log scale, 20-step window means) and test accuracy (right, every 200 steps) for the hard backward and DUST at five populations.}
+\caption{$K = 4$: training CE (left, log scale, 20-step window means), test CE (middle, log scale, every 200 steps) and test accuracy (right) for the hard backward and DUST at five populations.}
 \label{fig:k4}
 \end{figure}
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=\linewidth]{curves_k8.png}
-\caption{$K = 8$: training CE (left, log scale, 20-step window means) and test accuracy (right, every 200 steps) for the hard backward and DUST at five populations.}
+\caption{$K = 8$: training CE (left, log scale, 20-step window means), test CE (middle, log scale, every 200 steps) and test accuracy (right) for the hard backward and DUST at five populations.}
 \label{fig:k8}
 \end{figure}
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=\linewidth]{curves_k16.png}
-\caption{$K = 16$: training CE (left, log scale, 20-step window means) and test accuracy (right, every 200 steps) for the hard backward and DUST at five populations.}
+\caption{$K = 16$: training CE (left, log scale, 20-step window means), test CE (middle, log scale, every 200 steps) and test accuracy (right) for the hard backward and DUST at five populations.}
 \label{fig:k16}
 \end{figure}
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=\linewidth]{curves_k32.png}
-\caption{$K = 32$: training CE (left, log scale, 20-step window means) and test accuracy (right, every 200 steps) for the hard backward and DUST at five populations.}
+\caption{$K = 32$: training CE (left, log scale, 20-step window means), test CE (middle, log scale, every 200 steps) and test accuracy (right) for the hard backward and DUST at five populations.}
 \label{fig:k32}
 \end{figure}
 

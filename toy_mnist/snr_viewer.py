@@ -17,6 +17,7 @@ import sys
 
 import matplotlib
 matplotlib.use("Agg")
+import matplotlib.ticker  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.colors import LinearSegmentedColormap, LogNorm  # noqa: E402
 import numpy as np  # noqa: E402
@@ -73,8 +74,13 @@ def main():
     key = "u" if which.startswith("on u") else "g"
     d = runs[(k, pop)]
     steps = d["steps"]
-    labels = [f"step {int(n)} (init)" if n == 0 else f"step {int(n)} (DUST step {int(n) + 1})"
-              for n in steps]
+    def label(n: int) -> str:
+        if n == 0:
+            return "step 0 (initial state)"
+        if n % 2 == 1:
+            return f"step {n} (the state DUST step {n + 1} acts on)"
+        return f"step {n} (after {n} updates; a hard step follows)"
+    labels = [label(int(n)) for n in steps]
     i = st.slider("checkpoint", 0, len(steps) - 1, 0, format="%d")
     st.caption(f"checkpoint {i}: **{labels[i]}** — completed optimizer steps N = {int(steps[i])}; "
                f"an odd N is the state the DUST step N + 1 acts on.")
@@ -141,6 +147,8 @@ def main():
     ax.axhline(1.0, color=GRID, linewidth=1.0)
     ax.set_xscale("log")
     ax.set_yscale("log")
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}"))
+    ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     style(ax)
     ax.set_xlabel("completed optimizer steps (log; the initial state is drawn at 1)",
                   color=INK2, fontsize=9)

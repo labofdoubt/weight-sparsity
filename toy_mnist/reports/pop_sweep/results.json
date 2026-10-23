@@ -1,4 +1,58 @@
 {
+  "k2_hard": {
+    "k": 2,
+    "method": "hard",
+    "population": null,
+    "step": 5000,
+    "train_ce": 1.5802098035812377,
+    "val_ce": 1.5628855109214783,
+    "val_acc": 0.4402
+  },
+  "k2_p128": {
+    "k": 2,
+    "method": "dust",
+    "population": 128,
+    "step": 5000,
+    "train_ce": 1.1730113625526428,
+    "val_ce": 1.1477047741413116,
+    "val_acc": 0.6015
+  },
+  "k2_p512": {
+    "k": 2,
+    "method": "dust",
+    "population": 512,
+    "step": 5000,
+    "train_ce": 1.1223334491252899,
+    "val_ce": 1.1090157628059387,
+    "val_acc": 0.6141
+  },
+  "k2_p2000": {
+    "k": 2,
+    "method": "dust",
+    "population": 2000,
+    "step": 5000,
+    "train_ce": 1.0802355617284776,
+    "val_ce": 1.1120088875293732,
+    "val_acc": 0.6097
+  },
+  "k2_p8000": {
+    "k": 2,
+    "method": "dust",
+    "population": 8000,
+    "step": 5000,
+    "train_ce": 1.0508806973695755,
+    "val_ce": 1.0754325151443482,
+    "val_acc": 0.624
+  },
+  "k2_p32000": {
+    "k": 2,
+    "method": "dust",
+    "population": 32000,
+    "step": 5000,
+    "train_ce": 1.0791549026966094,
+    "val_ce": 1.087807732820511,
+    "val_acc": 0.6198
+  },
   "k4_hard": {
     "k": 4,
     "method": "hard",
