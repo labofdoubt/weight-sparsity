@@ -115,8 +115,9 @@ def main():
     meta = metas[(k, pop)]
     L, T, S = int(meta["layers"]), int(meta["seq_len"]), int(meta["sequences"])
     labels = [label(n) for n in steps]
-    s1, s2, s3, s4 = st.columns([3, 1, 2, 1])
+    s1, s2, s3, s4, s5 = st.columns([3, 1, 2, 1, 1])
     i = s1.slider("checkpoint", 0, len(steps) - 1, 0, key="ckpt_choice")
+    logx = s5.toggle("log x-axis", value=True, key="logx_choice")
     i = min(i, len(steps) - 1)
     layer = s2.slider("bottleneck", 0, L - 1, 0, key="layer_choice")
     tok = s3.slider("token position", 0, T - 1, T // 2, key="tok_choice")
@@ -138,21 +139,27 @@ def main():
     left, _ = st.columns([3, 2])
     fig, ax = plt.subplots(figsize=(6.4, 3.0), dpi=220)
     fig.patch.set_facecolor(SURFACE)
-    bins = np.logspace(np.log10(lo), np.log10(hi), 60)
-    ax.hist(np.clip(vals, lo, hi), bins=bins, color=BLUE, edgecolor=SURFACE, linewidth=0.6,
+    if logx:
+        bins = np.logspace(np.log10(lo), np.log10(hi), 60)
+        centers = np.sqrt(bins[:-1] * bins[1:])
+    else:
+        bins = np.linspace(0.0, hi, 60)
+        centers = 0.5 * (bins[:-1] + bins[1:])
+    ax.hist(np.clip(vals, bins[0], hi), bins=bins, color=BLUE, edgecolor=SURFACE, linewidth=0.6,
             label="measured")
     # pure-noise reference: a coordinate without signal has sqrt(K) |mu| / nu
     # distributed as |N(0, 1)| (median 0.674), independent of K
     ref = np.abs(np.random.default_rng(0).standard_normal(200_000))
-    counts, _ = np.histogram(np.clip(ref, lo, hi), bins=bins)
-    centers = np.sqrt(bins[:-1] * bins[1:])
+    counts, _ = np.histogram(np.clip(ref, bins[0], hi), bins=bins)
     ax.plot(centers, counts * (vals.size / ref.size), color=MUTED, lw=1.3, ls="--",
             label="pure-noise reference |N(0,1)|")
     ax.axvline(1.0, color=MUTED, linewidth=1.0)
     ax.legend(fontsize=7, frameon=False, loc="upper right")
-    ax.set_xscale("log")
+    if logx:
+        ax.set_xscale("log")
     style(ax)
-    ax.set_xlabel("SNR_K = sqrt(K) |mu| / nu per coordinate  (log axis; range fixed over the sliders; "
+    ax.set_xlabel("SNR_K = sqrt(K) |mu| / nu per coordinate  "
+                  f"({'log' if logx else 'linear'} axis; range fixed over the sliders; "
                   "the line marks 1)", color=INK2, fontsize=9)
     ax.set_ylabel("coordinates", color=INK2, fontsize=9)
     ax.set_title(f"K = {k}, population {pop}, step {step}, bottleneck {layer}, token {tok}, "
