@@ -136,9 +136,10 @@ def main():
     lo, hi = (float(np.percentile(pos, 0.1)), float(pos.max())) if pos.size else (1e-3, 1e1)
     lo, hi = max(lo, 1e-4), max(hi, lo * 10)
 
-    # both figures at high dpi in a 60%-width column: downscaled, never stretched
+    # the toy_mnist viewer's layout: the histogram at 7 x 3.6 in a 60%-width
+    # column, the over-checkpoints plot at 11 x 2.8 across the page
     left, _ = st.columns([3, 2])
-    fig, ax = plt.subplots(figsize=(6.4, 3.0), dpi=220)
+    fig, ax = plt.subplots(figsize=(7, 3.6), dpi=200)
     fig.patch.set_facecolor(SURFACE)
     if logx:
         bins = np.logspace(np.log10(lo), np.log10(hi), nbins + 1)
@@ -156,7 +157,7 @@ def main():
             label="pure-noise reference |N(0,1)|")
     ax.axvline(1.0, color=MUTED, linewidth=1.0)
     # outside the axes, below the x-label: the data occupies the whole plot area
-    ax.legend(fontsize=7, frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.3), ncol=2)
+    ax.legend(fontsize=8, frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.26), ncol=2)
     if logx:
         ax.set_xscale("log")
     style(ax)
@@ -165,9 +166,7 @@ def main():
                   "the line marks 1)", color=INK2, fontsize=9)
     ax.set_ylabel("coordinates", color=INK2, fontsize=9)
     ax.set_title(f"K = {k}, population {pop}, step {step}, bottleneck {layer}, token {tok}, "
-                 f"sample {sample}: {vals.size} coordinates", color=INK, fontsize=8.5, loc="left")
-    ax.xaxis.label.set_fontsize(8)
-    ax.yaxis.label.set_fontsize(8)
+                 f"sample {sample}: {vals.size} coordinates", color=INK, fontsize=10, loc="left")
     fig.tight_layout()
     left.pyplot(fig, use_container_width=True)
     plt.close(fig)
@@ -183,8 +182,7 @@ def main():
     m4.metric("vector SNR_K of this token", f"{float(snr_vec[sample, layer, tok]):.3f}")
     m5.metric("token valid", "yes" if bool(valid[sample, tok]) else "no (ignored target)")
 
-    left2, _ = st.columns([3, 2])
-    fig, ax = plt.subplots(figsize=(6.4, 2.4), dpi=220)
+    fig, ax = plt.subplots(figsize=(11, 2.8), dpi=200)
     fig.patch.set_facecolor(SURFACE)
     rows = [summary_over_tokens(files[n], layer, sample) for n in steps]
     med = np.array([r[0] for r in rows]); q25 = np.array([r[1] for r in rows])
@@ -206,12 +204,10 @@ def main():
                   color=INK2, fontsize=9)
     ax.set_ylabel("SNR_K", color=INK2, fontsize=9)
     ax.set_title(f"bottleneck {layer}, sample {sample}: over the checkpoints", color=INK,
-                 fontsize=8.5, loc="left")
-    ax.xaxis.label.set_fontsize(8)
-    ax.yaxis.label.set_fontsize(8)
-    ax.legend(fontsize=7, frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.38), ncol=2)
+                 fontsize=10, loc="left")
+    ax.legend(fontsize=8, frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.32), ncol=2)
     fig.tight_layout()
-    left2.pyplot(fig, use_container_width=True)
+    st.pyplot(fig, use_container_width=True)
     plt.close(fig)
     st.caption(f"{S} validation windows of {T} tokens (offset {meta['val_offset']}), noise seed "
                f"{meta['seed']}; run {meta['run']}; source {args.root}")
