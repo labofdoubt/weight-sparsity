@@ -165,7 +165,7 @@ $\sigma$); dashed black, the hard Top-32 baseline.}
 Validation CE at step 500 (population 128 at \code{dust\_lr\_scale} 1 in
 parentheses):
 
-\begin{center}\small
+\begin{center}\footnotesize\setlength{\tabcolsep}{3.5pt}
 \begin{tabular}{lcccc}
 \toprule
 \code{dust\_target} $\backslash\, \sigma$ & $0.03$ & $0.1$ & $0.3$ & $0.9$ \\
@@ -173,8 +173,8 @@ parentheses):
 encoder  & 3.0117 (3.0220) & 2.9975 (3.0096) & 2.9923 (3.0101) & \bst{2.9790} (2.9957) \\
 backprop & 3.0896 (3.1246) & 3.0930 (3.1169) & 3.2166 (3.0794) & 3.7286 (3.1646) \\
 \midrule
-hard Top-32 baseline (no DUST steps, same settings) & 2.6875 & & & \\
-hard Top-32, the original madrid run (clipping 1.0) & 2.6846 & & & \\
+hard Top-32 baseline (no DUST steps) & 2.6875 & & & \\
+hard Top-32, madrid run (clipping 1.0) & 2.6846 & & & \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -234,7 +234,7 @@ $\sigma$; dashed black, the hard Top-32 run without decoupling.}
 Validation CE at step 500, without MD decoupling (with MD, from the sweep of
 Section~5, in parentheses):
 
-\begin{center}\small
+\begin{center}\footnotesize\setlength{\tabcolsep}{3.5pt}
 \begin{tabular}{lcccc}
 \toprule
 \code{dust\_target} $\backslash\, \sigma$ & $0.03$ & $0.1$ & $0.3$ & $0.9$ \\
@@ -242,7 +242,7 @@ Section~5, in parentheses):
 encoder  & 3.0558 (3.0117) & 3.0492 (2.9975) & 3.0369 (2.9923) & \bst{3.0163} (2.9790) \\
 backprop & 3.1192 (3.0896) & 3.1748 (3.0930) & 3.3926 (3.2166) & 3.5744 (3.7286) \\
 \midrule
-hard Top-32, no MD decoupling (no DUST steps, same settings) & 2.7181 & & & \\
+hard Top-32, no MD (no DUST steps) & 2.7181 & & & \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -270,7 +270,7 @@ later tokens.
 
 Validation CE at step 500 ($\gamma = 0$ in parentheses):
 
-\begin{center}\small
+\begin{center}\footnotesize\setlength{\tabcolsep}{3.5pt}
 \begin{tabular}{lcccc}
 \toprule
 \code{dust\_target} $\backslash\, \sigma$ & $0.03$ & $0.1$ & $0.3$ & $0.9$ \\
@@ -278,7 +278,7 @@ Validation CE at step 500 ($\gamma = 0$ in parentheses):
 encoder  & 3.0248 (3.0558) & 3.0193 (3.0492) & 3.0241 (3.0369) & \bst{3.0139} (3.0163) \\
 backprop & 3.1229 (3.1192) & 3.1082 (3.1748) & 3.0665 (3.3926) & 3.0437 (3.5744) \\
 \midrule
-hard Top-32, no MD decoupling (no DUST steps, same settings) & 2.7181 & & & \\
+hard Top-32, no MD (no DUST steps) & 2.7181 & & & \\
 \bottomrule
 \end{tabular}
 \end{center}
