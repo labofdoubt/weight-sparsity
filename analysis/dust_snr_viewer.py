@@ -154,7 +154,8 @@ def main():
     ax.plot(centers, counts * (vals.size / ref.size), color=MUTED, lw=1.3, ls="--",
             label="pure-noise reference |N(0,1)|")
     ax.axvline(1.0, color=MUTED, linewidth=1.0)
-    ax.legend(fontsize=7, frameon=False, loc="upper right")
+    # outside the axes, below the x-label: the data occupies the whole plot area
+    ax.legend(fontsize=7, frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.3), ncol=2)
     if logx:
         ax.set_xscale("log")
     style(ax)
@@ -207,7 +208,7 @@ def main():
                  fontsize=8.5, loc="left")
     ax.xaxis.label.set_fontsize(8)
     ax.yaxis.label.set_fontsize(8)
-    ax.legend(fontsize=7, frameon=False, loc="upper left")
+    ax.legend(fontsize=7, frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.38), ncol=2)
     fig.tight_layout()
     left2.pyplot(fig, use_container_width=True)
     plt.close(fig)
