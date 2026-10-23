@@ -66,12 +66,14 @@ def main():
         return
     ks = sorted({k for k, _ in runs})
     pops = sorted({p for _, p in runs})  # the union over K: the list never changes with K
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns([2, 2, 3, 2])
     k = col1.selectbox("K (support width)", ks, index=0, key="k_choice")
     pop = col2.selectbox("population (draws per DUST step)", pops, index=0, key="pop_choice")
     which = col3.selectbox("gradient", ["on u = exp(g) * x (the perturbed vector)",
                                        "on g (what the optimizer applies)"], index=0,
                            key="grad_choice")
+    xscale = col4.radio("histogram x-axis", ["log", "linear"], index=0, horizontal=True,
+                        key="xscale_choice")
     key = "u" if which.startswith("on u") else "g"
     if (k, pop) not in runs:
         have = ", ".join(str(p) for kk, p in sorted(runs) if kk == k)
@@ -101,13 +103,21 @@ def main():
     c1, c2 = st.columns([3, 2])
     fig, ax = plt.subplots(figsize=(7, 3.6), dpi=150)
     fig.patch.set_facecolor(SURFACE)
-    bins = np.logspace(np.log10(lo), np.log10(hi), 60)
-    ax.hist(np.clip(vals[vals > 0], lo, hi), bins=bins, color=BLUE, edgecolor=SURFACE, linewidth=0.6)
+    if xscale == "log":
+        bins = np.logspace(np.log10(lo), np.log10(hi), 60)
+        ax.hist(np.clip(vals[vals > 0], lo, hi), bins=bins, color=BLUE, edgecolor=SURFACE,
+                linewidth=0.6)
+        ax.set_xscale("log")
+        ax.set_xlabel("SNR = sqrt(P) |mu| / nu  (log axis, fixed range over the slider)",
+                      color=INK2, fontsize=9)
+    else:
+        bins = np.linspace(0.0, hi, 60)
+        ax.hist(np.clip(vals, 0.0, hi), bins=bins, color=BLUE, edgecolor=SURFACE, linewidth=0.6)
+        ax.set_xlim(0.0, hi)
+        ax.set_xlabel("SNR = sqrt(P) |mu| / nu  (linear axis, fixed range over the slider)",
+                      color=INK2, fontsize=9)
     ax.axvline(1.0, color=MUTED, linewidth=1.0)
-    ax.set_xscale("log")
     style(ax)
-    ax.set_xlabel("SNR = sqrt(P) |mu| / nu  (log axis, fixed range over the slider)",
-                  color=INK2, fontsize=9)
     ax.set_ylabel("coordinates", color=INK2, fontsize=9)
     ax.set_title(f"K = {k}, P = {pop}, {labels[i]}: distribution over {vals.size} coordinates",
                  color=INK, fontsize=10, loc="left")
