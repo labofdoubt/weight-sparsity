@@ -103,6 +103,74 @@ therefore not a matter of the estimate's variance at this population: the
 estimate's variance is eight times smaller and the gap moved by a few
 hundredths.
 
+## Without MD decoupling
+
+The hard Top-32 run and the population-1024 sigma sweep (`dust_lr_scale` 1,
+both targets) repeated with `model.decouple: false` and `model.md_init: true`:
+the initialization is the same, only the optimizer changes, from the
+decoupled one (directions on fixed-norm spheres, learnable gains, no weight
+decay) to ordinary AdamW with weight decay 0.1, the convention of
+`docs/md-init-vs-decoupling.tex`. The hard run and the gamma-0 sweep on
+georgia, the gamma-0.99 sweep on new_york; checkpoints at steps 250 and 500.
+
+![hard Top-32 with and without MD](figures/hp500_hard_md_vs_nomd.png)
+
+| run | validation CE at step 500 |
+|---|---|
+| hard Top-32, MD decoupling | 2.6875 |
+| hard Top-32, no MD decoupling (AdamW, weight decay 0.1) | 2.7181 |
+
+The two hard runs coincide to step 150 and separate by 0.03 to 0.06 nats from
+step 200 on; at step 500 the decoupled optimizer is 0.031 nats ahead.
+
+### Gamma 0
+
+![no MD, gamma 0](figures/hp500_p1024_nomd_g0_val.png)
+
+Validation CE at step 500, without MD decoupling (with MD, from the sweep
+above, in parentheses):
+
+| dust_target \ sigma | 0.03 | 0.1 | 0.3 | 0.9 |
+|---|---|---|---|---|
+| encoder | 3.0558 (3.0117) | 3.0492 (2.9975) | 3.0369 (2.9923) | **3.0163** (2.9790) |
+| backprop | 3.1192 (3.0896) | 3.1748 (3.0930) | 3.3926 (3.2166) | 3.5744 (3.7286) |
+| hard Top-32, no MD decoupling (no DUST steps, same settings) | 2.7181 | | | |
+
+Removing the decoupling moves the DUST runs by about as much as it moves the
+baseline: the encoder arm ends 0.30 to 0.34 nats above the no-MD hard run
+(0.29 to 0.32 above the MD hard run with decoupling), ordered by sigma with
+the largest best and the four curves indistinguishable to step 400. The
+backprop arm ends 0.40 to 0.86 nats above it; its curves separate after step
+250 and flatten for sigma 0.3 and 0.9, which end at 3.39 and 3.57 (with
+decoupling, sigma 0.9 turned upward to 3.73). The gap between DUST and the
+hard model is therefore not a property of the decoupled optimizer.
+
+### Gamma 0.99
+
+The same eight runs with `dust_gamma: 0.99`: a token's noise is rewarded with
+its own loss change plus the discounted loss changes of the later tokens.
+
+![no MD, gamma 0.99](figures/hp500_p1024_nomd_g0p99_val.png)
+
+Validation CE at step 500 (gamma 0 in parentheses):
+
+| dust_target \ sigma | 0.03 | 0.1 | 0.3 | 0.9 |
+|---|---|---|---|---|
+| encoder | 3.0248 (3.0558) | 3.0193 (3.0492) | 3.0241 (3.0369) | **3.0139** (3.0163) |
+| backprop | 3.1229 (3.1192) | 3.1082 (3.1748) | 3.0665 (3.3926) | 3.0437 (3.5744) |
+| hard Top-32, no MD decoupling (no DUST steps, same settings) | 2.7181 | | | |
+
+The discounted credit changes the backprop arm most: the flattening at
+sigma 0.3 and 0.9 disappears (3.39 to 3.07 and 3.57 to 3.04), the arm is now
+ordered by sigma with the largest best, and it ends within 0.03 of the encoder
+arm. The encoder arm gains 0.01 to 0.03 nats at sigma 0.03 to 0.3 and nothing
+at 0.9, with its four curves again on top of one another. Both arms stay 0.30
+to 0.40 nats above the hard run. The per-draw signal-to-noise ratio of the
+estimate (`dust/snr`, see `docs/dust-topk.md`) is 0.088 to 0.091 in every
+one of these sixteen cells at step 500, independent of sigma, target and
+gamma, so at 128 draws per bottleneck the population estimate has a per-token
+signal-to-noise ratio of about 1.
+
 ## Runs on Drive
 
 Encoder arm, new_york (`gdrive:weight-sparsity/runs_new_york/`):
@@ -132,6 +200,19 @@ Backprop arm, georgia (`gdrive:weight-sparsity/runs_georgia/`):
 `ga_hp500_bp_sg0p3_lr100`, `ga_hp500_bp_sg0p3_lr300`,
 `ga_hp500_bp_sg0p9_lr1`, `ga_hp500_bp_sg0p9_lr10`, `ga_hp500_bp_sg0p9_lr30`,
 `ga_hp500_bp_sg0p9_lr100`, `ga_hp500_bp_sg0p9_lr300`.
+
+Without MD decoupling, georgia (`gdrive:weight-sparsity/runs_georgia/`):
+`ga_hp500_hard_k32_nomd`,
+`ga_hp500_enc_p1024_nomd_sg0p03_lr1`, `ga_hp500_enc_p1024_nomd_sg0p1_lr1`,
+`ga_hp500_enc_p1024_nomd_sg0p3_lr1`, `ga_hp500_enc_p1024_nomd_sg0p9_lr1`,
+`ga_hp500_bp_p1024_nomd_sg0p03_lr1`, `ga_hp500_bp_p1024_nomd_sg0p1_lr1`,
+`ga_hp500_bp_p1024_nomd_sg0p3_lr1`, `ga_hp500_bp_p1024_nomd_sg0p9_lr1`.
+
+Without MD decoupling, gamma 0.99, new_york (`gdrive:weight-sparsity/runs_new_york/`):
+`ny_hp500_enc_p1024_nomd_g099_sg0p03_lr1`, `ny_hp500_enc_p1024_nomd_g099_sg0p1_lr1`,
+`ny_hp500_enc_p1024_nomd_g099_sg0p3_lr1`, `ny_hp500_enc_p1024_nomd_g099_sg0p9_lr1`,
+`ny_hp500_bp_p1024_nomd_g099_sg0p03_lr1`, `ny_hp500_bp_p1024_nomd_g099_sg0p1_lr1`,
+`ny_hp500_bp_p1024_nomd_g099_sg0p3_lr1`, `ny_hp500_bp_p1024_nomd_g099_sg0p9_lr1`.
 
 Original hard Top-32 run (reference value only):
 `gdrive:weight-sparsity/runs_madrid/ma_cr_hard_k32_pnorm`.

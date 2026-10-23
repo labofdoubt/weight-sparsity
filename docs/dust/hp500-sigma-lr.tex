@@ -193,14 +193,107 @@ moved by a few hundredths.
 \section{Without MD decoupling}
 % ============================================================
 
-Pending: the hard Top-32 run without MD decoupling (\code{model.decouple =
-false} with \code{model.md\_init = true}, so the initialization is identical
-and only the optimizer changes: ordinary AdamW with weight decay 0.1, the
-convention of \path{docs/md-init-vs-decoupling.tex}), the population-1024
-$\sigma$ sweep without decoupling at $\gamma = 0$ (georgia) and at
-$\gamma = 0.99$ (new\_york). To be added: the hard run with and without
-decoupling; and, per $\gamma$, a two-panel figure (encoder left, backprop
-right) of the sweep against the hard run without decoupling, with its table.
+The hard Top-32 run and the population-1024 $\sigma$ sweep
+(\code{dust\_lr\_scale} 1, both targets) repeated with \code{model.decouple
+= false} and \code{model.md\_init = true}: the initialization is the same,
+only the optimizer changes, from the decoupled one (directions on fixed-norm
+spheres, learnable gains, no weight decay) to ordinary AdamW with weight
+decay 0.1, the convention of \path{docs/md-init-vs-decoupling.tex}. The hard
+run and the $\gamma = 0$ sweep on georgia, the $\gamma = 0.99$ sweep on
+new\_york; checkpoints at steps 250 and 500.
+
+\begin{figure}[H]\centering
+\includegraphics[width=.72\textwidth]{figures/hp500_hard_md_vs_nomd.png}
+\caption{Hard Top-32, code carried, with (dashed black) and without (solid)
+MD decoupling: same initialization, no clipping, validation every 50 steps.}
+\end{figure}
+
+\begin{center}\small
+\begin{tabular}{lc}
+\toprule
+run & validation CE at step 500 \\
+\midrule
+hard Top-32, MD decoupling & 2.6875 \\
+hard Top-32, no MD decoupling (AdamW, weight decay 0.1) & 2.7181 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The two hard runs coincide to step 150 and separate by 0.03 to 0.06 nats from
+step 200 on; at step 500 the decoupled optimizer is 0.031 nats ahead.
+
+\subsection*{$\gamma = 0$}
+
+\begin{figure}[H]\centering
+\includegraphics[width=\textwidth]{figures/hp500_p1024_nomd_g0_val.png}
+\caption{DUST without MD decoupling, population 1024, \code{dust\_lr\_scale}
+1, $\gamma = 0$: encoder target left, backprop target right, one curve per
+$\sigma$; dashed black, the hard Top-32 run without decoupling.}
+\end{figure}
+
+Validation CE at step 500, without MD decoupling (with MD, from the sweep of
+Section~5, in parentheses):
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+\code{dust\_target} $\backslash\, \sigma$ & $0.03$ & $0.1$ & $0.3$ & $0.9$ \\
+\midrule
+encoder  & 3.0558 (3.0117) & 3.0492 (2.9975) & 3.0369 (2.9923) & \bst{3.0163} (2.9790) \\
+backprop & 3.1192 (3.0896) & 3.1748 (3.0930) & 3.3926 (3.2166) & 3.5744 (3.7286) \\
+\midrule
+hard Top-32, no MD decoupling (no DUST steps, same settings) & 2.7181 & & & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Removing the decoupling moves the DUST runs by about as much as it moves the
+baseline: the encoder arm ends 0.30 to 0.34 nats above the no-MD hard run
+(0.29 to 0.32 above the MD hard run with decoupling), ordered by $\sigma$
+with the largest best and the four curves indistinguishable to step 400. The
+backprop arm ends 0.40 to 0.86 nats above it; its curves separate after step
+250 and flatten for $\sigma = 0.3$ and $0.9$, which end at 3.39 and 3.57
+(with decoupling, $\sigma = 0.9$ turned upward to 3.73). The gap between
+DUST and the hard model is therefore not a property of the decoupled
+optimizer.
+
+\subsection*{$\gamma = 0.99$}
+
+The same eight runs with \code{dust\_gamma} $= 0.99$: a token's noise is
+rewarded with its own loss change plus the discounted loss changes of the
+later tokens.
+
+\begin{figure}[H]\centering
+\includegraphics[width=\textwidth]{figures/hp500_p1024_nomd_g0p99_val.png}
+\caption{As above, $\gamma = 0.99$.}
+\end{figure}
+
+Validation CE at step 500 ($\gamma = 0$ in parentheses):
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+\code{dust\_target} $\backslash\, \sigma$ & $0.03$ & $0.1$ & $0.3$ & $0.9$ \\
+\midrule
+encoder  & 3.0248 (3.0558) & 3.0193 (3.0492) & 3.0241 (3.0369) & \bst{3.0139} (3.0163) \\
+backprop & 3.1229 (3.1192) & 3.1082 (3.1748) & 3.0665 (3.3926) & 3.0437 (3.5744) \\
+\midrule
+hard Top-32, no MD decoupling (no DUST steps, same settings) & 2.7181 & & & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The discounted credit changes the backprop arm most: the flattening at
+$\sigma = 0.3$ and $0.9$ disappears (3.39 to 3.07 and 3.57 to 3.04), the arm
+is now ordered by $\sigma$ with the largest best, and it ends within 0.03 of
+the encoder arm. The encoder arm gains 0.01 to 0.03 nats at $\sigma = 0.03$
+to $0.3$ and nothing at $0.9$, with its four curves again on top of one
+another. Both arms stay 0.30 to 0.40 nats above the hard run. The per-draw
+signal-to-noise ratio of the estimate (\code{dust/snr}, defined in
+\path{docs/dust-topk.md}) is 0.088 to 0.091 in every one of these sixteen
+cells at step 500, independent of $\sigma$, target and $\gamma$, so at 128
+draws per bottleneck the population estimate has a per-token signal-to-noise
+ratio of about 1.
 
 % ============================================================
 \section{Runs on Drive}
@@ -215,6 +308,10 @@ right) of the sweep against the hard run without decoupling, with its table.
   for \path{<a>} $\in$ \{\path{enc}, \path{bp}\}, eight runs.
 \item Backprop arm, georgia: \path{gdrive:weight-sparsity/runs_georgia/ga_hp500_bp_sg<s>_lr<l>},
   the same twenty cells.
+\item Without MD decoupling, georgia: \path{gdrive:weight-sparsity/runs_georgia/ga_hp500_hard_k32_nomd}
+  and \path{gdrive:weight-sparsity/runs_georgia/ga_hp500_<a>_p1024_nomd_sg<s>_lr1}, eight runs.
+\item Without MD decoupling, $\gamma = 0.99$, new\_york:
+  \path{gdrive:weight-sparsity/runs_new_york/ny_hp500_<a>_p1024_nomd_g099_sg<s>_lr1}, eight runs.
 \item Original hard Top-32 run (reference value only):
   \path{gdrive:weight-sparsity/runs_madrid/ma_cr_hard_k32_pnorm}.
 \end{itemize}
