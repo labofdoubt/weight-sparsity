@@ -110,9 +110,11 @@ def main():
     lo, hi = (float(pos.min()), float(pos.max())) if pos.size else (1e-3, 1e1)
     lo, hi = max(lo, 1e-4), max(hi, lo * 10)
 
+    # figure sizes as in analysis/dust_snr_viewer.py: high dpi in a 60%-width
+    # column, downscaled, never stretched
     c1, c2 = st.columns([3, 2])
     PLOT_LOCK.acquire()
-    fig, ax = plt.subplots(figsize=(7, 3.6), dpi=150)
+    fig, ax = plt.subplots(figsize=(6.4, 3.0), dpi=220)
     fig.patch.set_facecolor(SURFACE)
     if xscale == "log":
         bins = np.logspace(np.log10(lo), np.log10(hi), n_bins + 1)
@@ -144,10 +146,10 @@ def main():
     ax.set_title(f"K = {k}, P = {pop}, {labels[i]}: distribution over {vals.size} coordinates",
                  color=INK, fontsize=10, loc="left")
     fig.tight_layout()
-    c1.pyplot(fig)
+    c1.pyplot(fig, use_container_width=True)
     plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(4, 3.6), dpi=150)
+    fig, ax = plt.subplots(figsize=(3.8, 3.0), dpi=220)
     fig.patch.set_facecolor(SURFACE)
     img = np.where(finite & (snr > 0), snr, np.nan).reshape(28, 28)
     im = ax.imshow(np.nan_to_num(img, nan=lo), cmap=RAMP, norm=LogNorm(vmin=lo, vmax=hi))
@@ -160,7 +162,7 @@ def main():
     cb.ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     cb.ax.tick_params(colors=INK2, labelsize=8)
     fig.tight_layout()
-    c2.pyplot(fig)
+    c2.pyplot(fig, use_container_width=True)
     plt.close(fig)
     PLOT_LOCK.release()
 
@@ -179,8 +181,9 @@ def main():
                    "left out: under the g weighting these are pixels that are 0 in every "
                    "sample of the batch.")
 
+    left2, _ = st.columns([3, 2])
     PLOT_LOCK.acquire()
-    fig, ax = plt.subplots(figsize=(11, 2.8), dpi=150)
+    fig, ax = plt.subplots(figsize=(6.4, 2.4), dpi=220)
     fig.patch.set_facecolor(SURFACE)
     med = np.array([np.nanmedian(r) if np.isfinite(r).any() else np.nan for r in snr_all])
     q25 = np.array([np.nanpercentile(r, 25) if np.isfinite(r).any() else np.nan for r in snr_all])
@@ -201,7 +204,7 @@ def main():
     ax.set_ylabel("median SNR, IQR band", color=INK2, fontsize=9)
     ax.set_title("over the checkpoints", color=INK, fontsize=10, loc="left")
     fig.tight_layout()
-    st.pyplot(fig)
+    left2.pyplot(fig, use_container_width=True)
     plt.close(fig)
     PLOT_LOCK.release()
     st.caption(f"batch of {int(d['batch_size'])} training images (seed {int(d['batch_seed'])}), "
