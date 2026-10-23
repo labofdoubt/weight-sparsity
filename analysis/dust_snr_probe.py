@@ -152,6 +152,11 @@ def main() -> None:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--data-dir", default=None)
+    ap.add_argument("--layers", default=None,
+                    help="comma-separated bottleneck indices to probe (default all)")
+    ap.add_argument("--sigma", type=float, default=None,
+                    help="noise scale override (default the run's dust_sigma)")
+    ap.add_argument("--tag", default=None, help="suffix of the output file name")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
@@ -168,9 +173,10 @@ def main() -> None:
         ckpts = [p for p in ckpts if int(re.search(r"ckpt_step(\d+)", p).group(1)) in wanted]
     if not ckpts:
         raise SystemExit(f"no checkpoints in {args.run_dir}")
+    layer_sel = [int(v) for v in args.layers.split(",")] if args.layers else None
     for path in ckpts:
         step = int(re.search(r"ckpt_step(\d+)", path).group(1))
-        out_path = os.path.join(args.out, f"snr_step{step}.npz")
+        out_path = os.path.join(args.out, f"snr_step{step}{'_' + args.tag if args.tag else ''}.npz")
         if os.path.exists(out_path):
             print(f"[probe] {out_path} exists, skipping")
             continue
@@ -185,8 +191,9 @@ def main() -> None:
         _, val = build_streams(cfg.data, seed=cfg.train.seed)
         x, y = val.batch(args.sequences, device, deterministic_offset=0)
         layers = list(ctl.layers)
-        L = len(layers)
-        draws = args.draws or int(ab.dust_population) // L
+        n_installed = len(layers)
+        draws = args.draws or int(ab.dust_population) // n_installed
+        sigma_used = float(args.sigma) if args.sigma is not None else float(ab.dust_sigma)
         dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
         records: List = []
         with torch.no_grad(), dust_capture([m for _, m in layers], records), \
@@ -194,6 +201,9 @@ def main() -> None:
             logits, _ = model(x, y)
         ell_clean, valid = token_losses(logits.detach(), y)
         del logits
+        layer_indices = layer_sel if layer_sel is not None else list(range(n_installed))
+        records = [records[i] for i in layer_indices]
+        L = len(records)
         S, T = y.shape
         N = int(ab.n_features)
         snr = np.zeros((S, L, T, N), dtype=np.float16)
@@ -205,7 +215,7 @@ def main() -> None:
             z = rec.z.detach()
             block_index, placement = rec.module._site
             cand = pool_indices(z, ab.selection_mode, rec.module.gate.m)
-            sigma_t = noise_scale(ab.dust_sigma_mode, float(ab.dust_sigma), z, cand)
+            sigma_t = noise_scale(ab.dust_sigma_mode, sigma_used, z, cand)
 
             def loss_fn(zp, _b=block_index, _p=placement):
                 c = zp.shape[0] // S
@@ -222,17 +232,21 @@ def main() -> None:
                 mu_abs[:, li] = full(out["mu"].abs()).cpu().numpy().astype(np.float16)
                 nu[:, li] = full(out["nu"]).cpu().numpy().astype(np.float16)
                 snr_vec[:, li] = out["snr_vec"].cpu().numpy()
-            print(f"[probe] step {step} layer {li}/{L}: draws {draws}, median SNR_K over valid "
+            print(f"[probe] step {step} layer {layer_indices[li]} ({li + 1}/{L}): draws {draws}, "
+                  f"sigma {sigma_used:g}, median SNR_K over valid "
                   f"tokens and pool {float(np.median(snr[:, li][valid.cpu().numpy()][:, cand[0, 0].cpu().numpy()])):.3f}, "
                   f"{time.time() - t0:.0f} s elapsed", flush=True)
         meta = {"run": cfg.train.run_name, "step": step, "population": int(ab.dust_population),
-                "draws": draws, "layers": L, "topk_k": int(ab.k), "j": int(ab.j),
-                "pool": int(rec.module.gate.m), "n_features": N, "sigma": float(ab.dust_sigma),
+                "draws": draws, "layers": L, "layer_indices": layer_indices,
+                "topk_k": int(ab.k), "j": int(ab.j),
+                "pool": int(rec.module.gate.m), "n_features": N, "sigma": sigma_used,
+                "train_sigma": float(ab.dust_sigma), "tag": args.tag,
                 "sigma_mode": ab.dust_sigma_mode, "gamma": float(ab.dust_gamma),
                 "target": ab.dust_target, "decouple": bool(cfg.model.decouple),
                 "sequences": S, "seq_len": T, "val_offset": 0, "seed": args.seed,
                 "clean_ce_tokens_mean": float(ell_clean[valid].mean()),
-                "layer_labels": [lab for lab, _ in layers], "checkpoint": os.path.basename(path)}
+                "layer_labels": [layers[i][0] for i in layer_indices],
+                "checkpoint": os.path.basename(path)}
         # written to a temporary name and renamed: the viewer and the Drive
         # watcher must never see a half-written file
         tmp_path = out_path + ".tmp.npz"

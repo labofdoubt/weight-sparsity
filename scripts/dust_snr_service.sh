@@ -13,6 +13,7 @@ utils=/opt/supervisor-scripts/utils
 
 source /venv/main/bin/activate
 export DUST_SNR_ROOT=/workspace/analysis/dust_snr
+export DUST_SNR_SINGLE_ROOT=/workspace/analysis/dust_snr_single
 export STREAMLIT_SERVER_ADDRESS=127.0.0.1
 export STREAMLIT_SERVER_PORT=8501
 export STREAMLIT_SERVER_HEADLESS=true
@@ -20,4 +21,4 @@ export STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 export STREAMLIT_THEME_BASE=light
 export STREAMLIT_SERVER_FILE_WATCHER_TYPE=poll
 cd /workspace/weight-sparsity
-pty streamlit run analysis/dust_snr_viewer.py -- --root "$DUST_SNR_ROOT" 2>&1
+pty streamlit run analysis/dust_snr_viewer.py -- --root "$DUST_SNR_ROOT" --single-root "$DUST_SNR_SINGLE_ROOT" 2>&1
