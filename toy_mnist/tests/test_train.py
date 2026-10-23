@@ -133,3 +133,20 @@ def test_intermediate_checkpoints_are_written_at_the_cadence(tmp_path):
     cfg = small_config(tmp_path, "baseline", train={"checkpoint_every_steps": 0})
     summary = train(cfg, synthetic_data())
     assert sorted(n for n in os.listdir(summary["run_dir"]) if n.endswith(".pt")) == ["final.pt"]
+
+
+def test_explicit_checkpoint_steps_including_the_initial_state(tmp_path):
+    cfg = small_config(tmp_path, "topk_dust", train={"checkpoint_every_steps": 0,
+                                                     "checkpoint_steps": [0, 1, 3, 3, 6]},
+                       topk={"dust_population": 4, "dust_chunk_draws": 4})
+    assert cfg.train.checkpoint_steps == [0, 1, 3, 6]
+    summary = train(cfg, synthetic_data())
+    run_dir = summary["run_dir"]
+    names = sorted(n for n in os.listdir(run_dir) if n.endswith(".pt"))
+    assert names == ["ckpt_step0.pt", "ckpt_step1.pt", "ckpt_step3.pt", "final.pt"]
+    init = torch.load(os.path.join(run_dir, "ckpt_step0.pt"), weights_only=False)
+    assert init["step"] == 0 and torch.equal(init["model"]["rescale.log_scale"], torch.zeros(784))
+    after1 = torch.load(os.path.join(run_dir, "ckpt_step1.pt"), weights_only=False)
+    assert after1["step"] == 1 and after1["dust_state"]["dust_steps"] == 0
+    after3 = torch.load(os.path.join(run_dir, "ckpt_step3.pt"), weights_only=False)
+    assert after3["dust_state"]["dust_steps"] == 1  # steps 2 is the first DUST step

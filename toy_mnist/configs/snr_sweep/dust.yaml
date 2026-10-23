@@ -1,0 +1,13 @@
+# SNR sweep (2026-10-23): pop_sweep/dust.yaml (hidden 1024, 5000 steps, [1, 1],
+# sigma 0.1 on the whole input) with checkpoints at the states the DUST steps
+# 2, 4, ..., 20, 30, ..., 100, 200, ..., 1000, 2000, ..., 5000 act on (an odd
+# N below is the state before DUST step N + 1) and the initial state (0).
+# K and dust_population come from the job line; toy_mnist.snr_probe measures
+# the per-coordinate SNR at every checkpoint afterwards.
+_base_: [../pop_sweep/dust.yaml]
+train:
+  run_name: snr
+  checkpoint_steps: [0, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19,
+                     29, 39, 49, 59, 69, 79, 89, 99,
+                     199, 299, 399, 499, 599, 699, 799, 899, 999,
+                     1999, 2999, 3999, 4999]

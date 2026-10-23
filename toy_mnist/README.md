@@ -129,6 +129,42 @@ on DUST runs `dust/steps`, `dust/ce_perturbed`, `dust/ce_gap`,
 DUST steps: the cosine between the DUST gradient of $g$ and the
 hard-backward gradient of the clean CE for $g$).
 
+## SNR of the DUST estimate per coordinate
+
+`toy_mnist/snr_probe.py` measures, at every checkpoint of a run, the
+signal-to-noise ratio of the population-averaged DUST estimate for each of
+the 784 coordinates of the perturbed vector $u = e^{g} \odot x$, on one fixed
+batch of $B$ training images.  With $P$ draws $a^{(i)}$, the per-sample
+rewards $r^{(i)}_t = \tilde R_t - R^{(i)}_t$ and the reward-weighted noise
+$z^{(i)}_{t,n} = -r^{(i)}_t a^{(i)}_{t,n} / \sigma$, the sample average
+$z^{(i)}_n = \frac1B \sum_t z^{(i)}_{t,n}$ gives one value per draw and
+coordinate, and
+
+$$
+\hat\mu_n = \frac1P \sum_i z^{(i)}_n, \qquad
+\hat\nu_n^2 = \frac{1}{P-1} \sum_i \bigl(z^{(i)}_n - \hat\mu_n\bigr)^2, \qquad
+\mathrm{SNR}_n = \frac{\sqrt{P}\,\lvert\hat\mu_n\rvert}{\hat\nu_n}.
+$$
+
+A second weighting multiplies $z^{(i)}_{t,n}$ by $e^{g_n} x_{t,n}$ before the
+sample average, which is the gradient on $g_n$ the optimizer applies; both
+are stored (`snr_u`, `snr_g`, with $\hat\mu$ and $\hat\nu$) in
+`<run>/snr.npz`, one row per checkpoint.  `train.checkpoint_steps` lists the
+states to save (after $N$ optimizer steps; under the $[1, 1]$ schedule an odd
+$N$ is the state the DUST step $N + 1$ acts on, $0$ the initial state);
+`configs/snr_sweep/` is the 2026-10-23 grid ($K \in \{2, 4, 8, 16\}$,
+$P \in \{128, 512, 2000, 8000\}$, 32 checkpoints each).
+
+```bash
+python -m toy_mnist.snr_probe --run runs_mnist/snr_sweep/dust_k4_p512 --data-dir data/mnist
+streamlit run toy_mnist/snr_viewer.py -- --root runs_mnist/snr_sweep
+```
+
+The viewer has dropdowns for $K$ and $P$, a slider over the checkpoints, the
+histogram of $\mathrm{SNR}_n$ over the coordinates (log axis, fixed across
+the slider), the same values on the $28 \times 28$ pixel grid, and the median
+with its interquartile band over the checkpoints.
+
 ## Tests
 
 ```bash

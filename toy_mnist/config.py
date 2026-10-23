@@ -116,6 +116,10 @@ class TrainConfig:
     # final.pt), each the full payload (model, optimizer, dust state): about
     # 3 MB at hidden 1024.  Nothing is pruned.
     checkpoint_every_steps: int = 500
+    # explicit extra checkpoints: ckpt_step<N>.pt after N optimizer steps for
+    # every N listed (0 = the initial state, before any update).  Under the
+    # [1, 1] DUST schedule an odd N is the state the DUST step N + 1 acts on.
+    checkpoint_steps: List[int] = field(default_factory=list)
 
 
 @dataclass
@@ -213,6 +217,9 @@ class Config:
             raise ValueError("train.log_every_steps >= 1 and validate_every_steps >= 0")
         if tr.checkpoint_every_steps < 0:
             raise ValueError("train.checkpoint_every_steps must be >= 0")
+        if any(int(v) != v or int(v) < 0 for v in tr.checkpoint_steps):
+            raise ValueError("train.checkpoint_steps must be non-negative integers")
+        tr.checkpoint_steps = sorted({int(v) for v in tr.checkpoint_steps})
         return self
 
     def to_dict(self) -> Dict[str, Any]:

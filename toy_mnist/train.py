@@ -9,9 +9,10 @@ the step kind follows ``dust_schedule`` and a DUST step runs
 directory ``train.out_dir/train.run_name`` receives ``config.json``,
 ``metrics.jsonl`` (one record per log window and per validation),
 TensorBoard events (when the package is installed), ``summary.json`` at the
-end, ``ckpt_step<N>.pt`` every ``train.checkpoint_every_steps`` steps and
-``final.pt``; checkpoints are written to a temporary name and renamed, so a
-backup watcher never copies a partial file.
+end, ``ckpt_step<N>.pt`` every ``train.checkpoint_every_steps`` steps and at
+every N in ``train.checkpoint_steps`` (N completed optimizer steps; 0 is the
+initial state), and ``final.pt``; checkpoints are written to a temporary name
+and renamed, so a backup watcher never copies a partial file.
 
 Metrics: ``train/ce`` and ``train/acc`` are the clean hard-forward values on
 both kinds of step; ``train/grad_norm`` is the last step's total gradient
@@ -238,6 +239,10 @@ def train(cfg: Config, data: Optional[MNISTData] = None,
         torch.save(checkpoint_payload(step1), tmp)
         os.replace(tmp, path)
 
+    explicit = set(tr.checkpoint_steps)
+    if 0 in explicit:
+        save_checkpoint("ckpt_step0.pt", 0)  # the initial state
+
     for step in range(tr.max_steps):
         lr = lr_at(step, tr)
         set_lr(optimizer, lr)
@@ -327,8 +332,8 @@ def train(cfg: Config, data: Optional[MNISTData] = None,
         if tr.validate_every_steps > 0 and step1 % tr.validate_every_steps == 0 \
                 and step1 != tr.max_steps:
             validate(step1)
-        if tr.checkpoint_every_steps > 0 and step1 % tr.checkpoint_every_steps == 0 \
-                and step1 != tr.max_steps:
+        periodic = tr.checkpoint_every_steps > 0 and step1 % tr.checkpoint_every_steps == 0
+        if (periodic or step1 in explicit) and step1 != tr.max_steps:
             save_checkpoint(f"ckpt_step{step1}.pt", step1)
 
     validate(step1)
