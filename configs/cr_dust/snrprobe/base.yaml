@@ -1,0 +1,26 @@
+# SNR-probe models (2026-10-23, paris): the hp500 setup (../hp500/base.yaml: the
+# K=32 code-carried hard model with DUST, MD decoupling, schedule [1, 1], no
+# clipping, separate optimizer, chunk 2) with dust_target encoder, sigma 0.2,
+# gamma 0, and the FULL pool J = N - K = 1504, trained for 20 steps of the
+# unchanged 20k-step schedule by analysis/dust_snr_train.py: a full checkpoint
+# at init (ckpt_step0.pt, written by the driver) and after every DUST step
+# (every second step, ckpt_step2 ... ckpt_step20), all kept.  One run per
+# population (256 ... 65536); analysis/dust_snr_probe.py then measures the
+# per-coordinate SNR_K at every checkpoint with K = population / 8 draws per
+# bottleneck, the number of draws that bottleneck received in training.
+_base_:
+  - ../hp500/base.yaml
+
+train:
+  validate_every_steps: 0
+  checkpoint_every_steps: 2
+  keep_last_checkpoints: 0
+  sample_every_steps: 0
+
+activation_bottleneck:
+  j: 1504
+  dust_target: encoder
+  dust_sigma: 0.2
+  dust_gamma: 0.0
+  dust_lr_scale: 1
+  dust_cosine_every_steps: 0

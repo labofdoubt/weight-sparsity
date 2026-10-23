@@ -1,0 +1,9 @@
+# SNR-probe model (see base.yaml): dust_population 1024 (128 draws per bottleneck).
+_base_:
+  - base.yaml
+
+train:
+  run_name: pa_snr_k32_jall_sg0p2_p1024
+
+activation_bottleneck:
+  dust_population: 1024
