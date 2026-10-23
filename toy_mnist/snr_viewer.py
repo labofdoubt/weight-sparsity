@@ -65,13 +65,18 @@ def main():
         st.error(f"no <run>/snr.npz under {args.root}")
         return
     ks = sorted({k for k, _ in runs})
+    pops = sorted({p for _, p in runs})  # the union over K: the list never changes with K
     col1, col2, col3 = st.columns(3)
-    k = col1.selectbox("K (support width)", ks, index=0)
-    pops = sorted({p for kk, p in runs if kk == k})
-    pop = col2.selectbox("population (draws per DUST step)", pops, index=0)
+    k = col1.selectbox("K (support width)", ks, index=0, key="k_choice")
+    pop = col2.selectbox("population (draws per DUST step)", pops, index=0, key="pop_choice")
     which = col3.selectbox("gradient", ["on u = exp(g) * x (the perturbed vector)",
-                                       "on g (what the optimizer applies)"], index=0)
+                                       "on g (what the optimizer applies)"], index=0,
+                           key="grad_choice")
     key = "u" if which.startswith("on u") else "g"
+    if (k, pop) not in runs:
+        have = ", ".join(str(p) for kk, p in sorted(runs) if kk == k)
+        st.warning(f"no run for K = {k} at population {pop}; K = {k} has populations {have}.")
+        return
     d = runs[(k, pop)]
     steps = d["steps"]
     def label(n: int) -> str:
@@ -81,7 +86,8 @@ def main():
             return f"step {n} (the state DUST step {n + 1} acts on)"
         return f"step {n} (after {n} updates; a hard step follows)"
     labels = [label(int(n)) for n in steps]
-    i = st.slider("checkpoint", 0, len(steps) - 1, 0, format="%d")
+    i = st.slider("checkpoint", 0, len(steps) - 1, 0, format="%d", key="ckpt_choice")
+    i = min(i, len(steps) - 1)
     st.caption(f"checkpoint {i}: **{labels[i]}** — completed optimizer steps N = {int(steps[i])}; "
                f"an odd N is the state the DUST step N + 1 acts on.")
     snr_all = d[f"snr_{key}"]
