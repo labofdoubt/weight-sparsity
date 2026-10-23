@@ -166,8 +166,11 @@ def main():
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("median SNR_K", f"{np.median(vals):.3f}" if vals.size else "nan")
     m2.metric("mean SNR_K", f"{vals.mean():.3f}" if vals.size else "nan")
-    m3.metric("coordinates with SNR_K > 1", f"{int((vals > 1).sum())} / {vals.size} "
-              f"(noise: {int(0.3173 * vals.size)})")
+    n_above = int((vals > 1).sum())
+    m3.metric("coordinates with SNR_K > 1", f"{n_above} / {vals.size}",
+              delta=f"{n_above - 0.3173 * vals.size:+.0f} vs pure noise",
+              help="For a coordinate without signal, SNR_K > 1 with probability 0.317; "
+                   "the delta is the excess over that expectation.")
     m4.metric("vector SNR_K of this token", f"{float(snr_vec[sample, layer, tok]):.3f}")
     m5.metric("token valid", "yes" if bool(valid[sample, tok]) else "no (ignored target)")
 
