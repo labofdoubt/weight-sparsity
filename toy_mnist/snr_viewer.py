@@ -14,6 +14,7 @@ import argparse
 import glob
 import os
 import sys
+import threading
 
 import matplotlib
 matplotlib.use("Agg")
@@ -25,6 +26,11 @@ import streamlit as st  # noqa: E402
 
 INK, INK2, MUTED, GRID, AXIS, SURFACE = "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7", "#fcfcfb"
 BLUE = "#2a78d6"
+#: matplotlib's mathtext parser (pyparsing) is not thread-safe, and Streamlit
+#: can overlap reruns; every log axis gets a plain-number formatter (no
+#: mathtext) and the figures are built under one lock.
+PLOT_LOCK = threading.Lock()
+PLAIN = matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}")
 RAMP = LinearSegmentedColormap.from_list("blue", ["#cde2fb", "#86b6ef", "#3987e5", "#1c5cab", "#0d366b"])
 
 
@@ -105,6 +111,7 @@ def main():
     lo, hi = max(lo, 1e-4), max(hi, lo * 10)
 
     c1, c2 = st.columns([3, 2])
+    PLOT_LOCK.acquire()
     fig, ax = plt.subplots(figsize=(7, 3.6), dpi=150)
     fig.patch.set_facecolor(SURFACE)
     if xscale == "log":
@@ -126,6 +133,8 @@ def main():
     ax.legend(fontsize=7, frameon=False, loc="upper right")
     if xscale == "log":
         ax.set_xscale("log")
+        ax.xaxis.set_major_formatter(PLAIN)
+        ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     else:
         ax.set_xlim(0.0, hi)
     style(ax)
@@ -147,11 +156,13 @@ def main():
     for side in ax.spines.values():
         side.set_color(AXIS)
     ax.set_title("SNR per pixel (log colour scale)", color=INK, fontsize=10, loc="left")
-    cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, format=PLAIN)
+    cb.ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     cb.ax.tick_params(colors=INK2, labelsize=8)
     fig.tight_layout()
     c2.pyplot(fig)
     plt.close(fig)
+    PLOT_LOCK.release()
 
     s1, s2, s3, s4, s5 = st.columns(5)
     s1.metric("median SNR", f"{np.median(vals):.3f}" if vals.size else "nan")
@@ -168,6 +179,7 @@ def main():
                    "left out: under the g weighting these are pixels that are 0 in every "
                    "sample of the batch.")
 
+    PLOT_LOCK.acquire()
     fig, ax = plt.subplots(figsize=(11, 2.8), dpi=150)
     fig.patch.set_facecolor(SURFACE)
     med = np.array([np.nanmedian(r) if np.isfinite(r).any() else np.nan for r in snr_all])
@@ -180,8 +192,9 @@ def main():
     ax.axhline(1.0, color=GRID, linewidth=1.0)
     ax.set_xscale("log")
     ax.set_yscale("log")
-    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}"))
-    ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+    for axis in (ax.xaxis, ax.yaxis):
+        axis.set_major_formatter(PLAIN)
+        axis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     style(ax)
     ax.set_xlabel("completed optimizer steps (log; the initial state is drawn at 1)",
                   color=INK2, fontsize=9)
@@ -190,6 +203,7 @@ def main():
     fig.tight_layout()
     st.pyplot(fig)
     plt.close(fig)
+    PLOT_LOCK.release()
     st.caption(f"batch of {int(d['batch_size'])} training images (seed {int(d['batch_seed'])}), "
                f"noise seed {int(d['noise_seed'])}, sigma {float(d['sigma']):g} "
                f"({str(d['sigma_mode'])}), hidden {int(d['hidden'])}; source {args.root}")
