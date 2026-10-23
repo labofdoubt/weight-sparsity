@@ -26,6 +26,7 @@ import streamlit as st  # noqa: E402
 
 INK, INK2, MUTED, GRID, AXIS, SURFACE = "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7", "#fcfcfb"
 BLUE = "#2a78d6"
+ORANGE = "#eb6834"  # the pure-noise reference: the palette's second categorical slot
 #: matplotlib's mathtext parser (pyparsing) is not thread-safe, and Streamlit
 #: can overlap reruns; every log axis gets a plain-number formatter (no
 #: mathtext) and the figures are built under one lock.
@@ -129,7 +130,7 @@ def main():
     # analysis/dust_snr_viewer.py)
     ref = np.abs(np.random.default_rng(0).standard_normal(200_000))
     counts, _ = np.histogram(np.clip(ref, bins[0], hi), bins=bins)
-    ax.plot(centers, counts * (vals.size / ref.size), color=MUTED, lw=1.3, ls="--",
+    ax.plot(centers, counts * (vals.size / ref.size), color=ORANGE, lw=1.6, ls="--",
             label="pure-noise reference |N(0,1)|")
     ax.axvline(1.0, color=MUTED, linewidth=1.0)
     ax.legend(fontsize=7, frameon=False, loc="upper right")
