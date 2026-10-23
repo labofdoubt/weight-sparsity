@@ -115,9 +115,10 @@ def main():
     meta = metas[(k, pop)]
     L, T, S = int(meta["layers"]), int(meta["seq_len"]), int(meta["sequences"])
     labels = [label(n) for n in steps]
-    s1, s2, s3, s4, s5 = st.columns([3, 1, 2, 1, 1])
+    s1, s2, s3, s4, s5, s6 = st.columns([3, 1, 2, 1, 1, 1])
     i = s1.slider("checkpoint", 0, len(steps) - 1, 0, key="ckpt_choice")
     logx = s5.toggle("log x-axis", value=True, key="logx_choice")
+    nbins = s6.slider("bins", 20, 400, 60, step=10, key="bins_choice")
     i = min(i, len(steps) - 1)
     layer = s2.slider("bottleneck", 0, L - 1, 0, key="layer_choice")
     tok = s3.slider("token position", 0, T - 1, T // 2, key="tok_choice")
@@ -140,13 +141,13 @@ def main():
     fig, ax = plt.subplots(figsize=(6.4, 3.0), dpi=220)
     fig.patch.set_facecolor(SURFACE)
     if logx:
-        bins = np.logspace(np.log10(lo), np.log10(hi), 60)
+        bins = np.logspace(np.log10(lo), np.log10(hi), nbins + 1)
         centers = np.sqrt(bins[:-1] * bins[1:])
     else:
-        bins = np.linspace(0.0, hi, 60)
+        bins = np.linspace(0.0, hi, nbins + 1)
         centers = 0.5 * (bins[:-1] + bins[1:])
-    ax.hist(np.clip(vals, bins[0], hi), bins=bins, color=BLUE, edgecolor=SURFACE, linewidth=0.6,
-            label="measured")
+    ax.hist(np.clip(vals, bins[0], hi), bins=bins, color=BLUE, edgecolor=SURFACE,
+            linewidth=0.6 if nbins <= 100 else 0.0, label="measured")
     # pure-noise reference: a coordinate without signal has sqrt(K) |mu| / nu
     # distributed as |N(0, 1)| (median 0.674), independent of K
     ref = np.abs(np.random.default_rng(0).standard_normal(200_000))
