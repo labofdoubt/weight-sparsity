@@ -5,10 +5,16 @@
 # population 2048, and ONE bottleneck per DUST step (dust_layers_per_step 1,
 # cycling through the 8 bottlenecks, so each DUST step gives all 2048 draws to
 # one bottleneck).  Four cells: sigma 0.2 / 1.0 x encoder / backprop.  Each
-# trains 500 steps of the unchanged 20k-step LR schedule (scripts/train_guard.py
-# --stop-step 500), the same schedule as the full-length hard_k8 run.
+# trains 500 steps of the 20k-step cosine LR schedule WITHOUT warmup
+# (train.warmup_steps 0: the LR starts at its peak 6e-4 and follows the cosine
+# of the 20k run; scripts/train_guard.py --stop-step 500), the schedule of the
+# full-length hard_k8_nowarm run.  Launched 2026-10-23 ~19:00 UTC in place of
+# an identical set with the 500-step warmup, stopped and deleted at ~step 10.
 _base_:
   - ../hp500/base.yaml
+
+train:
+  warmup_steps: 0
 
 activation_bottleneck:
   k: 8

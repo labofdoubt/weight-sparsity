@@ -1,0 +1,11 @@
+# hard_k8.yaml without the LR warmup: train.warmup_steps 0, so the LR starts at
+# its peak 6e-4 and follows the 20k-step cosine; everything else identical
+# (K = 8, J = 1528, MD, no clipping, validation every 50, checkpoints every 250).
+# The schedule of the K = 8 DUST cells (base_dust.yaml); hard_k8.yaml keeps the
+# warmup for comparability with the existing hard runs.
+_base_:
+  - hard_k8.yaml
+
+train:
+  run_name: pa_k8_hard_nowarm
+  warmup_steps: 0

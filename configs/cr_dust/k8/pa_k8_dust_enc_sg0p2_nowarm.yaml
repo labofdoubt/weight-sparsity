@@ -1,0 +1,10 @@
+# K = 8 DUST cell, no LR warmup (see base_dust.yaml): dust_target encoder, dust_sigma 0.2.
+_base_:
+  - base_dust.yaml
+
+train:
+  run_name: pa_k8_dust_enc_sg0p2_nowarm
+
+activation_bottleneck:
+  dust_target: encoder
+  dust_sigma: 0.2
