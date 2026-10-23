@@ -132,11 +132,15 @@ QUANTITIES = {"SNR_K": ("snr", "SNR_K = sqrt(K) |mu| / nu per coordinate"),
               "nu (per-draw standard deviation)": ("nu", "nu per coordinate")}
 
 
-def histogram_and_metrics(container, row, range_values, title, logx, nbins, quantity="SNR_K"):
-    """The per-coordinate histogram (with the pure-noise reference for the
-    SNR), and the summary metrics; ``range_values`` fixes the axis range."""
+def histogram_and_metrics(container, row, range_values, title, logx, nbins, quantity="SNR_K",
+                          nu_row=None, draws=None):
+    """The per-coordinate histogram with the pure-noise reference (for the
+    SNR: |N(0,1)|; for |mu|: the mixture over the coordinates of half-normals
+    with scale nu_c / sqrt(K), from the row's own nu and the probe's draws),
+    and the summary metrics; ``range_values`` fixes the axis range."""
     key, xlabel = QUANTITIES[quantity]
     is_snr = key == "snr"
+    is_mu = key == "mu_abs"
     vals = row[row > 0]
     pos = range_values[range_values > 0]
     lo, hi = (float(np.percentile(pos, 0.1)), float(pos.max())) if pos.size else (1e-3, 1e1)
@@ -152,14 +156,26 @@ def histogram_and_metrics(container, row, range_values, title, logx, nbins, quan
         centers = 0.5 * (bins[:-1] + bins[1:])
     ax.hist(np.clip(vals, bins[0], hi), bins=bins, color=BLUE, edgecolor=SURFACE,
             linewidth=0.6 if nbins <= 100 else 0.0, label="measured")
+    ref, ref_label = None, None
     if is_snr:
         # pure-noise reference: a coordinate without signal has sqrt(K) |mu| / nu
         # distributed as |N(0, 1)| (median 0.674), independent of K
         ref = np.abs(np.random.default_rng(0).standard_normal(200_000))
+        ref_label = "pure-noise reference |N(0,1)|"
+        ax.axvline(1.0, color=MUTED, linewidth=1.0)
+    elif is_mu and nu_row is not None and draws:
+        # pure-noise reference: without signal mu_c ~ N(0, nu_c^2 / K), so |mu_c|
+        # is half-normal with scale nu_c / sqrt(K); the mixture over the row's
+        # coordinates, 100 samples per coordinate
+        nu_pos = nu_row[row > 0]
+        reps = 100
+        ref = (np.abs(np.random.default_rng(0).standard_normal((reps, nu_pos.size)))
+               * (nu_pos / np.sqrt(float(draws)))[None, :]).ravel()
+        ref_label = "pure-noise reference: |N(0, nu_c^2 / K)| per coordinate"
+    if ref is not None:
         counts, _ = np.histogram(np.clip(ref, bins[0], hi), bins=bins)
         ax.plot(centers, counts * (vals.size / ref.size), color=ORANGE, lw=1.6, ls="--",
-                label="pure-noise reference |N(0,1)|")
-        ax.axvline(1.0, color=MUTED, linewidth=1.0)
+                label=ref_label)
         ax.legend(fontsize=8, frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.26),
                   ncol=2)
     if logx:
@@ -295,10 +311,13 @@ def tab_single(args):
                f"{draws} draws at sigma {sigma:g}; pool {meta['pool']} of {meta['n_features']} "
                f"features.")
     snr, snr_vec, valid, _ = load_snr(files[key])
-    arr = snr if QUANTITIES[quantity][0] == "snr" else load_array(files[key], QUANTITIES[quantity][0])
+    qkey = QUANTITIES[quantity][0]
+    arr = snr if qkey == "snr" else load_array(files[key], qkey)
+    nu_row = load_array(files[key], "nu")[sample, 0, tok] if qkey == "mu_abs" else None
     title = (f"block {block}, sigma {sigma:g}, K = {draws} draws, step {step}, token {tok}, "
              f"sample {sample}: {int((arr[sample, 0, tok] > 0).sum())} coordinates")
-    histogram_and_metrics(st, arr[sample, 0, tok], arr, title, logx, nbins, quantity)
+    histogram_and_metrics(st, arr[sample, 0, tok], arr, title, logx, nbins, quantity,
+                          nu_row=nu_row, draws=int(meta["draws"]))
     m4, m5 = st.columns(2)
     m4.metric("vector SNR_K of this token", f"{float(snr_vec[sample, 0, tok]):.3f}")
     m5.metric("token valid", "yes" if bool(valid[sample, tok]) else "no (ignored target)")
