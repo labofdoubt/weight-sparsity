@@ -1,0 +1,14 @@
+# Hard Top-8 (2026-10-23, paris): the hp500 hard baseline (../hp500/hard_k32.yaml:
+# the K=32 code-carried hard model of docs/kj-vs-hard-topk-code-residual.tex with
+# MD decoupling, no gradient clipping, validation every 50 steps, checkpoints
+# every 250 steps keeping the last two) with K = 8 and J = N - K = 1528, trained
+# for the FULL 20k-step schedule (python -m wsparse.train, no stop-step).
+_base_:
+  - ../hp500/hard_k32.yaml
+
+train:
+  run_name: pa_k8_hard
+
+activation_bottleneck:
+  k: 8
+  j: 1528

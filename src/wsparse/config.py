@@ -611,6 +611,16 @@ class ActivationBottleneckConfig:
     # parameterization (raw gains, sphere radii) and keeps its own Adam
     # statistics, the gains' included (wsparse.decouple).
     dust_optimizer: str = "shared"  # shared | separate
+    # Which bottlenecks a DUST step perturbs.  0: all L installed bottlenecks,
+    # each with dust_population / L draws (the default).  m > 0: m
+    # bottlenecks per DUST step, each with dust_population / m draws, chosen
+    # by dust_layer_order: "cycle" takes them in order over the DUST steps
+    # (the d-th DUST step perturbs bottlenecks d*m ... d*m + m - 1 modulo L,
+    # so every bottleneck gets the same number of steps) and "random" draws
+    # them without replacement from the training noise generator.  The
+    # hard steps and the other bottlenecks' parameters are untouched.
+    dust_layers_per_step: int = 0
+    dust_layer_order: str = "cycle"  # cycle | random
     # Multiplier on the learning rate of the DUST steps: the schedule's value
     # lr(t) times this on a DUST step (applied to the separate optimizer at
     # every step, or to the shared optimizer on DUST steps only, the next
@@ -1323,6 +1333,8 @@ class ActivationBottleneckConfig:
         "dust_target": "encoder",
         "dust_grad_scale": 1.0,
         "dust_optimizer": "shared",
+        "dust_layers_per_step": 0,
+        "dust_layer_order": "cycle",
         "dust_lr_scale": 1.0,
         "dust_chunk_draws": 1,
         "dust_cosine_every_steps": 0,
@@ -1335,7 +1347,7 @@ class ActivationBottleneckConfig:
         number of installed bottlenecks) is only known once the bottlenecks
         are installed; the controller checks it.
         """
-        from .bottleneck.dust import OPTIMIZERS, SIGMA_MODES, TARGETS
+        from .bottleneck.dust import LAYER_ORDERS, OPTIMIZERS, SIGMA_MODES, TARGETS
 
         if self.surrogate_mode != "dust":
             changed = [name for name, default in self._DUST_DEFAULTS.items()
@@ -1413,6 +1425,17 @@ class ActivationBottleneckConfig:
         if self.dust_optimizer not in OPTIMIZERS:
             raise ValueError(f"unknown dust_optimizer: {self.dust_optimizer!r} "
                              f"({' | '.join(OPTIMIZERS)})")
+        if int(self.dust_layers_per_step) < 0:
+            raise ValueError("dust_layers_per_step must be >= 0 (0 = all bottlenecks)")
+        if self.dust_layer_order not in LAYER_ORDERS:
+            raise ValueError(f"unknown dust_layer_order: {self.dust_layer_order!r} "
+                             f"({' | '.join(LAYER_ORDERS)})")
+        if int(self.dust_layers_per_step) > 0:
+            m = int(self.dust_layers_per_step)
+            if int(self.dust_population) % m != 0 or int(self.dust_population) // m < 2:
+                raise ValueError(
+                    f"dust_population={self.dust_population} must be a multiple of "
+                    f"dust_layers_per_step={m} with at least 2 draws per bottleneck")
         if int(self.dust_chunk_draws) < 1:
             raise ValueError("dust_chunk_draws must be >= 1")
         if int(self.dust_cosine_every_steps) < 0:

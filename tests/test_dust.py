@@ -166,6 +166,11 @@ def test_population_is_split_evenly_with_at_least_two_draws_each():
     dict(dust_schedule=[-1, 1]),
     dict(dust_target="both"),
     dict(dust_optimizer="two"),
+    dict(dust_layers_per_step=-1),
+    dict(dust_layer_order="roundrobin"),
+    dict(dust_layers_per_step=3),                         # 8 is not a multiple of 3
+    dict(dust_layers_per_step=8, dust_population=8),      # 1 draw per bottleneck
+    dict(surrogate_mode="hard", dust_layers_per_step=1),
     dict(dust_lr_scale=0.0),
     dict(dust_lr_scale=-0.5),
     dict(surrogate_mode="hard", dust_lr_scale=0.5),
@@ -521,6 +526,82 @@ def test_grad_scale_multiplies_the_dust_gradient_only(target):
     assert st3["ce_perturbed"] == pytest.approx(st1["ce_perturbed"])
     for k in st1["cosine"]:
         assert st3["cosine"][k] == pytest.approx(st1["cosine"][k], abs=1e-5)
+
+
+def test_active_layers_cycle_and_random_and_the_per_step_share():
+    cfg = ActivationBottleneckConfig(**bn_kwargs(dust_population=8, dust_layers_per_step=1))
+    st = DustTrainingState(cfg, 2, CPU, seed=0)
+    assert st.per_bottleneck == 8                           # the whole population to one block
+    seq = []
+    for _ in range(5):
+        seq.append(st.active_layers())
+        st.dust_steps += 1
+    assert seq == [[0], [1], [0], [1], [0]]
+    cfg = ActivationBottleneckConfig(**bn_kwargs(dust_population=12, dust_layers_per_step=2))
+    st = DustTrainingState(cfg, 4, CPU, seed=0)
+    assert st.per_bottleneck == 6
+    seq = []
+    for _ in range(3):
+        seq.append(st.active_layers())
+        st.dust_steps += 1
+    assert seq == [[0, 1], [2, 3], [0, 1]]
+    cfg = ActivationBottleneckConfig(**bn_kwargs(dust_population=8, dust_layers_per_step=1,
+                                                 dust_layer_order="random"))
+    st = DustTrainingState(cfg, 4, CPU, seed=3)
+    draws = [st.active_layers() for _ in range(40)]
+    assert all(len(d) == 1 and 0 <= d[0] < 4 for d in draws) and len({d[0] for d in draws}) == 4
+    with pytest.raises(ValueError, match="exceeds"):
+        tiny_model(n_layers=2, dust_population=12, dust_layers_per_step=3)
+    # the default: all bottlenecks, population / L each
+    st = DustTrainingState(ActivationBottleneckConfig(**bn_kwargs(dust_population=8)), 2, CPU, 0)
+    assert st.active_layers() == [0, 1] and st.per_bottleneck == 4
+
+
+@pytest.mark.parametrize("target", ["encoder", "backprop"])
+def test_micro_step_with_one_perturbed_bottleneck_reaches_only_its_parameters(target):
+    model, ctl = tiny_model(n_layers=3, code_residual=(target == "backprop"),
+                            dust_population=8, dust_layers_per_step=1, dust_target=target)
+    cfg = copy.copy(ctl.cfg)
+    state = DustTrainingState(cfg, 3, CPU, seed=0)
+    torch.manual_seed(5)
+    x = torch.randint(0, VOCAB, (4, 8))
+    y = torch.randint(0, VOCAB, (4, 8))
+    model.zero_grad(set_to_none=True)
+    st = dust_micro_step(model, ctl, x, y, state, CPU, torch.float32, accum=1,
+                         active_layers=[1])
+    assert set(st["snr_layers"]) == {"blocks.1"}
+    grads = {n: p.grad for n, p in model.named_parameters()}
+    bot = "residual_out_bottleneck"
+    if target == "encoder":
+        assert grads[f"blocks.1.{bot}.in_proj.weight"] is not None
+        for n, g in grads.items():
+            if n != f"blocks.1.{bot}.in_proj.weight":
+                assert g is None, n
+    else:
+        # everything before block 1's gate input: the embedding, block 0 (its
+        # bottleneck included), block 1's branches and encoder; nothing from
+        # block 1's decoder on
+        for n in ("tok_emb.weight", f"blocks.0.{bot}.in_proj.weight", f"blocks.0.{bot}.out_proj.weight",
+                  "blocks.1.attn.qkv.weight", f"blocks.1.{bot}.in_proj.weight"):
+            assert grads[n] is not None and grads[n].abs().sum() > 0, n
+        for n in (f"blocks.1.{bot}.out_proj.weight", "blocks.2.attn.qkv.weight",
+                  f"blocks.2.{bot}.in_proj.weight", "lm_head.weight"):
+            assert grads[n] is None, n
+
+
+def test_training_with_one_bottleneck_per_dust_step(tmp_path):
+    data = make_fake_dataset(tmp_path, 20_000, 4_000)
+    out = str(tmp_path / "runs")
+    cfg = smoke_config(data, out, run_name="one", dust_population=8, dust_layers_per_step=1,
+                       dust_target="encoder")
+    _, snaps = snapshots_via_on_step(cfg)
+    enc = "blocks.{}.residual_out_bottleneck.in_proj.weight"
+    # DUST step 0 (step index 1) perturbs bottleneck 0, DUST step 1 (index 3) bottleneck 1
+    assert changed(snaps[1], snaps[2], enc.format(0)) and not changed(snaps[1], snaps[2], enc.format(1))
+    rows = [json.loads(l) for l in open(tmp_path / "runs" / "one" / "metrics.jsonl")]
+    tr = [r for r in rows if r.get("dust/steps")]
+    assert "dust_snr/blocks.0" in tr[0] and "dust_snr/blocks.1" not in tr[0]
+    assert "dust_snr/blocks.1" in tr[1] and "dust_snr/blocks.0" not in tr[1]
 
 
 def test_dust_state_round_trip_continues_the_noise_stream():

@@ -92,6 +92,8 @@ SIGMA_MODES = ("absolute", "relative_rms")
 TARGETS = ("encoder", "backprop")
 #: which optimizer applies the DUST gradient (see ActivationBottleneckConfig)
 OPTIMIZERS = ("shared", "separate")
+#: how the bottlenecks of a DUST step are chosen when not all of them are
+LAYER_ORDERS = ("cycle", "random")
 
 #: version of the optional ``dust_state`` checkpoint payload
 DUST_STATE_VERSION = 1
@@ -116,20 +118,26 @@ def dust_step_kind(step: int, schedule: Sequence[int]) -> str:
     return "hard" if (int(step) % period) < n_hard else "dust"
 
 
-def draws_per_bottleneck(population: int, n_bottlenecks: int) -> int:
-    """``K_l = dust_population / L``, which must be an integer >= 2."""
+def draws_per_bottleneck(population: int, n_bottlenecks: int, layers_per_step: int = 0) -> int:
+    """``K_l = dust_population / m`` with ``m`` the bottlenecks perturbed per
+    DUST step (``layers_per_step``, or all ``n_bottlenecks`` when 0); an
+    integer >= 2."""
     population, n_bottlenecks = int(population), int(n_bottlenecks)
     if n_bottlenecks < 1:
         raise ValueError("dust needs at least one installed bottleneck")
-    if population % n_bottlenecks != 0:
+    m = int(layers_per_step) or n_bottlenecks
+    if m > n_bottlenecks:
+        raise ValueError(f"dust_layers_per_step={m} exceeds the {n_bottlenecks} installed "
+                         "bottlenecks")
+    if population % m != 0:
         raise ValueError(
-            f"dust_population={population} must be a multiple of the number of installed "
-            f"bottlenecks ({n_bottlenecks}): every bottleneck gets the same share")
-    per = population // n_bottlenecks
+            f"dust_population={population} must be a multiple of the number of bottlenecks "
+            f"perturbed per DUST step ({m}): every perturbed bottleneck gets the same share")
+    per = population // m
     if per < 2:
         raise ValueError(
             f"dust_population={population} gives {per} draw(s) per bottleneck "
-            f"({n_bottlenecks} bottlenecks); the baseline is the mean over a bottleneck's "
+            f"({m} bottlenecks per DUST step); the baseline is the mean over a bottleneck's "
             "own draws, so at least 2 are needed")
     return per
 
@@ -317,7 +325,12 @@ class DustTrainingState:
     def __init__(self, cfg, n_bottlenecks: int, device: torch.device, seed: int):
         self.population = int(cfg.dust_population)
         self.n_bottlenecks = int(n_bottlenecks)
-        self.per_bottleneck = draws_per_bottleneck(self.population, self.n_bottlenecks)
+        self.layers_per_step = int(getattr(cfg, "dust_layers_per_step", 0))
+        self.layer_order = str(getattr(cfg, "dust_layer_order", "cycle"))
+        if self.layer_order not in LAYER_ORDERS:
+            raise ValueError(f"unknown dust_layer_order: {self.layer_order!r}")
+        self.per_bottleneck = draws_per_bottleneck(self.population, self.n_bottlenecks,
+                                                   self.layers_per_step)
         self.sigma = float(cfg.dust_sigma)
         self.sigma_mode = str(cfg.dust_sigma_mode)
         self.gamma = float(cfg.dust_gamma)
@@ -344,10 +357,27 @@ class DustTrainingState:
         """Whether the DUST step about to run logs the cosine diagnostic."""
         return self.cosine_every > 0 and self.dust_steps % self.cosine_every == 0
 
+    def active_layers(self) -> List[int]:
+        """The bottleneck indices the DUST step about to run perturbs: all of
+        them, or ``dust_layers_per_step`` of them by ``dust_layer_order``
+        (``cycle``: the ``dust_steps``-th block of indices modulo L; ``random``:
+        a draw without replacement from the training noise generator)."""
+        L, m = self.n_bottlenecks, self.layers_per_step
+        if m <= 0 or m >= L:
+            return list(range(L))
+        if self.layer_order == "cycle":
+            start = (self.dust_steps * m) % L
+            return [(start + i) % L for i in range(m)]
+        perm = torch.randperm(L, generator=self.generator, device=self.generator.device)
+        return sorted(int(i) for i in perm[:m].tolist())
+
     def describe(self) -> str:
         n_hard, n_dust = self.schedule
+        m = self.layers_per_step or self.n_bottlenecks
+        where = (f"{m} of {self.n_bottlenecks} bottlenecks per DUST step ({self.layer_order})"
+                 if self.layers_per_step else f"all {self.n_bottlenecks} bottlenecks")
         return (f"schedule [{n_hard} hard, {n_dust} dust], population {self.population} "
-                f"= {self.n_bottlenecks} x {self.per_bottleneck} draws per micro-batch, "
+                f"= {m} x {self.per_bottleneck} draws per micro-batch over {where}, "
                 f"sigma {self.sigma:g} ({self.sigma_mode}), gamma {self.gamma:g}, "
                 f"target {self.target}, grad scale {self.grad_scale:g}, "
                 f"lr scale {self.lr_scale:g}, "
@@ -432,10 +462,13 @@ def _unique_params(params: Sequence[torch.Tensor]) -> List[torch.Tensor]:
 
 def dust_micro_step(model, controller, x: torch.Tensor, y: torch.Tensor,
                     state: DustTrainingState, device: torch.device, dtype: torch.dtype,
-                    accum: int = 1, want_cosine: bool = False) -> Dict[str, float]:
+                    accum: int = 1, want_cosine: bool = False,
+                    active_layers: Optional[Sequence[int]] = None) -> Dict[str, float]:
     """One micro-batch of a DUST step on the UNWRAPPED ``model``: the clean
-    forward, ``K_l`` tails per bottleneck, and the gradient accumulation into
-    ``.grad`` (scaled by ``1 / accum``) according to ``state.target``.
+    forward, ``K_l`` tails per perturbed bottleneck, and the gradient
+    accumulation into ``.grad`` (scaled by ``1 / accum``) according to
+    ``state.target``.  ``active_layers`` restricts the perturbed bottlenecks to
+    these indices (default all; see ``DustTrainingState.active_layers``).
 
     Returns detached floats: ``ce_clean`` (the clean mean CE, what the hard
     steps log as train/ce), ``ce_perturbed`` (mean over draws, bottlenecks
@@ -469,12 +502,17 @@ def dust_micro_step(model, controller, x: torch.Tensor, y: torch.Tensor,
     if len(records) != L:
         raise RuntimeError(f"dust: the clean forward recorded {len(records)} gate calls for "
                            f"{L} installed bottlenecks")
+    active = list(range(L)) if active_layers is None else [int(i) for i in active_layers]
+    if any(i < 0 or i >= L for i in active) or len(set(active)) != len(active):
+        raise ValueError(f"dust: bad bottleneck indices {active} for {L} bottlenecks")
+    records = [records[i] for i in active]
+    n_active = len(records)
     _, valid = token_losses(logits.detach(), y)
     del logits
     n_valid = valid.sum().to(torch.float32)
     if float(n_valid) == 0:
         raise ValueError("dust: the micro-batch has no valid targets")
-    enc_weights = _unique_params([m.in_proj.weight for m in modules])
+    enc_weights = _unique_params([rec.module.in_proj.weight for rec in records])
     true_grads: Dict[int, torch.Tensor] = {}
     if want_cosine:
         grads = torch.autograd.grad(ce, enc_weights, retain_graph=(state.target == "backprop"),
@@ -543,9 +581,9 @@ def dust_micro_step(model, controller, x: torch.Tensor, y: torch.Tensor,
         # each distinct parameter once: a shared encoder holds the sum of every
         # bottleneck's outer product already
         with torch.no_grad():
-            weights = _unique_params([m.in_proj.weight for m in modules])
-            biases = _unique_params([m.in_proj.bias for m in modules
-                                     if m.in_proj.bias is not None])
+            weights = _unique_params([rec.module.in_proj.weight for rec in records])
+            biases = _unique_params([rec.module.in_proj.bias for rec in records
+                                     if rec.module.in_proj.bias is not None])
             for p, store in [(w, outer) for w in weights] + [(b, outer_bias) for b in biases]:
                 if id(p) not in store:
                     continue
@@ -565,7 +603,7 @@ def dust_micro_step(model, controller, x: torch.Tensor, y: torch.Tensor,
                 denom = est.norm() * ref.to(f32).norm()
                 cos = (est * ref.to(f32)).sum() / denom.clamp_min(torch.finfo(f32).tiny)
                 cosine[label_of[id(w)]] = float(cos)
-    draws_total = float(per_l * L)
+    draws_total = float(per_l * n_active)
     labels = list(snr_layers)
     vals = torch.stack([ce_clean, ell_sum / (draws_total * n_valid), reward_sq,
                         ghat_sq / ghat_n.clamp_min(1.0), n_valid]

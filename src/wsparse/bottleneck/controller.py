@@ -174,7 +174,8 @@ class ActivationBottleneckController:
             self._install_code_residual(indices, len(blocks))
         if cfg.surrogate_mode == "dust":
             from .dust import draws_per_bottleneck
-            draws_per_bottleneck(int(cfg.dust_population), len(self.layers))  # raises
+            draws_per_bottleneck(int(cfg.dust_population), len(self.layers),
+                                 int(getattr(cfg, "dust_layers_per_step", 0)))  # raises
         self._restore_decoder_scale(d_model)
         # the model's forward installs per-forward policy settings on these;
         # a plain attribute (like code_residual), so state_dicts are unchanged

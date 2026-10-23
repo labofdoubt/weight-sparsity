@@ -1,0 +1,21 @@
+# DUST at K = 8 (2026-10-23, paris): the hp500 DUST setup (../hp500/base.yaml:
+# the code-carried hard model with MD decoupling, schedule [1, 1], no clipping,
+# separate optimizer, chunk 2, validation every 50 steps, checkpoints every 250
+# steps keeping the last two) with K = 8, J = N - K = 1528 (the full pool),
+# population 2048, and ONE bottleneck per DUST step (dust_layers_per_step 1,
+# cycling through the 8 bottlenecks, so each DUST step gives all 2048 draws to
+# one bottleneck).  Four cells: sigma 0.2 / 1.0 x encoder / backprop.  Each
+# trains 500 steps of the unchanged 20k-step LR schedule (scripts/train_guard.py
+# --stop-step 500), the same schedule as the full-length hard_k8 run.
+_base_:
+  - ../hp500/base.yaml
+
+activation_bottleneck:
+  k: 8
+  j: 1528
+  dust_population: 2048
+  dust_layers_per_step: 1
+  dust_layer_order: cycle
+  dust_gamma: 0.0
+  dust_lr_scale: 1
+  dust_cosine_every_steps: 0

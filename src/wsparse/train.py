@@ -576,10 +576,12 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             # inputs) in .grad; no CE backward.  ce_sum is the clean CE, so
             # train/ce stays the hard-forward CE on every step.
             want_cos = dust.cosine_due()
+            active = dust.active_layers()  # the same bottlenecks for every micro-batch
             for _ in range(accum):
                 x, y = train_stream.batch(micro_bs, device)
                 st = dust_micro_step(unwrap_model(model), bottleneck, x, y, dust, device,
-                                     dtype, accum=accum, want_cosine=want_cos)
+                                     dtype, accum=accum, want_cosine=want_cos,
+                                     active_layers=active)
                 ce_sum += st["ce_clean"]
                 dust_stats.add(st)
             dust.dust_steps += 1

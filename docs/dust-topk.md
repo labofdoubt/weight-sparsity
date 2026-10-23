@@ -134,6 +134,17 @@ The DUST instance's checkpoint payload holds its statistics only and is
 re-aliased to the main optimizer's loaded state on resume, so the main
 optimizer is loaded first.
 
+**`dust_layers_per_step`** (default 0 = all) with **`dust_layer_order`**
+(`cycle` | `random`). With $m > 0$, a DUST step perturbs $m$ of the $L$
+bottlenecks, each with `dust_population`$/m$ draws instead of
+`dust_population`$/L$; under `cycle` the $d$-th DUST step takes bottlenecks
+$dm, \dots, dm + m - 1 \pmod L$, so every bottleneck is perturbed equally
+often, and under `random` they are drawn without replacement from the
+training noise generator. The same bottlenecks are used for every
+micro-batch of the step; the hard steps are unchanged, and in a DUST step the
+parameters the estimate does not reach (the other encoders under `encoder`,
+everything from the perturbed gate on under `backprop`) do not move.
+
 **`dust_lr_scale`** (positive, default 1) multiplies the learning rate of
 the DUST steps: a DUST step uses $\eta(t) \cdot$ `dust_lr_scale` with
 $\eta(t)$ the schedule's value, applied to the separate optimizer at every
