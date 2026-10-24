@@ -1,7 +1,7 @@
 # DUST on the K=32 code-carried model: the 500-step sigma x dust_lr_scale grid
 
-2026-10-22. Single runs, seed 1337; the encoder arm and the baseline on new_york
-(8x RTX 5090), the backprop arm on georgia (8x A100).
+2026-10-22; K = 8 section added 2026-10-24. Single runs, seed 1337; the encoder arm and the baseline on new_york
+(8x RTX 5090), the backprop arm on georgia (8x A100), the K = 8 runs on paris (8x RTX 5090).
 
 **Setup.** The model is the K=32 code-carried hard Top-32 model of
 `docs/kj-vs-hard-topk-code-residual.tex` (`configs/cr_kj/ma_cr_hard_k32_pnorm.yaml`:
@@ -171,6 +171,50 @@ one of these sixteen cells at step 500, independent of sigma, target and
 gamma, so at 128 draws per bottleneck the population estimate has a per-token
 signal-to-noise ratio of about 1.
 
+## K = 8 without LR warmup
+
+The same model with K = 8 and J = N - K = 1528, so the whole pool receives
+the noise (`configs/cr_dust/k8/`). The hard Top-8 run keeps every setting of
+the hp500 baseline (MD decoupling, no clipping, validation every 50 steps)
+except `train.warmup_steps: 0`: the learning rate starts at its peak 6e-4 and
+follows the 20k-step cosine from there, so the 500-step window no longer lies
+inside the warmup. The four DUST cells use that schedule and the grid's
+settings (schedule [1, 1], gamma 0, `dust_lr_scale` 1, a separate optimizer),
+with population 2048 given to a single bottleneck per DUST step
+(`dust_layers_per_step: 1`; the eight bottlenecks in turn, so each is
+perturbed every sixteenth optimizer step with 2048 draws): `dust_target` in
+{encoder, backprop} x sigma in {0.2, 1.0}, 500 steps each. A DUST step took
+235 s on a 5090 (16 h per cell). The hard Top-8 run with the 500-step warmup,
+the convention of every earlier hard run, is quoted for reference; both hard
+runs completed the full 20k steps. All runs on paris (8x RTX 5090).
+
+![K = 8, no warmup](figures/hp500_k8_nowarm_val.png)
+
+Validation CE at step 500:
+
+| dust_target \ sigma | 0.2 | 1.0 |
+|---|---|---|
+| encoder | 3.0137 | **3.0053** |
+| backprop | 3.1437 | 3.4738 |
+| hard Top-8, no LR warmup (no DUST steps, same settings) | 2.6777 | |
+| hard Top-8, with the 500-step LR warmup | 2.9127 | |
+
+The encoder cells end 0.33 to 0.34 nats above the hard run without warmup,
+the gap of the K = 32 cells (0.29 to 0.34 nats above), with the two sigma
+curves within 0.02 nats of each other at every validation. The gap narrows
+over the window, from 0.57 at step 50 to 0.33 at step 500, and both cells
+also end above the hard run with warmup (2.913 at step 500). The backprop
+cells end 0.47 (sigma 0.2) and 0.80 nats (sigma 1.0) above the hard run; at
+sigma 1.0 the gap grows from 0.74 at step 50 to 0.85 at step 350 and the
+curve flattens between steps 300 and 350, the behaviour of the gamma-0
+backprop cells at sigma 0.9 above. The per-draw signal-to-noise ratio of the
+estimate is 0.023 to 0.026 in every cell at step 500, at the pure-noise level
+1/sqrt(2048) = 0.022 of 2048 draws, as the K = 32 cells sat at 1/sqrt(128):
+giving the whole population to one bottleneck leaves the per-token
+signal-to-noise ratio of the population estimate near 1. Over the full
+schedule the hard run without warmup ends at 1.7586 and the one with warmup
+at 1.7923.
+
 ## Runs on Drive
 
 Encoder arm, new_york (`gdrive:weight-sparsity/runs_new_york/`):
@@ -213,6 +257,13 @@ Without MD decoupling, gamma 0.99, new_york (`gdrive:weight-sparsity/runs_new_yo
 `ny_hp500_enc_p1024_nomd_g099_sg0p3_lr1`, `ny_hp500_enc_p1024_nomd_g099_sg0p9_lr1`,
 `ny_hp500_bp_p1024_nomd_g099_sg0p03_lr1`, `ny_hp500_bp_p1024_nomd_g099_sg0p1_lr1`,
 `ny_hp500_bp_p1024_nomd_g099_sg0p3_lr1`, `ny_hp500_bp_p1024_nomd_g099_sg0p9_lr1`.
+
+K = 8 without LR warmup, paris (`gdrive:weight-sparsity/runs_paris/`):
+`pa_k8_hard` (warmup, full 20k steps), `pa_k8_hard_nowarm` (no warmup, full
+20k steps), `pa_k8_dust_enc_sg0p2_nowarm`, `pa_k8_dust_enc_sg1p0_nowarm`,
+`pa_k8_dust_bp_sg0p2_nowarm`, `pa_k8_dust_bp_sg1p0_nowarm` (checkpoints at
+steps 250 and 500; the hard runs carry the checkpoints that reached Drive
+before pruning, every 250 steps with the last two kept, including step 20000).
 
 Original hard Top-32 run (reference value only):
 `gdrive:weight-sparsity/runs_madrid/ma_cr_hard_k32_pnorm`.

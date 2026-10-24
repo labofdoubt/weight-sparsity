@@ -15,7 +15,11 @@ curve per sigma (``hp500_p<P>_val_<target>.png``); without it (model.decouple
 false, md_init), one two-panel figure per gamma, encoder left and backprop
 right, against the hard Top-32 run without decoupling
 (``hp500_p<P>_nomd_g<gamma>_val.png``, ``--baseline-nomd``), each with its
-table; and ``hp500_hard_md_vs_nomd.png`` compares the two hard runs.
+table; and ``hp500_hard_md_vs_nomd.png`` compares the two hard runs.  The K=8
+runs without LR warmup (``--k8-runs-dir``: runs named *_k8_dust_<enc|bp>_sg<sigma>*,
+population 2048 to one bottleneck per DUST step; ``--baseline-k8``: the hard
+Top-8 run without warmup; ``--ref-k8``: the hard Top-8 run with warmup, value
+only) give the same two-panel figure, ``hp500_k8_nowarm_val.png``, and table.
 
   python scripts/plot_dust_hp500.py --runs-dir <root> [--runs-dir <root2>] \
       --baseline <ny_hp500_hard_k32/metrics.jsonl> \
@@ -257,6 +261,101 @@ def hard_md_figure(baseline, baseline_nomd, out_path: str, ymax: float) -> None:
     plt.close(fig)
 
 
+K8_SIGMAS = [0.2, 1.0]
+K8_BASE_LABEL = "hard Top-8, code carried, no LR warmup (baseline: no DUST steps)"
+
+
+def load_k8_runs(roots: List[str]) -> Dict[Tuple[str, float], dict]:
+    """The K=8 DUST runs without LR warmup, keyed by (dust_target, dust_sigma)."""
+    runs = {}
+    for root in roots:
+        for cfg_path in glob.glob(os.path.join(root, "**", "*_k8_dust_*", "config.json"),
+                                  recursive=True):
+            run_dir = os.path.dirname(cfg_path)
+            cfg = json.load(open(cfg_path))
+            ab, tr = cfg["activation_bottleneck"], cfg["train"]
+            if ab.get("surrogate_mode") != "dust" or int(ab["k"]) != 8:
+                continue
+            metrics_path = os.path.join(run_dir, "metrics.jsonl")
+            if not os.path.exists(metrics_path):
+                continue
+            rows = read_jsonl(metrics_path)
+            runs[(ab["dust_target"], float(ab["dust_sigma"]))] = {
+                "name": tr["run_name"], "dir": run_dir, "val": val_curve(rows),
+                "last_step": max((int(r["step"]) for r in rows), default=0),
+                "finished": os.path.exists(os.path.join(run_dir, "summary.json")),
+                "population": int(ab.get("dust_population", 0)),
+                "layers_per_step": int(ab.get("dust_layers_per_step", 0)),
+                "warmup": int(tr.get("warmup_steps", 0)),
+            }
+    return runs
+
+
+def k8_panels(runs, baseline, out_path: str, ymax: float) -> None:
+    """Two panels, encoder left and backprop right (the layout of nomd_panels):
+    the K=8 DUST cells without LR warmup, one curve per sigma, against the hard
+    Top-8 run without warmup."""
+    fig, axes = plt.subplots(1, 2, figsize=(12.0, 4.8), dpi=150, sharey=True)
+    ramp = matplotlib.colormaps["Oranges"]
+    colors = [ramp(0.45 + 0.5 * i / (len(K8_SIGMAS) - 1)) for i in range(len(K8_SIGMAS))]
+    ymin = None
+    for ax, (target, _) in zip(axes, TARGETS):
+        for color, sigma in zip(colors, K8_SIGMAS):
+            run = runs.get((target, sigma))
+            if run is None or not run["val"]:
+                continue
+            steps = [s for s, _ in run["val"] if s <= STEP_END]
+            vals = [v for s, v in run["val"] if s <= STEP_END]
+            ax.plot(steps, vals, color=color, lw=2.0, marker="o", ms=3.5,
+                    label=f"sigma {sigma:g}")
+            finite = [v for v in vals if v == v and v < float("inf")]
+            if finite:
+                ymin = min(finite) if ymin is None else min(ymin, min(finite))
+        if baseline:
+            bs = [s for s, _ in baseline if s <= STEP_END]
+            bv = [v for s, v in baseline if s <= STEP_END]
+            ax.plot(bs, bv, color="black", ls="--", lw=1.8, marker="s", ms=3.0,
+                    label=K8_BASE_LABEL)
+            ymin = min(bv) if ymin is None else min(ymin, min(bv))
+        ax.set_title(f"dust_target = {target}", fontsize=11)
+        ax.set_xlim(0, STEP_END)
+        ax.set_xlabel("optimizer step")
+        ax.grid(alpha=0.25, lw=0.6)
+        ax.spines[["top", "right"]].set_visible(False)
+    axes[0].set_ylabel("validation CE (nats)")
+    for ax in axes:
+        ax.set_ylim((ymin - 0.1) if ymin is not None else 0.0, ymax)
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=3, fontsize=9, frameon=False,
+               bbox_to_anchor=(0.5, -0.02))
+    fig.suptitle("DUST at K = 8, population 2048 to one bottleneck per DUST step, "
+                 "no LR warmup: validation CE over the first 500 steps", fontsize=11.5)
+    fig.tight_layout(rect=(0, 0.08, 1, 0.95))
+    fig.savefig(out_path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def k8_table(runs, base_value: Optional[float], ref_value: Optional[float]) -> str:
+    lines = ["| dust_target \\ sigma | " + " | ".join(f"{s:g}" for s in K8_SIGMAS) + " |",
+             "|---|" + "---|" * len(K8_SIGMAS)]
+    for target, _ in TARGETS:
+        cells = []
+        for sigma in K8_SIGMAS:
+            run = runs.get((target, sigma))
+            v = value_at(run["val"], STEP_END) if run else None
+            cells.append("--" if run is None else (f"{v:.4f}" if v is not None
+                                                   else f"(step {run['last_step']})"))
+        lines.append(f"| {target} | " + " | ".join(cells) + " |")
+    pad = [""] * (len(K8_SIGMAS) - 1)
+    if base_value is not None:
+        lines.append("| hard Top-8, no LR warmup (no DUST steps, same settings) | "
+                     + " | ".join([f"{base_value:.4f}"] + pad) + " |")
+    if ref_value is not None:
+        lines.append("| hard Top-8, with the 500-step LR warmup | "
+                     + " | ".join([f"{ref_value:.4f}"] + pad) + " |")
+    return "\n".join(lines)
+
+
 def table(runs, target: str, base_value: Optional[float], ref_value: Optional[float]) -> str:
     head = "| sigma \\ dust_lr_scale | " + " | ".join(str(s) for s in SCALES) + " |"
     sep = "|---|" + "---|" * len(SCALES)
@@ -288,7 +387,14 @@ def table(runs, target: str, base_value: Optional[float], ref_value: Optional[fl
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--runs-dir", action="append", required=True)
+    ap.add_argument("--runs-dir", action="append", default=[],
+                    help="root(s) holding the *_hp500_* runs")
+    ap.add_argument("--k8-runs-dir", action="append", default=[],
+                    help="root(s) holding the *_k8_dust_* runs (no LR warmup)")
+    ap.add_argument("--baseline-k8", default=None,
+                    help="metrics.jsonl of the hard Top-8 run without LR warmup")
+    ap.add_argument("--ref-k8", default=None,
+                    help="metrics.jsonl of the hard Top-8 run with LR warmup (value only)")
     ap.add_argument("--baseline", default=None,
                     help="metrics.jsonl of the grid's hard Top-32 baseline run")
     ap.add_argument("--baseline-nomd", default=None,
@@ -362,6 +468,22 @@ def main() -> None:
               f"| hard Top-32, MD decoupling | {base_value:.4f} |\n"
               f"| hard Top-32, no MD decoupling (AdamW, wd 0.1) | {base_nomd_value:.4f} |"
               if base_value is not None and base_nomd_value is not None else "")
+    if args.k8_runs_dir:
+        k8 = load_k8_runs(args.k8_runs_dir)
+        baseline_k8 = val_curve(read_jsonl(args.baseline_k8)) if args.baseline_k8 else []
+        base_k8_value = value_at(baseline_k8, STEP_END) if baseline_k8 else None
+        ref_k8_value = (value_at(val_curve(read_jsonl(args.ref_k8)), STEP_END)
+                        if args.ref_k8 else None)
+        path = os.path.join(args.out, "hp500_k8_nowarm_val.png")
+        k8_panels(k8, baseline_k8, path, args.ymax)
+        print(f"\n## K = 8, no LR warmup: {len(k8)} DUST runs -> {path}\n")
+        print(k8_table(k8, base_k8_value, ref_k8_value))
+        print("\nruns:")
+        for key in sorted(k8):
+            r = k8[key]
+            flag = "" if r["finished"] else f"  [unfinished, last step {r['last_step']}]"
+            print(f"  {key[0]} sigma {key[1]:g}: {r['name']} (population {r['population']}, "
+                  f"{r['layers_per_step']} bottleneck/step, warmup {r['warmup']}){flag}")
 
 
 if __name__ == "__main__":

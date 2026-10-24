@@ -21,14 +21,15 @@
 \title{DUST on the $K{=}32$ code-carried model:\\ the 500-step $\sigma \times$ \code{dust\_lr\_scale} grid\\[2pt]
 \large Research note}
 \author{}
-\date{2026-10-22.}
+\date{2026-10-22; Section~7 added 2026-10-24.}
 
 \begin{document}
 \maketitle
 \vspace{-2em}
 
 Single runs, seed 1337; the encoder arm and the baseline trained on new\_york
-(8$\times$ RTX 5090), the backprop arm on georgia (8$\times$ A100).
+(8$\times$ RTX 5090), the backprop arm on georgia (8$\times$ A100), the $K = 8$
+runs of Section~7 on paris (8$\times$ RTX 5090).
 
 % ============================================================
 \section{Setup}
@@ -296,6 +297,64 @@ draws per bottleneck the population estimate has a per-token signal-to-noise
 ratio of about 1.
 
 % ============================================================
+\section{$K = 8$ without LR warmup}
+% ============================================================
+
+The same model with $K = 8$ and $J = N - K = 1528$, so the whole pool receives
+the noise (\path{configs/cr_dust/k8/}). The hard Top-8 run keeps every setting
+of the hp500 baseline (MD decoupling, no clipping, validation every 50 steps)
+except \code{train.warmup\_steps} $= 0$: the learning rate starts at its peak
+$6 \cdot 10^{-4}$ and follows the 20k-step cosine from there, so the 500-step
+window no longer lies inside the warmup. The four DUST cells use that schedule
+and the grid's settings (schedule $[1, 1]$, $\gamma = 0$, \code{dust\_lr\_scale}
+1, a separate optimizer), with population 2048 given to a single bottleneck
+per DUST step (\code{dust\_layers\_per\_step} $= 1$; the eight bottlenecks in
+turn, so each is perturbed every sixteenth optimizer step with 2048 draws):
+\code{dust\_target} $\in \{\text{encoder}, \text{backprop}\}$ $\times$ $\sigma
+\in \{0.2, 1.0\}$, 500 steps each. A DUST step took 235 s on a 5090 (16 h per
+cell). The hard Top-8 run with the 500-step warmup, the convention of every
+earlier hard run, is quoted for reference; both hard runs completed the full
+20k steps.
+
+\begin{figure}[H]\centering
+\includegraphics[width=\textwidth]{figures/hp500_k8_nowarm_val.png}
+\caption{$K = 8$, no LR warmup: encoder target left, backprop target right,
+one curve per $\sigma$; dashed black, the hard Top-8 run without warmup.}
+\end{figure}
+
+Validation CE at step 500:
+
+\begin{center}\small
+\begin{tabular}{lcc}
+\toprule
+\code{dust\_target} $\backslash\, \sigma$ & $0.2$ & $1.0$ \\
+\midrule
+encoder  & 3.0137 & \bst{3.0053} \\
+backprop & 3.1437 & 3.4738 \\
+\midrule
+hard Top-8, no LR warmup (no DUST steps, same settings) & 2.6777 & \\
+hard Top-8, with the 500-step LR warmup & 2.9127 & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The encoder cells end 0.33 to 0.34 nats above the hard run without warmup,
+the gap of the $K = 32$ cells (0.29 to 0.34 nats in Sections~2, 5 and 6),
+with the two $\sigma$ curves within 0.02 nats of each other at every
+validation. The gap narrows over the window, from 0.57 at step 50 to 0.33 at
+step 500, and both cells also end above the hard run with warmup (2.913 at
+step 500). The backprop cells end 0.47 ($\sigma = 0.2$) and 0.80 nats
+($\sigma = 1.0$) above the hard run; at $\sigma = 1.0$ the gap grows from 0.74
+at step 50 to 0.85 at step 350 and the curve flattens between steps 300 and
+350, the behaviour of the $\gamma = 0$ backprop cells at $\sigma = 0.9$ in
+Sections~5 and~6. The per-draw signal-to-noise ratio of the estimate is 0.023
+to 0.026 in every cell at step 500, at the pure-noise level $1/\sqrt{2048} =
+0.022$ of 2048 draws, as the $K = 32$ cells sat at $1/\sqrt{128}$: giving the
+whole population to one bottleneck leaves the per-token signal-to-noise ratio
+of the population estimate near 1. Over the full schedule the hard run
+without warmup ends at 1.7586 and the one with warmup at 1.7923.
+
+% ============================================================
 \section{Runs on Drive}
 % ============================================================
 
@@ -312,6 +371,14 @@ ratio of about 1.
   and \path{gdrive:weight-sparsity/runs_georgia/ga_hp500_<a>_p1024_nomd_sg<s>_lr1}, eight runs.
 \item Without MD decoupling, $\gamma = 0.99$, new\_york:
   \path{gdrive:weight-sparsity/runs_new_york/ny_hp500_<a>_p1024_nomd_g099_sg<s>_lr1}, eight runs.
+\item $K = 8$ (Section~7), paris: \path{gdrive:weight-sparsity/runs_paris/pa_k8_hard}
+  (warmup, full 20k steps), \path{gdrive:weight-sparsity/runs_paris/pa_k8_hard_nowarm}
+  (no warmup, full 20k steps) and
+  \path{gdrive:weight-sparsity/runs_paris/pa_k8_dust_<a>_sg<s>_nowarm} for
+  \path{<a>} $\in$ \{\path{enc}, \path{bp}\} and \path{<s>} $\in$ \{\path{0p2},
+  \path{1p0}\}, four runs with checkpoints at steps 250 and 500; the hard runs
+  carry the checkpoints that reached Drive before pruning (every 250 steps,
+  the last two kept), including step 20000.
 \item Original hard Top-32 run (reference value only):
   \path{gdrive:weight-sparsity/runs_madrid/ma_cr_hard_k32_pnorm}.
 \end{itemize}
