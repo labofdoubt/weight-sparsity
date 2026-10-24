@@ -8,16 +8,19 @@
 #   cp scripts/score_explorer_service.sh /opt/supervisor-scripts/score_explorer.sh
 #   cp scripts/score_explorer.supervisor.conf /etc/supervisor/conf.d/score_explorer.conf
 #   supervisorctl reread && supervisorctl update
+# or `bash scripts/streamlit_install.sh install <viewer>` (docs/streamlits.md).
+# The data roots and STREAMLIT_SERVER_PORT may be preset in the conf's
+# environment= line; the values below are the defaults.
 utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/environment.sh"
 
 source /venv/main/bin/activate
-export SCORES_DIR=/workspace/analysis/scores
-export PROBE_DIR=/workspace/analysis/probe
-export WNORM_DIR=/workspace/analysis/wnorm
+export SCORES_DIR="${SCORES_DIR:-/workspace/analysis/scores}"
+export PROBE_DIR="${PROBE_DIR:-/workspace/analysis/probe}"
+export WNORM_DIR="${WNORM_DIR:-/workspace/analysis/wnorm}"
 export STREAMLIT_SERVER_ADDRESS=127.0.0.1
-export STREAMLIT_SERVER_PORT=8501
+export STREAMLIT_SERVER_PORT="${STREAMLIT_SERVER_PORT:-8501}"
 export STREAMLIT_SERVER_HEADLESS=true
 export STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 export STREAMLIT_THEME_BASE=light

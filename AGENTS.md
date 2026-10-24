@@ -106,9 +106,12 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
      Drive when it is produced (`rclone copy /workspace/analysis $A`), not at the
      next watcher cycle: a box destroyed mid-cycle lost five minutes of probe
      output on 2026-10-08.
-8. **Analysis viewer**, only if this box serves it: restore `analysis_<name>`
-   and install the streamlit service per `analysis/README.md` §10; tunnel
-   `-L 8501:localhost:8501`.
+8. **Streamlit viewers**, only if this box serves one: `docs/streamlits.md`
+   lists every viewer (score explorer, transformer DUST SNR, MNIST DUST SNR)
+   with its one-line description, its data on Drive or in the repo, its port
+   and its service script. Restore the data, then
+   `bash scripts/streamlit_install.sh install <viewer>` (a supervisor service
+   on 127.0.0.1, survives reboots); tunnel `-L <port>:localhost:<port>`.
 9. **Before launching work:** the test suite green (see below), then a short
    smoke run of a shipped config on one GPU:
    ```bash
@@ -254,3 +257,8 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
   works) or `\(...\)`; one-line `$$...$$` and `\[...\]` do not render.
 - Record new lessons about boxes or setup here or in the guide, not only in an
   agent's private memory.
+- A streamlit viewer is defined by what survives a box: its script, its data
+  on Drive (or in the repo) and `scripts/<viewer>_service.sh` +
+  `scripts/<viewer>.supervisor.conf`. A new or moved viewer, or new data for
+  one, gets its entry in `docs/streamlits.md` updated in the same commit, so
+  any viewer can be relaunched as it was on request.

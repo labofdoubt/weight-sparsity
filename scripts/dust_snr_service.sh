@@ -7,15 +7,18 @@
 #   cp scripts/dust_snr_service.sh /opt/supervisor-scripts/dust_snr.sh
 #   cp scripts/dust_snr.supervisor.conf /etc/supervisor/conf.d/dust_snr.conf
 #   supervisorctl reread && supervisorctl update
+# or `bash scripts/streamlit_install.sh install <viewer>` (docs/streamlits.md).
+# The data roots and STREAMLIT_SERVER_PORT may be preset in the conf's
+# environment= line; the values below are the defaults.
 utils=/opt/supervisor-scripts/utils
 . "${utils}/logging.sh"
 . "${utils}/environment.sh"
 
 source /venv/main/bin/activate
-export DUST_SNR_ROOT=/workspace/analysis/dust_snr
-export DUST_SNR_SINGLE_ROOT=/workspace/analysis/dust_snr_single
+export DUST_SNR_ROOT="${DUST_SNR_ROOT:-/workspace/analysis/dust_snr}"
+export DUST_SNR_SINGLE_ROOT="${DUST_SNR_SINGLE_ROOT:-/workspace/analysis/dust_snr_single}"
 export STREAMLIT_SERVER_ADDRESS=127.0.0.1
-export STREAMLIT_SERVER_PORT=8501
+export STREAMLIT_SERVER_PORT="${STREAMLIT_SERVER_PORT:-8501}"
 export STREAMLIT_SERVER_HEADLESS=true
 export STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 export STREAMLIT_THEME_BASE=light
