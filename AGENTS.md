@@ -65,7 +65,9 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
    python -c "import hashlib; print(hashlib.sha256(open('/workspace/data/tinystories/val.bin','rb').read(1<<22)).hexdigest()[:16])"  # dc382450504b59ae
    ```
    The digest also protects the frozen interpretability benchmark, which
-   indexes tokens by position in `val.bin`. Pull FineWeb-Edu
+   indexes tokens by position in `val.bin`. The 8192-token BPE variant
+   (`data/tinystories_bpe8k`, tokenizer in `tokenizer/`; `configs/small_dust`)
+   has `train.bin` 933538198 and `val.bin` 9382752 bytes. Pull FineWeb-Edu
    (`data/fineweb_edu_10bt`, ~20 GB) only for FineWeb configs; each `.bin` must
    be exactly 2 bytes × the token count in its `meta.json`.
 6. **TensorBoard** already runs under supervisor on box port 16006 (Caddy with
@@ -185,7 +187,9 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
   CE on both kinds of step; `dust/*` describe the DUST steps only, and
   `train/grad_norm` is the last step's, whichever kind. `dust_population`
   must be a multiple of the number of installed bottlenecks with at least 2
-  draws each; single process only; a resume needs the checkpoint's
+  draws each; never data-parallel: under torchrun the ranks split the
+  draws of every DUST step (rank 0 trains alone and owns the batch, the
+  others compute draws; docs/dust-topk.md §6), a resume needs the checkpoint's
   `dust_state` (and `dust_optimizer` under `dust_optimizer: separate`; under
   `decouple` that instance shares the MD gains and radii of the main one, so
   load the main optimizer first). A DUST step with population P

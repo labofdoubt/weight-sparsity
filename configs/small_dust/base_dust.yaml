@@ -1,0 +1,22 @@
+# DUST cells of the small-model study (see base.yaml): the hp500 DUST settings
+# (../cr_dust/hp500/base.yaml: schedule [1, 1], dust_target encoder, gamma 0,
+# dust_lr_scale 1, a separate optimizer sharing the MD parameterization) with
+# the whole pool J = N - K under noise, sigma 0.1 (absolute), and every
+# bottleneck perturbed on every DUST step.  dust_population is the total over
+# the 4 bottlenecks: 4 x the per-bottleneck draws set per run.
+_base_:
+  - base.yaml
+
+activation_bottleneck:
+  surrogate_mode: dust
+  dust_population: 512
+  dust_sigma: 0.1
+  dust_sigma_mode: absolute
+  dust_schedule: [1, 1]
+  dust_target: encoder
+  dust_optimizer: separate
+  dust_gamma: 0.0
+  dust_lr_scale: 1
+  dust_layers_per_step: 0
+  dust_chunk_draws: 16
+  dust_cosine_every_steps: 5

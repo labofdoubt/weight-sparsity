@@ -73,7 +73,10 @@ Deliberate choices, kept in sync with ``docs/dust-topk.md``:
   Under bf16 the perturbed pre-activations are rounded to bf16 before the
   gate, so ``sigma`` should stay well above the bf16 resolution of ``z``
   (about ``4e-3 |z|``).
-- Single process only: the DUST step does not go through DDP's reducer.
+- No data parallelism: the DUST step does not go through DDP's reducer.
+  Under torchrun the ranks share the DRAWS instead (``DustDrawGroup``):
+  rank 0 trains, the others compute their share of every bottleneck's
+  population and the running sums are reduced onto rank 0.
 """
 
 from __future__ import annotations
@@ -228,6 +231,89 @@ def noise_scale(mode: str, sigma: float, z: torch.Tensor, cand_idx: torch.Tensor
     raise ValueError(f"unknown dust_sigma_mode: {mode!r}")
 
 
+#: the running sums of :func:`dust_draw_sums`, in the order they are packed
+#: for the reduction over the ranks of a :class:`DustDrawGroup`
+SUM_KEYS = ("s_a", "s_ra", "r_sum", "r2_sum", "a2_sum", "ra2_sum", "r2a2_sum", "ell_sum")
+
+
+def dust_draw_sums(z: torch.Tensor, cand_idx: torch.Tensor, sigma_t: torch.Tensor,
+                   draws: int, gamma: float,
+                   loss_fn: Callable[[torch.Tensor], torch.Tensor],
+                   generator: Optional[torch.Generator] = None, chunk: int = 1
+                   ) -> Dict[str, torch.Tensor]:
+    """The draw loop of :func:`dust_estimate`: ``draws`` perturbations of the
+    pool, ``chunk`` per tail forward, accumulated into the running sums
+    ``SUM_KEYS`` (float32; ``[B, T, M]`` for ``s_a``, ``s_ra``, ``[B, T]``
+    for the per-token sums, a scalar ``ell_sum``).  The sums are additive
+    over draws, so sums formed on several ranks from independent noise and
+    added are the sums of their union (:class:`DustDrawGroup`); ``draws = 0``
+    returns zeros."""
+    z = z.detach()
+    B, T, N = z.shape
+    M = cand_idx.shape[-1]
+    dev = z.device
+    f32 = torch.float32
+    s_a = torch.zeros(B, T, M, dtype=f32, device=dev)
+    s_ra = torch.zeros(B, T, M, dtype=f32, device=dev)
+    r_sum = torch.zeros(B, T, dtype=f32, device=dev)
+    r2_sum = torch.zeros(B, T, dtype=f32, device=dev)
+    a2_sum = torch.zeros(B, T, dtype=f32, device=dev)      # sum_i ||a_i||^2
+    ra2_sum = torch.zeros(B, T, dtype=f32, device=dev)     # sum_i R_i ||a_i||^2
+    r2a2_sum = torch.zeros(B, T, dtype=f32, device=dev)    # sum_i R_i^2 ||a_i||^2
+    ell_sum = torch.zeros((), dtype=f32, device=dev)
+    draws = int(draws)
+    chunk = max(1, min(int(chunk), max(draws, 1)))
+    zf = z.to(f32).unsqueeze(0)
+    done = 0
+    while done < draws:
+        c = min(chunk, draws - done)
+        a = torch.randn((c, B, T, M), generator=generator, dtype=f32, device=dev)
+        noise = torch.zeros((c, B, T, N), dtype=f32, device=dev)
+        noise.scatter_(-1, cand_idx.unsqueeze(0).expand(c, B, T, M), sigma_t.unsqueeze(0) * a)
+        zp = (zf + noise).to(z.dtype).reshape(c * B, T, N)
+        del noise
+        ell = loss_fn(zp).reshape(c, B, T).to(f32)
+        del zp
+        r = discounted_returns(ell, gamma).to(f32)
+        s_a += a.sum(0)
+        s_ra += (r.unsqueeze(-1) * a).sum(0)
+        r_sum += r.sum(0)
+        r2_sum += (r * r).sum(0)
+        a2 = (a * a).sum(-1)
+        a2_sum += a2.sum(0)
+        ra2_sum += (r * a2).sum(0)
+        r2a2_sum += (r * r * a2).sum(0)
+        ell_sum += ell.sum()
+        done += c
+        del a, ell, r
+    return {"s_a": s_a, "s_ra": s_ra, "r_sum": r_sum, "r2_sum": r2_sum, "a2_sum": a2_sum,
+            "ra2_sum": ra2_sum, "r2a2_sum": r2a2_sum, "ell_sum": ell_sum}
+
+
+def dust_finalize(sums: Dict[str, torch.Tensor], draws: int, sigma_t: torch.Tensor
+                  ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    """``(g^_pool, stats)`` of :func:`dust_estimate` from the running sums of
+    ``draws`` draws in total (the draws of every rank under a
+    :class:`DustDrawGroup`): the baseline is the mean over all of them."""
+    f32 = torch.float32
+    draws = int(draws)
+    s_a, s_ra = sums["s_a"], sums["s_ra"]
+    r_sum, r2_sum = sums["r_sum"], sums["r2_sum"]
+    a2_sum, ra2_sum, r2a2_sum = sums["a2_sum"], sums["ra2_sum"], sums["r2a2_sum"]
+    r_bar = r_sum / draws
+    ghat = (s_ra - r_bar.unsqueeze(-1) * s_a) / (draws * sigma_t)
+    reward_sq = (r2_sum - draws * r_bar * r_bar).clamp_min(0.0).sum()
+    # per-draw SNR of the estimator, per token
+    sig2 = sigma_t.squeeze(-1).pow(2)
+    mu2 = ghat.pow(2).sum(-1)
+    z2_sum = (r2a2_sum - 2.0 * r_bar * ra2_sum + r_bar * r_bar * a2_sum) / sig2
+    nu2 = (z2_sum - draws * mu2).clamp_min(0.0) / max(draws - 1, 1)
+    snr = torch.where(nu2 > 0, mu2.sqrt() / nu2.sqrt().clamp_min(torch.finfo(f32).tiny),
+                      torch.zeros_like(mu2))
+    return ghat, {"ell_sum": sums["ell_sum"], "reward_sq_sum": reward_sq,
+                  "draws": torch.tensor(float(draws), device=ghat.device), "snr": snr}
+
+
 def dust_estimate(z: torch.Tensor, cand_idx: torch.Tensor, sigma_t: torch.Tensor,
                   draws: int, gamma: float,
                   loss_fn: Callable[[torch.Tensor], torch.Tensor],
@@ -260,56 +346,29 @@ def dust_estimate(z: torch.Tensor, cand_idx: torch.Tensor, sigma_t: torch.Tensor
     and ``sum_i ||z_t^(i)||^2`` formed from the running sums of
     ``R^2 ||a||^2``, ``R ||a||^2`` and ``||a||^2``; 0 where the draws agree.
     """
-    z = z.detach()
-    B, T, N = z.shape
-    M = cand_idx.shape[-1]
-    dev = z.device
-    f32 = torch.float32
-    s_a = torch.zeros(B, T, M, dtype=f32, device=dev)
-    s_ra = torch.zeros(B, T, M, dtype=f32, device=dev)
-    r_sum = torch.zeros(B, T, dtype=f32, device=dev)
-    r2_sum = torch.zeros(B, T, dtype=f32, device=dev)
-    a2_sum = torch.zeros(B, T, dtype=f32, device=dev)      # sum_i ||a_i||^2
-    ra2_sum = torch.zeros(B, T, dtype=f32, device=dev)     # sum_i R_i ||a_i||^2
-    r2a2_sum = torch.zeros(B, T, dtype=f32, device=dev)    # sum_i R_i^2 ||a_i||^2
-    ell_sum = torch.zeros((), dtype=f32, device=dev)
-    draws = int(draws)
-    chunk = max(1, min(int(chunk), draws))
-    zf = z.to(f32).unsqueeze(0)
-    done = 0
-    while done < draws:
-        c = min(chunk, draws - done)
-        a = torch.randn((c, B, T, M), generator=generator, dtype=f32, device=dev)
-        noise = torch.zeros((c, B, T, N), dtype=f32, device=dev)
-        noise.scatter_(-1, cand_idx.unsqueeze(0).expand(c, B, T, M), sigma_t.unsqueeze(0) * a)
-        zp = (zf + noise).to(z.dtype).reshape(c * B, T, N)
-        del noise
-        ell = loss_fn(zp).reshape(c, B, T).to(f32)
-        del zp
-        r = discounted_returns(ell, gamma).to(f32)
-        s_a += a.sum(0)
-        s_ra += (r.unsqueeze(-1) * a).sum(0)
-        r_sum += r.sum(0)
-        r2_sum += (r * r).sum(0)
-        a2 = (a * a).sum(-1)
-        a2_sum += a2.sum(0)
-        ra2_sum += (r * a2).sum(0)
-        r2a2_sum += (r * r * a2).sum(0)
-        ell_sum += ell.sum()
-        done += c
-        del a, ell, r
-    r_bar = r_sum / draws
-    ghat = (s_ra - r_bar.unsqueeze(-1) * s_a) / (draws * sigma_t)
-    reward_sq = (r2_sum - draws * r_bar * r_bar).clamp_min(0.0).sum()
-    # per-draw SNR of the estimator, per token
-    sig2 = sigma_t.squeeze(-1).pow(2)
-    mu2 = ghat.pow(2).sum(-1)
-    z2_sum = (r2a2_sum - 2.0 * r_bar * ra2_sum + r_bar * r_bar * a2_sum) / sig2
-    nu2 = (z2_sum - draws * mu2).clamp_min(0.0) / max(draws - 1, 1)
-    snr = torch.where(nu2 > 0, mu2.sqrt() / nu2.sqrt().clamp_min(torch.finfo(f32).tiny),
-                      torch.zeros_like(mu2))
-    return ghat, {"ell_sum": ell_sum, "reward_sq_sum": reward_sq,
-                  "draws": torch.tensor(float(draws), device=dev), "snr": snr}
+    return dust_finalize(dust_draw_sums(z, cand_idx, sigma_t, draws, gamma, loss_fn,
+                                        generator, chunk), draws, sigma_t)
+
+
+def tail_loss_fn(model, block_index: int, placement: str, y: torch.Tensor,
+                 device: torch.device, dtype: torch.dtype
+                 ) -> Callable[[torch.Tensor], torch.Tensor]:
+    """``loss_fn`` of :func:`dust_draw_sums` for the gate of block
+    ``block_index``: the tail from that gate (``forward_from_gate``, head in
+    float32) under ``no_grad`` and autocast, and the per-token CE against
+    ``y`` repeated once per stacked draw."""
+    from ..utils import autocast_context
+
+    B = y.shape[0]
+
+    def loss_fn(zp: torch.Tensor) -> torch.Tensor:
+        c = zp.shape[0] // B
+        with torch.no_grad(), autocast_context(device, dtype):
+            lg = model.forward_from_gate(block_index, placement, zp, head_dtype=torch.float32)
+        ell, _ = token_losses(lg, y.repeat(c, 1))
+        return ell
+
+    return loss_fn
 
 
 # --------------------------------------------------------------------------- #
@@ -349,6 +408,7 @@ class DustTrainingState:
         self.generator = make_generator(device, seed)
         self.device = device
         self.dust_steps = 0  # completed DUST optimizer steps
+        self.draw_ranks = 1  # set by DustDrawGroup when the draws are split over ranks
 
     def kind(self, step: int) -> str:
         return dust_step_kind(step, self.schedule)
@@ -387,18 +447,236 @@ class DustTrainingState:
 
     # -- checkpointing ----------------------------------------------------- #
     def state_dict(self) -> Dict:
+        # world_size: the number of generator states stored (rank 0's only:
+        # the draw workers of a DustDrawGroup reseed per command from the
+        # step count); draw_ranks: the ranks the draws were split over
         return {"version": DUST_STATE_VERSION, "dust_steps": int(self.dust_steps),
-                "world_size": 1, "generator_state": self.generator.get_state().cpu()}
+                "world_size": 1, "draw_ranks": int(self.draw_ranks),
+                "generator_state": self.generator.get_state().cpu()}
 
-    def load_state_dict(self, payload: Dict) -> None:
+    def load_state_dict(self, payload: Dict) -> Optional[str]:
+        """Restore the step count and rank 0's generator.  Returns a note when
+        the checkpoint's draws were split over a different number of ranks
+        (the method is unchanged, the realized noise sequence is not), else
+        None."""
         if int(payload.get("version", -1)) != DUST_STATE_VERSION:
             raise ValueError(f"dust_state version {payload.get('version')!r} is not "
                              f"{DUST_STATE_VERSION}")
         if int(payload.get("world_size", 1)) != 1:
             raise ValueError("dust_state holds more than one noise generator state; "
-                             "dust is single-process only")
+                             "only rank 0's is ever saved")
         self.dust_steps = int(payload["dust_steps"])
         self.generator.set_state(payload["generator_state"].cpu())
+        saved = int(payload.get("draw_ranks", 1))
+        if saved != int(self.draw_ranks):
+            return (f"the checkpoint split the draws over {saved} rank(s), this run over "
+                    f"{self.draw_ranks}: the noise sequence differs from an uninterrupted run")
+        return None
+
+
+# --------------------------------------------------------------------------- #
+# population-parallel draws over the ranks of a torchrun group
+# --------------------------------------------------------------------------- #
+
+_M64 = (1 << 64) - 1
+
+
+def _mix_seed(*values: int) -> int:
+    """A 63-bit seed from integers (splitmix64 steps), so that the seeds of
+    different (rank, step, call) triples are unrelated."""
+    h = 0
+    for v in values:
+        h = (h + (int(v) & _M64) + 0x9E3779B97F4A7C15) & _M64
+        h = ((h ^ (h >> 30)) * 0xBF58476D1CE4E5B9) & _M64
+        h = ((h ^ (h >> 27)) * 0x94D049BB133111EB) & _M64
+        h ^= h >> 31
+    return h & ((1 << 63) - 1)
+
+
+class DustDrawGroup:
+    """The DUST draws of every bottleneck split over the ``world`` ranks of a
+    torchrun group (one process per GPU), the training on rank 0 alone.
+
+    Rank 0 runs ``train()`` as a single process would: its data, hard steps,
+    optimizers, logs and checkpoints are those of a single-process run.  The
+    ranks > 0 only compute draws.  At the start of every DUST step rank 0
+    broadcasts every parameter and buffer of the model (:meth:`begin_step`);
+    for every perturbed bottleneck of every micro-batch it broadcasts the
+    clean gate input ``z``, the pool, ``sigma_t`` and the targets, every rank
+    runs its share of the ``K_l`` draws through the tail, and the running sums
+    of :func:`dust_draw_sums` are summed onto rank 0 (:meth:`draw_sums`),
+    which forms the estimate from all ``K_l`` draws (:func:`dust_finalize`).
+    The estimator is therefore the single-process one over the union of the
+    ranks' draws; only the realized noise differs.
+
+    Rank 0 draws its share from the run's DUST generator (so its draws are
+    the first ones a single-process run would make); rank ``r > 0`` reseeds
+    its own generator for every command from ``(seed, r, DUST step, call)``,
+    so a resume at the same number of ranks continues the same noise without
+    saving the workers' generator states.  Rank ``r`` draws
+    ``K_l // world`` draws, plus one for the first ``K_l % world`` ranks.
+
+    The protocol is a fixed sequence of broadcasts and one reduce per
+    command, issued in the same order on every rank; :meth:`serve` is the
+    workers' loop and returns on :meth:`stop`.
+    """
+
+    OP_STOP, OP_PARAMS, OP_DRAWS = 0, 1, 2
+    CMD_LEN = 12
+    PLACEMENTS = ("residual", "residual_out")
+    DTYPES = (torch.float32, torch.bfloat16, torch.float16)
+
+    def __init__(self, model, state: "DustTrainingState", world: int, rank: int,
+                 device: torch.device, dtype: torch.dtype, seed: int):
+        import torch.distributed as dist
+
+        self.dist = dist
+        self.model = model
+        self.state = state
+        self.world, self.rank = int(world), int(rank)
+        if self.world < 2:
+            raise ValueError("a DustDrawGroup needs at least 2 ranks")
+        self.device, self.dtype = device, dtype
+        self.seed = int(seed)
+        self.generator = make_generator(device, 0) if self.rank > 0 else None
+        self._step = 0
+        self._calls = 0
+        self._stopped = False
+        state.draw_ranks = self.world
+        # every rank built the same model: check the tensor list agrees
+        # before relying on the broadcast order
+        tensors = self._tensors()
+        sig = torch.tensor([len(tensors), sum(t.numel() for t in tensors)],
+                           dtype=torch.int64, device=device)
+        ref = sig.clone()
+        dist.broadcast(ref, 0)
+        if not torch.equal(sig, ref):
+            raise RuntimeError(f"dust draw group: rank {self.rank} built a model with "
+                               f"{sig.tolist()} (tensors, elements), rank 0 {ref.tolist()}")
+
+    # -- helpers ----------------------------------------------------------- #
+    def shares(self, draws: int) -> List[int]:
+        q, r = divmod(int(draws), self.world)
+        return [q + (1 if i < r else 0) for i in range(self.world)]
+
+    def worker_seed(self, step: int, call: int, rank: Optional[int] = None) -> int:
+        return _mix_seed(self.seed, self.rank if rank is None else rank, step, call)
+
+    def describe(self) -> str:
+        per = self.state.per_bottleneck
+        return (f"draws split over {self.world} ranks ({'/'.join(map(str, self.shares(per)))} "
+                f"of the {per} draws per bottleneck); rank 0 trains, ranks 1..{self.world - 1} "
+                "compute draws only")
+
+    def _tensors(self) -> List[torch.Tensor]:
+        out = [p for _, p in self.model.named_parameters()]
+        out += [b for _, b in self.model.named_buffers()]
+        return out
+
+    def _command(self, values: Optional[Sequence[int]]) -> List[int]:
+        cmd = torch.zeros(self.CMD_LEN, dtype=torch.int64, device=self.device)
+        if values is not None:
+            cmd[: len(values)] = torch.tensor([int(v) for v in values], dtype=torch.int64)
+        self.dist.broadcast(cmd, 0)
+        return cmd.tolist()
+
+    def _sync_tensors(self) -> None:
+        with torch.no_grad():
+            for t in self._tensors():
+                if t.dtype == torch.bool:
+                    buf = t.to(torch.uint8)
+                    self.dist.broadcast(buf, 0)
+                    if self.rank > 0:
+                        t.copy_(buf.to(torch.bool))
+                elif t.is_contiguous():
+                    self.dist.broadcast(t.data, 0)
+                else:
+                    buf = t.data.contiguous()
+                    self.dist.broadcast(buf, 0)
+                    if self.rank > 0:
+                        t.data.copy_(buf)
+
+    def _reduce(self, sums: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        flat = torch.cat([sums[k].reshape(-1) for k in SUM_KEYS])
+        self.dist.reduce(flat, 0, op=self.dist.ReduceOp.SUM)
+        out, i = {}, 0
+        for k in SUM_KEYS:
+            n = sums[k].numel()
+            out[k] = flat[i:i + n].view(sums[k].shape)
+            i += n
+        return out
+
+    # -- rank 0 ------------------------------------------------------------ #
+    def begin_step(self, dust_steps: int) -> None:
+        """Rank 0, at the start of a DUST step: the workers receive the current
+        parameters and buffers; ``dust_steps`` (the completed DUST steps) seeds
+        their noise for this step."""
+        self._step = int(dust_steps)
+        self._calls = 0
+        self._command([self.OP_PARAMS])
+        self._sync_tensors()
+
+    def draw_sums(self, block_index: int, placement: str, z: torch.Tensor,
+                  cand_idx: torch.Tensor, sigma_t: torch.Tensor, y: torch.Tensor,
+                  draws: int, gamma: float, loss_fn: Callable[[torch.Tensor], torch.Tensor],
+                  generator: Optional[torch.Generator], chunk: int
+                  ) -> Dict[str, torch.Tensor]:
+        """Rank 0: the running sums of all ``draws`` draws of one bottleneck
+        of one micro-batch, rank 0's share from ``generator``."""
+        z = z.detach().contiguous()
+        B, T, N = z.shape
+        M = cand_idx.shape[-1]
+        self._command([self.OP_DRAWS, block_index, self.PLACEMENTS.index(placement), B, T, N,
+                       M, draws, self.DTYPES.index(z.dtype), self._step, self._calls])
+        self._calls += 1
+        self.dist.broadcast(z, 0)
+        self.dist.broadcast(cand_idx.to(torch.int32).contiguous(), 0)
+        self.dist.broadcast(sigma_t.to(torch.float32).contiguous(), 0)
+        self.dist.broadcast(y.to(torch.int64).contiguous(), 0)
+        sums = dust_draw_sums(z, cand_idx, sigma_t, self.shares(draws)[0], gamma, loss_fn,
+                              generator, chunk)
+        return self._reduce(sums)
+
+    def stop(self) -> None:
+        """Rank 0: release the workers (idempotent)."""
+        if not self._stopped:
+            self._command([self.OP_STOP])
+            self._stopped = True
+
+    # -- ranks > 0 --------------------------------------------------------- #
+    @torch.no_grad()
+    def serve(self) -> int:
+        """The workers' loop: parameters on OP_PARAMS, draws on OP_DRAWS,
+        return on OP_STOP.  Returns the number of draw commands served."""
+        if self.rank == 0:
+            raise RuntimeError("serve() is the loop of the ranks > 0")
+        self.model.eval()  # the tails: no dropout, no usage statistics
+        served = 0
+        dev = self.device
+        while True:
+            cmd = self._command(None)
+            op = cmd[0]
+            if op == self.OP_STOP:
+                return served
+            if op == self.OP_PARAMS:
+                self._sync_tensors()
+                continue
+            if op != self.OP_DRAWS:
+                raise RuntimeError(f"dust draw group: unknown command {cmd}")
+            block_index, pcode, B, T, N, M, draws, dcode, step, call = cmd[1:11]
+            z = torch.empty((B, T, N), dtype=self.DTYPES[dcode], device=dev)
+            idx = torch.empty((B, T, M), dtype=torch.int32, device=dev)
+            sigma_t = torch.empty((B, T, 1), dtype=torch.float32, device=dev)
+            y = torch.empty((B, T), dtype=torch.int64, device=dev)
+            for t in (z, idx, sigma_t, y):
+                self.dist.broadcast(t, 0)
+            self.generator.manual_seed(self.worker_seed(step, call))
+            loss_fn = tail_loss_fn(self.model, block_index, self.PLACEMENTS[pcode], y, dev,
+                                   self.dtype)
+            sums = dust_draw_sums(z, idx.long(), sigma_t, self.shares(draws)[self.rank],
+                                  self.state.gamma, loss_fn, self.generator, self.state.chunk)
+            self._reduce(sums)
+            served += 1
 
 
 class DustRunningStats:
@@ -463,12 +741,15 @@ def _unique_params(params: Sequence[torch.Tensor]) -> List[torch.Tensor]:
 def dust_micro_step(model, controller, x: torch.Tensor, y: torch.Tensor,
                     state: DustTrainingState, device: torch.device, dtype: torch.dtype,
                     accum: int = 1, want_cosine: bool = False,
-                    active_layers: Optional[Sequence[int]] = None) -> Dict[str, float]:
+                    active_layers: Optional[Sequence[int]] = None,
+                    draw_group: Optional[DustDrawGroup] = None) -> Dict[str, float]:
     """One micro-batch of a DUST step on the UNWRAPPED ``model``: the clean
     forward, ``K_l`` tails per perturbed bottleneck, and the gradient
     accumulation into ``.grad`` (scaled by ``1 / accum``) according to
     ``state.target``.  ``active_layers`` restricts the perturbed bottlenecks to
     these indices (default all; see ``DustTrainingState.active_layers``).
+    ``draw_group`` (rank 0 of a :class:`DustDrawGroup`) splits every
+    bottleneck's draws over its ranks; the estimate is formed from all of them.
 
     Returns detached floats: ``ce_clean`` (the clean mean CE, what the hard
     steps log as train/ce), ``ce_perturbed`` (mean over draws, bottlenecks
@@ -541,16 +822,18 @@ def dust_micro_step(model, controller, x: torch.Tensor, y: torch.Tensor,
             cand_idx = pool_indices(z, sel_mode, gate.m)
             sigma_t = noise_scale(state.sigma_mode, state.sigma, z, cand_idx)
 
-            def loss_fn(zp: torch.Tensor, _b=block_index, _p=placement) -> torch.Tensor:
-                c = zp.shape[0] // B
-                with torch.no_grad(), autocast_context(device, dtype):
-                    lg = model.forward_from_gate(_b, _p, zp, head_dtype=torch.float32)
-                ell, _ = token_losses(lg, y.repeat(c, 1))
-                return ell
+            loss_fn = tail_loss_fn(model, block_index, placement, y, device, dtype)
 
             with torch.no_grad():
-                ghat_pool, st = dust_estimate(z, cand_idx, sigma_t, per_l, state.gamma, loss_fn,
-                                              state.generator, state.chunk)
+                if draw_group is None:
+                    ghat_pool, st = dust_estimate(z, cand_idx, sigma_t, per_l, state.gamma,
+                                                  loss_fn, state.generator, state.chunk)
+                else:
+                    sums = draw_group.draw_sums(block_index, placement, z, cand_idx, sigma_t, y,
+                                                per_l, state.gamma, loss_fn, state.generator,
+                                                state.chunk)
+                    ghat_pool, st = dust_finalize(sums, per_l, sigma_t)
+                    del sums
                 ghat_pool = ghat_pool / n_valid
                 ell_sum += st["ell_sum"]
                 reward_sq += st["reward_sq_sum"]

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import builtins
+import datetime
 import glob
 import json
 import math
@@ -24,7 +25,8 @@ from .data import build_streams, load_meta
 from .model import build_model
 from .optim import build_optimizer, count_parameter_groups, lr_at, set_lr
 from .bottleneck import ActivationBottleneckController, apply_activation_bottleneck
-from .bottleneck.dust import DustRunningStats, DustTrainingState, dust_micro_step
+from .bottleneck.dust import (DustDrawGroup, DustRunningStats, DustTrainingState,
+                              dust_micro_step)
 from .bottleneck.laplace_policy import (PolicyForwardSettings, PolicyTrainingState,
                                         make_generator, policy_backward_loss)
 from .bottleneck.rblapsum import first_order_backward
@@ -273,7 +275,13 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         # hand rank r a `cuda:r` that need not exist (fewer GPUs than ranks).
         wants_cuda = resolve_device(cfg.train.device).type == "cuda"
         if not dist.is_initialized():
-            dist.init_process_group("nccl" if wants_cuda else "gloo")
+            pg_kwargs: Dict[str, Any] = {}
+            if (cfg.activation_bottleneck.enabled
+                    and cfg.activation_bottleneck.surrogate_mode == "dust"):
+                # the dust draw workers wait in a broadcast while rank 0 runs
+                # its hard steps, validation and checkpoints
+                pg_kwargs["timeout"] = datetime.timedelta(minutes=60)
+            dist.init_process_group("nccl" if wants_cuda else "gloo", **pg_kwargs)
             ddp_initialized_here = True
         if wants_cuda:
             torch.cuda.set_device(local_rank)
@@ -382,17 +390,29 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
     # independently of everything else, as the policy generator is)
     dust: Optional[DustTrainingState] = None
     dust_stats = DustRunningStats()
+    # Under torchrun a dust run is not data-parallel: the ranks share the
+    # DRAWS of every DUST step (DustDrawGroup).  Rank 0 trains exactly as a
+    # single process would; ranks > 0 serve draws until rank 0 releases them.
+    draw_group: Optional[DustDrawGroup] = None
     if bottleneck.enabled and cfg.activation_bottleneck.surrogate_mode == "dust":
-        if world > 1:
-            raise ValueError("surrogate_mode='dust' is single-process only: the DUST step "
-                             "does not go through DDP's gradient reduction")
         if dtype is torch.float16:
             raise ValueError("surrogate_mode='dust' needs bfloat16 or float32 "
                              "(no GradScaler path for the DUST gradients)")
         dust = DustTrainingState(cfg.activation_bottleneck, len(bottleneck.layers), device,
-                                 seed=cfg.train.seed + 7777 + 104729 * rank)
+                                 seed=cfg.train.seed + 7777)
         print(f"[train] dust: {dust.describe()}; train/ce is the clean hard-forward CE on "
               "both kinds of step, dust/* describe the DUST steps only")
+        if world > 1:
+            draw_group = DustDrawGroup(model, dust, world, rank, device, dtype,
+                                       seed=cfg.train.seed + 7777)
+            print(f"[train] dust: {draw_group.describe()}")
+            if not is_main:
+                draw_group.serve()
+                if ddp_initialized_here:
+                    dist.destroy_process_group()
+                return {}
+    # data-parallel DDP: every rank trains on its own batches (not a dust run)
+    ddp = world > 1 and draw_group is None
     # dust_optimizer: separate -> a second optimizer instance (same builder and
     # hyperparameters, its own Adam moments and step count) applies the DUST
     # gradient, the first one the hard gradient; the parameters are shared, the
@@ -430,7 +450,7 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             def log_figure(self, *a, **k): pass
             def close(self): pass
         logger = _NullLogger()
-    if world > 1:
+    if ddp:
         dist.barrier()  # run_dir and config exist before anyone proceeds
 
     start_step = 0
@@ -464,8 +484,10 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                     f"{resume_path} carries no dust_state (noise RNG, DUST-step count); it "
                     "was not saved by a dust run of this version.  Resume such a run from "
                     "its own checkpoint, or start a fresh run without train.resume")
-            dust.load_state_dict(payload["dust_state"])
+            note = dust.load_state_dict(payload["dust_state"])
             print(f"[train] restored dust state: {dust.dust_steps} DUST steps done, noise RNG")
+            if note:
+                print(f"[train] dust: {note}")
         if dust_optimizer is not None:
             if "dust_optimizer" not in payload:
                 raise ValueError(
@@ -476,7 +498,7 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             print("[train] restored the separate DUST optimizer state")
         print(f"[train] resumed from {resume_path} at step {start_step}")
 
-    if world > 1:
+    if ddp:
         model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[local_rank] if device.type == "cuda" else None,
@@ -499,21 +521,23 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                and getattr(m, "policy_estimator", "") == "rao_blackwell"
                and getattr(m, "policy_rb_scope", "") == "first_order")
            for m in unwrap_model(model).modules()):
-        if world > 1:
+        if ddp:
             raise ValueError("rblapsum_surrogate_scope='first_order' is single-process only")
         first_order_anchor = unwrap_model(model).tok_emb.weight
     accum = cfg.train.grad_accum_steps
     micro_bs = int(cfg.train.micro_batch_size)
     # batch_size is PER RANK (as documented on the field); the global batch is
     # world x batch_size sequences, and throughput metrics report global tokens
-    tokens_per_step = cfg.train.batch_size * cfg.data.seq_len * world
+    # (a dust draw group trains on rank 0's batches only)
+    data_world = world if ddp else 1
+    tokens_per_step = cfg.train.batch_size * cfg.data.seq_len * data_world
 
     print(
         f"[train] device={device} dtype={dtype} params={human(model_params(model))} "
         f"(non-emb {human(model_params(model, non_embedding=True))}) "
         f"batch={cfg.train.batch_size}x{cfg.data.seq_len} tok per rank "
         f"(micro {micro_bs} x accum {accum}"
-        + (f" x world {world} = {human(tokens_per_step)} tok/step" if world > 1 else ")")
+        + (f" x world {world} = {human(tokens_per_step)} tok/step" if ddp else ")")
     )
     print(f"[train] param groups: {count_parameter_groups(optimizer)}")
 
@@ -577,11 +601,13 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             # train/ce stays the hard-forward CE on every step.
             want_cos = dust.cosine_due()
             active = dust.active_layers()  # the same bottlenecks for every micro-batch
+            if draw_group is not None:
+                draw_group.begin_step(dust.dust_steps)  # the workers get the parameters
             for _ in range(accum):
                 x, y = train_stream.batch(micro_bs, device)
                 st = dust_micro_step(unwrap_model(model), bottleneck, x, y, dust, device,
                                      dtype, accum=accum, want_cosine=want_cos,
-                                     active_layers=active)
+                                     active_layers=active, draw_group=draw_group)
                 ce_sum += st["ce_clean"]
                 dust_stats.add(st)
             dust.dust_steps += 1
@@ -863,7 +889,7 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             # non-finite values in the laplace_policy step: the same coordinated
             # path as the guards, never an exception on one rank
             stop_reason = stop_reason or internal_stop
-        if world > 1:
+        if ddp:
             flag = torch.tensor(
                 [1 if stop_reason else 0],
                 device=device if device.type == "cuda" else "cpu",
@@ -881,6 +907,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 last_metrics["stopped_reason"] = stop_reason
             break
 
+    if draw_group is not None:
+        draw_group.stop()  # the workers leave serve() and the process group
     stopped = "stopped_at" in last_metrics
     if cfg.train.final_val_batches and not stopped and is_main:
         # the full-holdout evaluation: many more batches than the routine
@@ -904,10 +932,10 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
     if is_main:
         with open(os.path.join(run_dir, "summary.json"), "w") as f:
             json.dump(summary, f, indent=2)
-    if world > 1:
+    if ddp:
         dist.barrier()
-        if ddp_initialized_here:
-            dist.destroy_process_group()
+    if world > 1 and ddp_initialized_here:
+        dist.destroy_process_group()
     return summary
 
 

@@ -226,9 +226,64 @@ is a function of the step index, so a resume continues the pattern.
 `dust_chunk_draws` changes the realized noise sequence for a given seed, not
 the method.
 
+### Draws split over GPUs (`DustDrawGroup`, added 2026-10-26)
+
+A dust run is never data-parallel. Launched under torchrun with $W > 1$
+processes, the ranks instead share the DRAWS of every DUST step:
+
+- **Training on rank 0 only.** Rank 0 runs `train()` as a single process
+  would: its batches, hard steps, optimizers, logs, validation and
+  checkpoints are those of a single-process run. `batch_size` is rank 0's
+  batch, not a per-rank batch.
+- **Draw-only workers.** The ranks $r > 0$ build the same model and then
+  only serve draws (`DustDrawGroup.serve`).
+- **What is sent and summed.** At the start of a DUST step rank 0 broadcasts
+  every parameter and buffer. For every perturbed bottleneck of every
+  micro-batch it broadcasts the clean gate input $z$, the pool, $\sigma_t$
+  and the targets. Every rank then runs its share of the $K_l$ draws: rank
+  $r$ takes $\lfloor K_l / W \rfloor$, plus one if $r < K_l \bmod W$.
+- **The estimate.** The running sums of Section 2 ($S_a$, $S_{Ra}$ and the
+  per-token sums of $R$, $R^2$, $\lVert a \rVert^2$, $R \lVert a \rVert^2$,
+  $R^2 \lVert a \rVert^2$) are additive over draws, so they are summed onto
+  rank 0. Rank 0 forms $\hat g$, the baseline $\tilde R$ and the SNR from
+  all $K_l$ draws. The estimator is the single-process one over the union of
+  the ranks' draws; only the realized noise differs.
+- **Noise sources.** Rank 0 draws its share from the run's DUST generator.
+  Rank $r > 0$ reseeds its own generator for every draw command from
+  (`train.seed`, $r$, DUST step, call index). A checkpoint therefore stores
+  rank 0's generator only, plus `draw_ranks` = $W$. A resume at the same $W$
+  continues the same noise. A different $W$ is allowed; it changes the
+  realized noise sequence, and the resume prints a note.
+
+Launch, e.g. 8192 draws per bottleneck over 8 GPUs:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python -m torch.distributed.run --standalone \
+    --nproc_per_node=8 scripts/train_guard.py --config <dust config>
+```
+
+**Measured on warsaw (8x RTX 5090, 2026-10-26).** Model: 4 x 128, N = 512,
+vocabulary 8192, batch 96 x 512 (`configs/small_dust`). The DUST step at
+8192 draws per bottleneck took 317 s on one GPU and 39.6 to 40.0 s over 8.
+At 2048 draws it took 19.8 s over 4 GPUs, against 19.5 s for 512 draws on
+one. Communication is about 75 MB per bottleneck and micro-batch. The
+per-draw SNR at 8192 draws was 0.026 in both layouts.
+
+**Tests.** `test_draw_sums_split_over_two_shares_add_up_to_the_whole_population`
+checks that two shares' sums, added, reproduce `dust_estimate` on the same
+noise bit for bit. The opt-in multi-process tests (`WSPARSE_DDP_TEST=1`):
+
+- the protocol test, 3 ranks with different initial weights: the reduced
+  sums equal a local reconstruction from the same seeds;
+- a 2-rank training with resume.
+
+A single-process dust run is bit-identical to the previous code (CPU,
+float32, 6 steps: every metric and parameter).
+
 ## 7. Rejected combinations
 
-Single process only (the DUST step does not go through DDP's reducer);
+No data parallelism (the DUST step does not go through DDP's reducer; under
+torchrun the ranks share the draws instead, Section 6);
 bf16 or float32 (no GradScaler path); `selection_mode` `topk` or `abs_topk`;
 one stream placement (`residual` or `residual_out`; the tail is not
 implemented for the branch placements); `rblapsum_surrogate_scope: pool`

@@ -10,6 +10,8 @@ import copy
 import json
 import math
 import os
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -17,9 +19,11 @@ import torch
 import yaml
 
 from wsparse.bottleneck import apply_activation_bottleneck
-from wsparse.bottleneck.dust import (DustTrainingState, discounted_returns, draws_per_bottleneck,
-                                     dust_capture, dust_estimate, dust_micro_step,
-                                     dust_step_kind, noise_scale, pool_indices, token_losses)
+from wsparse.bottleneck.dust import (SUM_KEYS, DustDrawGroup, DustTrainingState, _mix_seed,
+                                     discounted_returns, draws_per_bottleneck, dust_capture,
+                                     dust_draw_sums, dust_estimate, dust_finalize,
+                                     dust_micro_step, dust_step_kind, noise_scale, pool_indices,
+                                     token_losses)
 from wsparse.bottleneck.gate import AdaptiveLapSumTopKGate
 from wsparse.bottleneck.module import effective_backward_support
 from wsparse.config import (ActivationBottleneckConfig, Config, ModelConfig, config_from_dict,
@@ -341,6 +345,43 @@ def test_linear_loss_estimate_is_the_gradient_on_the_pool_only():
     # topk ranks by the signed value: the pool is the largest z, not |z|
     cand_signed = pool_indices(z, "topk", M)
     assert torch.equal(cand_signed, torch.topk(z, M, dim=-1).indices)
+
+
+def test_draw_sums_split_over_two_shares_add_up_to_the_whole_population():
+    """The population-parallel estimator: the running sums of two shares of
+    the draws, added, are the sums of the whole population, so finalizing
+    them reproduces dust_estimate on the same noise exactly."""
+    torch.manual_seed(4)
+    B, T, N, M = 2, 5, 12, 6
+    z = torch.randn(B, T, N)
+    cand = pool_indices(z, "abs_topk", M)
+    sigma_t = noise_scale("relative_rms", 0.2, z, cand)
+    w = torch.randn(N)
+    loss_fn = lambda zp: torch.tanh(zp * w).sum(-1).cumsum(-1)               # noqa: E731
+    for gamma in (0.0, 0.9):
+        whole = torch.Generator().manual_seed(9)
+        ghat, st = dust_estimate(z, cand, sigma_t, draws=12, gamma=gamma, loss_fn=loss_fn,
+                                 generator=whole, chunk=6)
+        split = torch.Generator().manual_seed(9)
+        first = dust_draw_sums(z, cand, sigma_t, 6, gamma, loss_fn, split, chunk=6)
+        second = dust_draw_sums(z, cand, sigma_t, 6, gamma, loss_fn, split, chunk=6)
+        sums = {k: first[k] + second[k] for k in SUM_KEYS}
+        ghat2, st2 = dust_finalize(sums, 12, sigma_t)
+        assert torch.equal(ghat, ghat2)
+        for k in ("ell_sum", "reward_sq_sum", "snr"):
+            assert torch.equal(st[k], st2[k]), k
+    empty = dust_draw_sums(z, cand, sigma_t, 0, 0.0, loss_fn, None, chunk=4)
+    assert all(float(empty[k].abs().sum()) == 0.0 for k in SUM_KEYS)
+
+
+def test_draw_group_shares_and_worker_seeds():
+    group = DustDrawGroup.__new__(DustDrawGroup)   # the helpers only, no process group
+    group.world, group.rank, group.seed = 3, 1, 7
+    assert group.shares(8) == [3, 3, 2] and sum(group.shares(8192)) == 8192
+    assert group.shares(2) == [1, 1, 0]
+    seeds = {group.worker_seed(s, c, r) for s in range(4) for c in range(16) for r in (1, 2)}
+    assert len(seeds) == 4 * 16 * 2 and all(0 <= v < 2 ** 63 for v in seeds)
+    assert group.worker_seed(3, 5) == _mix_seed(7, 1, 3, 5)
 
 
 def test_discounted_credit_sums_the_later_tokens_losses():
@@ -852,20 +893,155 @@ def test_resume_without_dust_state_is_rejected(tmp_path):
         train(cfg)
 
 
-def test_ddp_and_float16_are_rejected(tmp_path, monkeypatch):
+def test_dust_state_records_the_draw_ranks_and_notes_a_change():
+    cfg = ActivationBottleneckConfig(**bn_kwargs(dust_population=8))
+    a = DustTrainingState(cfg, 2, CPU, seed=3)
+    a.draw_ranks = 4
+    payload = copy.deepcopy(a.state_dict())
+    assert payload["draw_ranks"] == 4 and payload["world_size"] == 1
+    b = DustTrainingState(cfg, 2, CPU, seed=3)
+    assert "4 rank(s)" in b.load_state_dict(payload)
+    b.draw_ranks = 4
+    assert b.load_state_dict(payload) is None
+    del payload["draw_ranks"]               # a checkpoint from before the draw groups
+    assert DustTrainingState(cfg, 2, CPU, seed=3).load_state_dict(payload) is None
+
+
+# --------------------------------------------------------------------------- #
+# draws split over the ranks of a torchrun group (opt-in: spawns processes)
+# --------------------------------------------------------------------------- #
+
+REPO = os.path.dirname(CONFIG_DIR)
+
+_PROTOCOL_RUNNER = r"""
+import os, sys
+sys.path.insert(0, {src!r})
+sys.path.insert(0, {tests!r})
+import torch
+import torch.distributed as dist
+from test_dust import bn_kwargs, VOCAB
+from wsparse.bottleneck import apply_activation_bottleneck
+from wsparse.bottleneck.dust import (SUM_KEYS, DustDrawGroup, DustTrainingState, dust_capture,
+                                     dust_draw_sums, dust_micro_step, noise_scale,
+                                     pool_indices, tail_loss_fn)
+from wsparse.config import ActivationBottleneckConfig, ModelConfig
+from wsparse.model import build_model
+
+dist.init_process_group("gloo")
+rank, world = dist.get_rank(), dist.get_world_size()
+cpu = torch.device("cpu")
+torch.manual_seed(100 + rank)          # different weights per rank: the sync must fix them
+mcfg = ModelConfig(vocab_size=VOCAB, max_seq_len=16, n_layers=3, d_model=32, n_heads=4,
+                   tie_embeddings=True)
+model = build_model(mcfg)
+bcfg = ActivationBottleneckConfig(**bn_kwargs(dust_population=3 * 7, code_residual=True,
+                                              dust_chunk_draws=2, dust_gamma=0.5))
+ctl = apply_activation_bottleneck(model, bcfg)
+state = DustTrainingState(bcfg, 3, cpu, seed=5)
+group = DustDrawGroup(model, state, world, rank, cpu, torch.float32, seed=5)
+if rank > 0:
+    group.serve()
+    dist.destroy_process_group()
+    sys.exit(0)
+
+torch.manual_seed(1)
+x = torch.randint(0, VOCAB, (2, 16))
+y = torch.randint(0, VOCAB, (2, 16))
+# 1. draw_sums == rank 0's share from its generator + each worker's share
+#    from its reseeded generator, computed here on rank 0's weights
+group.begin_step(3)
+records = []
+model.train()
+with dust_capture([m for _, m in ctl.layers], records), torch.no_grad():
+    model(x, y)
+model.eval()
+rec = records[1]
+block_index, placement = rec.module._site
+z = rec.z.detach()
+cand = pool_indices(z, "abs_topk", rec.module.gate.m)
+sigma_t = noise_scale("absolute", 0.1, z, cand)
+loss_fn = tail_loss_fn(model, block_index, placement, y, cpu, torch.float32)
+g0 = torch.Generator().manual_seed(77)
+ref0 = torch.Generator().manual_seed(77)
+with torch.no_grad():
+    got = group.draw_sums(block_index, placement, z, cand, sigma_t, y, 7, 0.5, loss_fn, g0, 2)
+    shares = group.shares(7)
+    expect = dust_draw_sums(z, cand, sigma_t, shares[0], 0.5, loss_fn, ref0, 2)
+    for r in range(1, world):
+        gr = torch.Generator().manual_seed(group.worker_seed(3, 0, rank=r))
+        part = dust_draw_sums(z, cand, sigma_t, shares[r], 0.5, loss_fn, gr, 2)
+        expect = {{k: expect[k] + part[k] for k in SUM_KEYS}}
+worst = max(float((got[k] - expect[k]).abs().max()) for k in SUM_KEYS)
+assert worst < 1e-5, worst
+# 2. a whole micro-step through the group runs and moves the encoders only
+model.train()
+model.zero_grad(set_to_none=True)
+group.begin_step(4)
+st = dust_micro_step(model, ctl, x, y, state, cpu, torch.float32, accum=1,
+                     draw_group=group)
+assert st["snr"] > 0 and all(p.grad is not None for _, m in ctl.layers
+                             for p in [m.in_proj.weight])
+group.stop()
+dist.destroy_process_group()
+print("PROTOCOL-OK", worst, shares)
+"""
+
+
+@pytest.mark.skipif(os.environ.get("WSPARSE_DDP_TEST") != "1",
+                    reason="spawns torchrun; set WSPARSE_DDP_TEST=1 (run on the training box)")
+@pytest.mark.skipif(not torch.distributed.is_available(), reason="no torch.distributed")
+def test_draw_group_protocol_reproduces_the_local_sums(tmp_path):
+    runner = tmp_path / "protocol.py"
+    runner.write_text(_PROTOCOL_RUNNER.format(src=os.path.join(REPO, "src"),
+                                              tests=os.path.join(REPO, "tests")))
+    r = subprocess.run(
+        [sys.executable, "-m", "torch.distributed.run", "--standalone",
+         "--nproc_per_node", "3", str(runner)],
+        capture_output=True, text=True, timeout=900,
+        env={**os.environ, "PYTHONPATH": os.path.join(REPO, "src")})
+    assert r.returncode == 0, (r.stdout[-2000:], r.stderr[-3000:])
+    assert "PROTOCOL-OK" in r.stdout
+
+
+@pytest.mark.skipif(os.environ.get("WSPARSE_DDP_TEST") != "1",
+                    reason="spawns torchrun; set WSPARSE_DDP_TEST=1 (run on the training box)")
+@pytest.mark.skipif(not torch.distributed.is_available(), reason="no torch.distributed")
+def test_training_with_the_draws_split_over_two_ranks_and_resume(tmp_path):
     data = make_fake_dataset(tmp_path, 20_000, 4_000)
-    cfg = smoke_config(data, str(tmp_path / "runs"), run_name="f16")
-    cfg.train.dtype = "float16"
-    cfg.train.device = "cpu"
-    # float16 resolves to float32 on cpu; only a cuda box could reject it, so
-    # check the world-size rule, which does not depend on the device
-    monkeypatch.setenv("WORLD_SIZE", "2")
-    monkeypatch.setenv("RANK", "0")
-    monkeypatch.setenv("LOCAL_RANK", "0")
-    monkeypatch.setenv("MASTER_ADDR", "127.0.0.1")
-    monkeypatch.setenv("MASTER_PORT", "29599")
-    import wsparse.train as tr
-    monkeypatch.setattr(tr.dist, "init_process_group", lambda *a, **k: None)
-    monkeypatch.setattr(tr.dist, "is_initialized", lambda: True)
-    with pytest.raises(ValueError, match="single-process"):
-        train(cfg)
+    out = str(tmp_path / "runs")
+
+    def launch(max_steps, resume):
+        cfg = with_md(smoke_config(data, out, run_name="grp", dust_population=16,
+                                   dust_optimizer="separate", code_residual=True))
+        cfg.train.max_steps = max_steps
+        cfg.train.checkpoint_every_steps = 4
+        cfg.train.resume = resume
+        path = tmp_path / f"grp_{max_steps}.yaml"
+        cfg.dump(str(path))
+        runner = tmp_path / f"runner_{max_steps}.py"
+        runner.write_text(
+            "import sys\n"
+            f"sys.path.insert(0, {os.path.join(REPO, 'src')!r})\n"
+            "from wsparse.config import load_config\n"
+            "from wsparse.train import train\n"
+            f"s = train(load_config({str(path)!r}, []))\n"
+            "print('RANK-DONE', s.get('val/ce'))\n")
+        return subprocess.run(
+            [sys.executable, "-m", "torch.distributed.run", "--standalone",
+             "--nproc_per_node", "2", str(runner)],
+            capture_output=True, text=True, timeout=900,
+            env={**os.environ, "PYTHONPATH": os.path.join(REPO, "src")})
+
+    r = launch(4, "")
+    assert r.returncode == 0, (r.stdout[-2000:], r.stderr[-3000:])
+    run_dir = tmp_path / "runs" / "grp"
+    rows = [json.loads(l) for l in open(run_dir / "metrics.jsonl")]
+    steps = [row["step"] for row in rows if "train/ce" in row]
+    assert steps == sorted(steps) and len(steps) == len(set(steps))   # one writer
+    assert any(row.get("dust/steps") for row in rows)
+    payload = torch.load(run_dir / "latest.pt", weights_only=False)
+    assert payload["dust_state"]["draw_ranks"] == 2 and payload["dust_state"]["dust_steps"] == 2
+    r = launch(8, "auto")
+    assert r.returncode == 0, (r.stdout[-2000:], r.stderr[-3000:])
+    payload = torch.load(run_dir / "latest.pt", weights_only=False)
+    assert payload["step"] == 8 and payload["dust_state"]["dust_steps"] == 4

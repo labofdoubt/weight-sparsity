@@ -1,0 +1,40 @@
+# Small-model DUST study (2026-10-26, warsaw): how the effect of DUST on the
+# code-carried hard Top-K model changes with model size.  Starting point: the
+# K=32 code-carried model of the DUST report (docs/dust/hp500-sigma-lr.md,
+# ../cr_kj/ma_cr_hard_k32_pnorm.yaml: MD decoupling, abs-TopK at residual_out
+# of every block, code_residual, batch 96 x 512, no clipping as in hp500)
+# reduced to 4 blocks of width 128 with 2 heads (head width 64, as in the
+# 8 x 768 model), WITHOUT the bottleneck post-norm (post_norm false; the
+# blocks' pre-norms and the final norm stay), a bottleneck of N = 512
+# features, and the 8192-token
+# byte-level BPE trained on 200k TinyStories stories
+# (gdrive:weight-sparsity/data/tinystories_bpe8k; model.vocab_size is read
+# from its meta.json).  Constant LR 6e-4, no warmup, no schedule.
+# This file is the hard Top-K run; K and J = N - K are set per run.
+_base_:
+  - ../cr_kj/ma_cr_hard_k32_pnorm.yaml
+
+model:
+  vocab_size: 8192
+  n_layers: 4
+  d_model: 128
+  n_heads: 2
+
+data:
+  tokenizer: bpe
+  bpe_vocab_size: 8192
+  bpe_train_docs: 200000
+  data_dir: /workspace/data/tinystories_bpe8k
+  tokenizer_path: /workspace/data/tinystories_bpe8k/tokenizer
+
+train:
+  lr_schedule: constant
+  warmup_steps: 0
+  grad_clip: 0.0
+  run_name: small_dust_base
+
+activation_bottleneck:
+  post_norm: false
+  n_features: 512
+  k: 16
+  j: 496
