@@ -31,8 +31,10 @@ One DUST step, per batch ``(x, y)`` of ``B`` samples:
        g^_t = -(1 / (K sigma_t B)) sum_i r_t^(i) a_t^(i),
 
    nonzero on ``C_t`` only.
-5. ``dust_target``: the only parameter before the gate is ``g`` with
-   ``d u_{t,n} / d g_n = exp(g_n) x_{t,n}``, so
+5. ``dust_target``, per gate site (``topk.site``):
+
+   site input (``u = exp(g) * x``; ``g`` is the only parameter before the
+   gate, ``d u_{t,n} / d g_n = exp(g_n) x_{t,n}``):
 
    encoder   ``G^_g = sum_t g^_t * exp(g) * x_t``   (the diagonal of the outer
              product ``sum_t g^_t x_t^T``, times ``exp(g)``), added to ``g.grad``
@@ -40,6 +42,17 @@ One DUST step, per batch ``(x, y)`` of ``B`` samples:
    backprop  ``g^`` is backpropagated from ``u`` through the clean graph,
              which reaches ``g`` and nothing else: the same gradient, formed
              by autograd (a consistency check rather than a different method).
+
+   site pre_linear (``u = W0 v`` with ``v = exp(g) * x`` or ``x``; ``W0`` is
+   the encoder of the gate input, as the bottleneck's ``in_proj`` in the
+   main repository):
+
+   encoder   ``G^_W0 = sum_t g^_t v_t^T``  (the main repository's encoder
+             outer product, scale 1, no bias), added to ``W0.grad``; nothing
+             else moves, ``g`` included.
+   backprop  ``g^`` is backpropagated from ``u`` through the clean graph:
+             ``W0`` gets the same outer product and, with the rescaling on,
+             ``g`` gets its share too.
 
    ``dust_grad_scale`` multiplies ``g^`` before either target; ``ghat_rms`` is
    the unscaled estimate.  ``dust_optimizer: separate`` applies the DUST
@@ -297,15 +310,19 @@ def dust_micro_step(model, x: torch.Tensor, y: torch.Tensor, state: DustTraining
     CE), ``ce_gap`` (perturbed - clean), ``reward_rms`` (RMS over draws and
     samples of ``R - R~``), ``ghat_rms`` (RMS over the pool entries of the
     UNSCALED ``g^``), and, with ``want_cosine``, ``cosine``: the cosine between
-    the DUST gradient of ``g`` and the hard-backward gradient of the clean CE
-    for ``g`` (else ``None``).
+    the DUST gradient of the encoder parameter (``g`` or ``W0``) and the
+    hard-backward gradient of the clean CE for it (else ``None``).
     """
     gate, rescale = model.gate, model.rescale
-    if gate is None or rescale is None:
-        raise RuntimeError("dust needs the gate and the diagonal rescaling installed")
-    if getattr(model, "gate_site", "input") != "input":
-        raise RuntimeError("dust is implemented for topk.site='input' only")
-    g = rescale.log_scale
+    site = getattr(model, "gate_site", "input")
+    if gate is None:
+        raise RuntimeError("dust needs the gate installed")
+    if site == "input" and rescale is None:
+        raise RuntimeError("dust at topk.site='input' needs the diagonal rescaling installed")
+    if site == "pre_linear" and model.pre is None:
+        raise RuntimeError("dust at topk.site='pre_linear' needs W0 installed")
+    # the "encoder" parameter: g at site input, W0 at site pre_linear
+    enc = rescale.log_scale if site == "input" else model.pre.weight
     records: List[torch.Tensor] = []
     need_graph = state.target == "backprop" or want_cosine
     was_training = model.training
@@ -321,7 +338,7 @@ def dust_micro_step(model, x: torch.Tensor, y: torch.Tensor, state: DustTraining
     del logits
     true_grad: Optional[torch.Tensor] = None
     if want_cosine:
-        (true_grad,) = torch.autograd.grad(ce, [g], retain_graph=(state.target == "backprop"))
+        (true_grad,) = torch.autograd.grad(ce, [enc], retain_graph=(state.target == "backprop"))
     ce_clean = ce.detach().to(torch.float32)
     del ce
 
@@ -353,16 +370,21 @@ def dust_micro_step(model, x: torch.Tensor, y: torch.Tensor, state: DustTraining
             else:
                 ghat = torch.zeros(B, N, dtype=f32, device=u.device).scatter_(
                     -1, cand_idx, ghat_pool * state.grad_scale)
-            # the "encoder" is the diagonal rescaling: d u_n / d g_n = exp(g_n) x_n
-            g_est = (ghat * x.to(f32) * torch.exp(g.detach().to(f32))).sum(0)
+            if site == "input":
+                # the encoder is the diagonal rescaling: d u_n / d g_n = exp(g_n) x_n
+                g_est = (ghat * x.to(f32) * torch.exp(enc.detach().to(f32))).sum(0)
+            else:
+                # the encoder is W0: G^ = sum_t g^_t v_t^T with v the input of W0
+                v = rescale(x) if rescale is not None else x
+                g_est = torch.einsum("bn,bd->nd", ghat, v.detach().to(f32))
     finally:
         model.train(was_training)
         torch.backends.cuda.matmul.allow_tf32 = tf32_prior
 
     if state.target == "encoder":
         with torch.no_grad():
-            est = g_est.to(g.dtype)
-            g.grad = est if g.grad is None else g.grad + est
+            est = g_est.to(enc.dtype)
+            enc.grad = est if enc.grad is None else enc.grad + est
     else:
         torch.autograd.backward([u], [ghat.to(u.dtype)])
     del records, u

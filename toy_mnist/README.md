@@ -34,7 +34,11 @@ before $W_1$, and `topk.site` places the gate on its input
 output ($x' = \operatorname{AbsTopK}_K(W_0 (e^{g} \odot x))$, `pre_linear`,
 $K$ of the `pre_width` units pass).  `configs/site_sweep/` compares the two
 at $K \in \{2, 4, 8, 16\}$ without the rescaling (report
-`reports/site_sweep.tex`).  DUST is implemented for `site: input` only.
+`reports/site_sweep.tex`).  Under DUST the estimate lands on the parameter
+before the gate: $g$ at `site: input` (needs the rescaling), $W_0$ at
+`site: pre_linear` as the main repository's encoder outer product
+$\hat G_{W_0} = \sum_t \hat g_t x_t^\top$ (`configs/site_sweep/pre_linear_dust.yaml`,
+report `reports/site_dust.tex`).
 
 **Hard mode.** The mask is numerically hard and the backward passes it:
 $\partial L / \partial u = m \odot \partial L / \partial x'$, so $g_n$

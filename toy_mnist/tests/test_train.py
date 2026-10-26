@@ -161,3 +161,25 @@ def test_training_with_w0_at_both_gate_sites(tmp_path, site):
     payload = torch.load(os.path.join(summary["run_dir"], "final.pt"), weights_only=False)
     assert payload["model"]["pre.weight"].shape == (20, 784)
     assert payload["model"]["gate.usage"].shape == ((20,) if site == "pre_linear" else (784,))
+
+
+def test_dust_training_at_the_pre_linear_site_moves_w0_on_dust_steps(tmp_path):
+    cfg = small_config(tmp_path, "baseline", model={"pre_width": 20},
+                       topk={"enabled": True, "k": 4, "site": "pre_linear",
+                             "surrogate_mode": "dust", "dust_population": 4,
+                             "dust_chunk_draws": 4, "dust_cosine_every_steps": 1})
+    snaps = {}
+
+    def on_step(step, model, optimizer):
+        snaps[step] = {k: v.detach().clone() for k, v in model.state_dict().items()
+                       if k in ("fc1.weight", "pre.weight")}
+
+    summary = train(cfg, synthetic_data(), on_step=on_step)
+    assert summary["status"] == "finished" and summary["dust_steps"] == 3
+    for step in range(1, 6):
+        kind = dust_step_kind(step - 1, cfg.topk.dust_schedule)
+        fc1_moved = not torch.equal(snaps[step]["fc1.weight"], snaps[step - 1]["fc1.weight"])
+        w0_moved = not torch.equal(snaps[step]["pre.weight"], snaps[step - 1]["pre.weight"])
+        assert w0_moved and fc1_moved == (kind == "hard"), (step, kind)
+    recs = _read_metrics(summary["run_dir"])
+    assert "dust/cosine" in [r for r in recs if "train/ce" in r][1]

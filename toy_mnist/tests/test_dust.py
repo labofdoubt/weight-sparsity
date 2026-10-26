@@ -221,3 +221,91 @@ def test_dust_with_w0_after_an_input_gate_updates_g_only():
         assert model.pre.weight.grad is None and model.fc1.weight.grad is None
         grads[target] = model.rescale.log_scale.grad.clone()
     assert torch.allclose(grads["encoder"], grads["backprop"], atol=1e-6, rtol=1e-4)
+
+
+def _pre_model(k, hidden=8, pre_width=24, rescale=False, seed=0):
+    torch.manual_seed(seed)
+    cfg = load_config(values={"rescale": {"enabled": rescale},
+                              "model": {"hidden": hidden, "pre_width": pre_width},
+                              "topk": {"enabled": True, "k": k, "site": "pre_linear",
+                                       "surrogate_mode": "dust", "dust_population": 4}})
+    return cfg, ToyMLP(cfg)
+
+
+def test_pre_linear_site_encoder_target_is_the_outer_product_on_w0_only():
+    cfg, model = _pre_model(k=5)
+    x = torch.rand(6, N_PIXELS)
+    y = torch.randint(0, 10, (6,))
+    grads = {}
+    for target in ("encoder", "backprop"):
+        cfg.topk.dust_target = target
+        st = DustTrainingState(cfg.topk, torch.device("cpu"), seed=2)
+        model.zero_grad(set_to_none=True)
+        out = dust_micro_step(model, x, y, st, want_cosine=True)
+        assert model.fc1.weight.grad is None and model.fc2.weight.grad is None
+        g = model.pre.weight.grad
+        assert g is not None and g.shape == (24, N_PIXELS) and torch.isfinite(g).all()
+        grads[target] = g.clone()
+        assert out["cosine"] is not None and -1.0 <= out["cosine"] <= 1.0
+    assert torch.allclose(grads["encoder"], grads["backprop"], atol=1e-6, rtol=1e-4)
+    # the pool is the whole gated vector: every row of W0 can receive a gradient
+    assert model.gate.m == 24
+    # the explicit formula: G = sum_t g^_t x_t^T with g^ recomputed from the same noise
+    st = DustTrainingState(cfg.topk, torch.device("cpu"), seed=2)
+    cfg.topk.dust_target = "encoder"
+    model.zero_grad(set_to_none=True)
+    dust_micro_step(model, x, y, st)
+    with torch.no_grad():
+        u = model.gate_input(x)
+        ident = torch.arange(24).expand(6, 24)
+        sigma_t = noise_scale("absolute", st.sigma, u, ident)
+        model.eval()
+        def loss_fn(up):
+            lg = model.forward_from_gate(up)
+            return torch.nn.functional.cross_entropy(lg, y.repeat(up.shape[0] // 6),
+                                                     reduction="none")
+        ghat, _ = dust_estimate(u, None, sigma_t, 4, loss_fn, make_generator(torch.device("cpu"), 2),
+                                chunk=st.chunk)
+        ghat = ghat / 6.0
+        expected = ghat.T @ x
+    assert torch.allclose(model.pre.weight.grad, expected, atol=1e-6, rtol=1e-4)
+
+
+def test_pre_linear_site_with_rescaling_moves_g_under_backprop_only():
+    cfg, model = _pre_model(k=5, rescale=True)
+    with torch.no_grad():
+        model.rescale.log_scale.normal_(std=0.3)
+    x = torch.rand(6, N_PIXELS)
+    y = torch.randint(0, 10, (6,))
+    cfg.topk.dust_target = "encoder"
+    st = DustTrainingState(cfg.topk, torch.device("cpu"), seed=5)
+    model.zero_grad(set_to_none=True)
+    dust_micro_step(model, x, y, st)
+    assert model.rescale.log_scale.grad is None and model.pre.weight.grad is not None
+    w_enc = model.pre.weight.grad.clone()
+    cfg.topk.dust_target = "backprop"
+    st = DustTrainingState(cfg.topk, torch.device("cpu"), seed=5)
+    model.zero_grad(set_to_none=True)
+    dust_micro_step(model, x, y, st)
+    assert model.rescale.log_scale.grad is not None
+    assert torch.allclose(model.pre.weight.grad, w_enc, atol=1e-6, rtol=1e-4)
+
+
+def test_pre_linear_trivial_gate_estimate_aligns_with_the_smooth_gradient_of_w0():
+    """k = pre_width: the gate is the identity and the loss is smooth in u, so
+    the W0 estimate follows the true gradient of W0 at small sigma, many draws."""
+    cfg, model = _pre_model(k=24, hidden=16)
+    x = torch.rand(16, N_PIXELS)
+    y = torch.randint(0, 10, (16,))
+    _, ce = model(x, y)
+    (true,) = torch.autograd.grad(ce, [model.pre.weight])
+    cfg.topk.dust_population = 20000
+    cfg.topk.dust_sigma = 0.01
+    cfg.topk.dust_chunk_draws = 500
+    st = DustTrainingState(cfg.topk, torch.device("cpu"), seed=11)
+    model.zero_grad(set_to_none=True)
+    out = dust_micro_step(model, x, y, st, want_cosine=True)
+    est = model.pre.weight.grad
+    cos = float((est * true).sum() / (est.norm() * true.norm()))
+    assert cos > 0.9, cos
+    assert out["cosine"] == pytest.approx(cos, abs=1e-5)

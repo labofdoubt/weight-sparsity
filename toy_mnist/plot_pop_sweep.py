@@ -65,6 +65,10 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--ks", default="2,4,8,16,32")
     ap.add_argument("--pops", default="128,512,2000,8000,32000")
+    ap.add_argument("--hard-name", default="hard_k{k}", help="run-name template of the hard arm")
+    ap.add_argument("--dust-name", default="dust_k{k}_p{p}",
+                    help="run-name template of the DUST arm")
+    ap.add_argument("--hard-label", default="hard Top-{k}")
     args = ap.parse_args()
     ks = [int(v) for v in args.ks.split(",")]
     pops = [int(v) for v in args.pops.split(",")]
@@ -75,13 +79,15 @@ def main() -> None:
 
     for k in ks:
         series = []  # (label, color, linestyle, metrics)
-        m = read_metrics(os.path.join(args.runs, f"hard_k{k}"))
+        hard_name = args.hard_name.format(k=k)
+        m = read_metrics(os.path.join(args.runs, hard_name))
         if m is None:
-            missing.append(f"hard_k{k}")
+            missing.append(hard_name)
         else:
-            series.append((f"hard Top-{k}", HARD, "-", m, "hard", None))
-        for color, p in zip(RAMP, pops):
-            name = f"dust_k{k}_p{p}"
+            series.append((args.hard_label.format(k=k), HARD, "-", m, "hard", None))
+        ramp = RAMP[-len(pops):] if len(pops) < len(RAMP) else RAMP
+        for color, p in zip(ramp, pops):
+            name = args.dust_name.format(k=k, p=p)
             m = read_metrics(os.path.join(args.runs, name))
             if m is None:
                 missing.append(name)

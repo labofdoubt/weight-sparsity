@@ -73,8 +73,9 @@ class TopKConfig:
     # hard: the gradient passes the hard mask (active entries only)
     # dust: the hard gate, with ordinary hard steps alternating with DUST
     #       steps that estimate dL/du on the pool by reward-weighted noise
-    #       (toy_mnist.dust); needs rescale.enabled, the only parameter
-    #       before the gate
+    #       (toy_mnist.dust) and apply it to the parameters before the gate:
+    #       the diagonal rescaling g at site input (needs rescale.enabled),
+    #       W0 at site pre_linear (the encoder target of the main repository)
     surrogate_mode: str = "hard"
     # ---- dust (surrogate_mode: dust): the main repository's fields --------- #
     # a non-default value under surrogate_mode: hard is an error
@@ -183,13 +184,10 @@ class Config:
         else:
             if not t.enabled:
                 raise ValueError("surrogate_mode='dust' needs topk.enabled")
-            if not r.enabled:
-                raise ValueError("surrogate_mode='dust' updates the parameters before the gate, "
-                                 "which here is the diagonal rescaling: needs rescale.enabled")
-            if t.site != "input":
-                raise ValueError("surrogate_mode='dust' is implemented for topk.site='input' "
-                                 "only (the gate input e^g * x; an encoder target for W0 is "
-                                 "not implemented)")
+            if t.site == "input" and not r.enabled:
+                raise ValueError("surrogate_mode='dust' updates the parameters before the gate; "
+                                 "at topk.site='input' that is the diagonal rescaling: needs "
+                                 "rescale.enabled (at site 'pre_linear' it is W0)")
             if int(t.dust_population) < 2:
                 raise ValueError("dust_population must be >= 2 (one gate; the baseline is "
                                  "the mean over its own draws)")

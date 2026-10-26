@@ -124,7 +124,13 @@ def test_pre_linear_layer_and_the_two_gate_sites():
     with pytest.raises(ValueError, match="topk.k"):
         load_config(values={"model": {"pre_width": 12},
                             "topk": {"enabled": True, "k": 13, "site": "pre_linear"}})
-    with pytest.raises(ValueError, match="site"):
-        load_config(values={"model": {"pre_width": 12}, "rescale": {"enabled": True},
-                            "topk": {"enabled": True, "k": 3, "site": "pre_linear",
+    # dust at site pre_linear needs no rescaling (W0 is the encoder); at site
+    # input it still does
+    cfg = load_config(values={"model": {"pre_width": 12},
+                              "topk": {"enabled": True, "k": 3, "site": "pre_linear",
+                                       "surrogate_mode": "dust"}})
+    assert cfg.topk.resolved_j(12) == 9
+    with pytest.raises(ValueError, match="rescale.enabled"):
+        load_config(values={"model": {"pre_width": 12},
+                            "topk": {"enabled": True, "k": 3, "site": "input",
                                      "surrogate_mode": "dust"}})

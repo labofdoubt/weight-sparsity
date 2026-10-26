@@ -1,0 +1,20 @@
+# Gate-site study, DUST arm: pre_linear.yaml (z = W2 relu(W1 AbsTopK_K(W0 x)),
+# no rescaling, hidden 1024, 5000 steps) with every second step a DUST step
+# as in pop_sweep/dust.yaml: the gate input u = W0 x of every sample is
+# perturbed on all 784 units (topk.j null -> the whole vector) with
+# N(0, sigma^2) noise, sigma 0.1 absolute, the tail is rerun, and the
+# reward-weighted noise estimate g^ of dL/du is applied to W0 as the encoder
+# outer product G^ = sum_t g^_t x_t^T (nothing else moves on a DUST step).
+# K and dust_population come from the job line.
+_base_: [pre_linear.yaml]
+train:
+  run_name: pre_dust
+topk:
+  surrogate_mode: dust
+  dust_population: 512
+  dust_sigma: 0.1
+  dust_sigma_mode: absolute
+  dust_schedule: [1, 1]
+  dust_target: encoder
+  dust_chunk_draws: 512
+  dust_cosine_every_steps: 10
