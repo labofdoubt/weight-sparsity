@@ -220,6 +220,13 @@ def load_for_inference(path: str, device: str = "cpu"):
 # --------------------------------------------------------------------------- #
 
 
+def bottleneck_width(cb, step: int, max_steps: int) -> int:
+    """hard_k_annealing: K' at zero-based ``step`` for config section ``cb``."""
+    from .bottleneck.controller import annealed_k
+    return annealed_k(step, cb.k, cb.j, max_steps, cb.hard_k_annealing_schedule,
+                      cb.hard_k_annealing_half_step)
+
+
 def log_bottleneck_geometry(counts: Dict[str, Any], cfg) -> None:
     """The bottleneck's init geometry, from what ``md_init_`` measured.
 
@@ -556,7 +563,15 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             + (" (one encoder/decoder pair shared by every bottleneck)"
                if cb.share_projections else "")
         )
-        if bottleneck.k_annealing:
+        if bottleneck.k_annealing and cb.hard_k_annealing_schedule == "log":
+            h, n = cb.hard_k_annealing_half_step, cfg.train.max_steps
+            print(f"[train] hard_k_annealing (log): K' = K+J = {cb.k + cb.j} at step 0 -> "
+                  f"K = {cb.k} at step {n - 1}, half of J removed by step {h:g} "
+                  f"(s_0 = {h * h / (n - 2 * h):.4g}); K' at steps "
+                  + ", ".join(f"{s}: {bottleneck_width(cb, s, n)}"
+                              for s in (100, 500, 1000, 2000, 5000, 10000, 15000, n - 1)
+                              if s < n))
+        elif bottleneck.k_annealing:
             print(f"[train] hard_k_annealing: K' = K+J = {cb.k + cb.j} at step 0 -> "
                   f"K = {cb.k} at step {cfg.train.max_steps - 1}, one feature every "
                   f"{cfg.train.max_steps / (cb.j + 1):.2f} steps")

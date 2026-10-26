@@ -1,4 +1,5 @@
 """hard_k_annealing: the hard width falls from K+J to K over the run."""
+import dataclasses
 import json
 import os
 from collections import Counter
@@ -137,3 +138,60 @@ def test_training_follows_the_schedule_resumes_and_reloads_its_width(tmp_path):
     assert {layer.gate.k for _, layer in ctl.layers} == {annealed_k(5, 4, 5, 12)}
     model, _, ctl = load_for_inference(os.path.join(run, "ckpt_step12.pt"))
     assert {layer.gate.k for _, layer in ctl.layers} == {4}
+
+
+def test_log_schedule_endpoints_half_step_and_linear_limit():
+    k, j, steps = 32, 480, 20_000
+    for h in (125, 1000, 8000):
+        widths = [annealed_k(s, k, j, steps, "log", h) for s in range(steps)]
+        assert widths[0] == k + j and widths[-1] == k
+        assert all(a >= b for a, b in zip(widths, widths[1:]))
+        # half of the J features removed at s = h (to the floor's rounding)
+        assert abs((k + j - widths[h]) - (j + 1) / 2) <= 1
+        # more of them removed early than under the linear schedule
+        assert widths[h] < annealed_k(h, k, j, steps)
+    # h -> max_steps/2 is the linear schedule
+    near = [annealed_k(s, k, j, steps, "log", 9990) for s in range(steps)]
+    lin = [annealed_k(s, k, j, steps) for s in range(steps)]
+    assert max(abs(a - b) for a, b in zip(near, lin)) <= 1
+
+
+def test_log_schedule_config_rules():
+    ok = dict(enabled=True, k=8, j=24, hard_k_annealing=True,
+              hard_k_annealing_schedule="log", hard_k_annealing_half_step=100)
+    assert ActivationBottleneckConfig(**ok).hard_k_annealing_half_step == 100.0
+    for bad in (dict(hard_k_annealing_half_step=None),
+                dict(hard_k_annealing_schedule="linear"),
+                dict(hard_k_annealing=False),
+                dict(hard_k_annealing_schedule="cosine"),
+                dict(hard_k_annealing_half_step=0)):
+        kw = dict(ok)
+        kw.update(bad)
+        with pytest.raises(ValueError):
+            ActivationBottleneckConfig(**kw)
+    cfg = Config()
+    cfg.train.max_steps = 200
+    with pytest.raises(ValueError):  # h must be below max_steps / 2
+        Config(train=cfg.train, activation_bottleneck=ActivationBottleneckConfig(**ok))
+
+
+def test_training_follows_the_log_schedule(tmp_path):
+    data_dir = make_fake_dataset(tmp_path, 6000, 1200)
+    cfg = annealing_config(data_dir, str(tmp_path / "runs_log"))
+    cfg.activation_bottleneck.hard_k_annealing_schedule = "log"
+    cfg.activation_bottleneck.hard_k_annealing_half_step = 2.0
+    cfg = Config(model=cfg.model, data=cfg.data, train=cfg.train,
+                 activation_bottleneck=ActivationBottleneckConfig(
+                     **dataclasses.asdict(cfg.activation_bottleneck)))
+    seen = {}
+
+    def record(step, model, bottleneck, optimizer):
+        seen[step] = {layer.gate.k for _, layer in bottleneck.layers}
+
+    train(cfg, on_step=record)
+    expected = {s: {annealed_k(s, 4, 5, 12, "log", 2.0)} for s in range(12)}
+    assert seen == expected
+    assert expected[0] == {9} and expected[11] == {4}
+    model, _, ctl = load_for_inference(os.path.join(str(tmp_path / "runs_log"), "test",
+                                                    "ckpt_step6.pt"))
+    assert {layer.gate.k for _, layer in ctl.layers} == expected[5]

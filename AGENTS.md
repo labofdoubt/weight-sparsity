@@ -183,7 +183,9 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
 - **Keep `train.compile=False`.** A graph break around the hand-written gate
   backward can zero gradients silently while the loss keeps falling (§11).
 - **`hard_k_annealing` trains hard Top-K' with K' falling from K+J to K**
-  (one feature per `max_steps/(J+1)` steps). `val/ce` at step s is measured at
+  (one feature per `max_steps/(J+1)` steps; `hard_k_annealing_schedule: log`
+  removes them at a rate ∝ 1/(s+s_0), half by `hard_k_annealing_half_step`).
+  `val/ce` at step s is measured at
   K'(s), not K (read `bottleneck/active_count`); only the final one is at K.
   Rebuilding from the config gives K; `load_for_inference` restores a
   checkpoint's own width.

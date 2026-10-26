@@ -472,6 +472,17 @@ class ActivationBottleneckConfig:
     # load_for_inference restores the width of the checkpoint's last step
     # (2026-10-26).
     hard_k_annealing: bool = False
+    # The schedule of that width: "linear" (above) or "log", which removes
+    # features at a rate proportional to 1/(s + s_0),
+    #     f(s)  = ln(1 + s/s_0) / ln(1 + max_steps/s_0)
+    #     K'(s) = K + J - min(J, floor((J + 1) f(s))),
+    # with s_0 = h^2 / (max_steps - 2h) for h = hard_k_annealing_half_step,
+    # the step by which half of the J features are removed (0 < h <
+    # max_steps/2; as h -> max_steps/2 the schedule tends to the linear one).
+    # The log schedule removes the last features slowly, so K itself holds
+    # for a few hundred steps at most (2026-10-26).
+    hard_k_annealing_schedule: str = "linear"
+    hard_k_annealing_half_step: Optional[float] = None
 
     # Constant kernel/barrier temperature shared by the lapsum and rblapsum
     # modes (unified 2026-09-28; formerly fixed_temperature and
@@ -1007,6 +1018,20 @@ class ActivationBottleneckConfig:
             if self.value_shift != "none":
                 raise ValueError("value_shift's lambda is fixed from k at construction; "
                                  "it is not defined under hard_k_annealing")
+        if self.hard_k_annealing_schedule not in ("linear", "log"):
+            raise ValueError(f"unknown hard_k_annealing_schedule: "
+                             f"{self.hard_k_annealing_schedule!r} (linear | log)")
+        if self.hard_k_annealing_schedule != "linear" and not self.hard_k_annealing:
+            raise ValueError("hard_k_annealing_schedule is read only under "
+                             "hard_k_annealing: true")
+        if (self.hard_k_annealing_schedule == "log") != (
+                self.hard_k_annealing_half_step is not None):
+            raise ValueError("hard_k_annealing_half_step is the log schedule's "
+                             "parameter: set it with schedule 'log' and only then")
+        if self.hard_k_annealing_half_step is not None:
+            self.hard_k_annealing_half_step = float(self.hard_k_annealing_half_step)
+            if not self.hard_k_annealing_half_step > 0:
+                raise ValueError("hard_k_annealing_half_step must be positive")
         if self.temperature <= 0:
             raise ValueError("temperature must be positive")
         if self.rblapsum_boundary_floor is None:
@@ -1491,6 +1516,11 @@ class Config:
                 f"hard_k_annealing trains each width K+J..K for max_steps/(J+1) steps; "
                 f"max_steps={self.train.max_steps} < J+1={ab.j + 1} would skip widths "
                 "and end above K")
+        h = ab.hard_k_annealing_half_step
+        if ab.enabled and h is not None and not h < self.train.max_steps / 2:
+            raise ValueError(
+                f"hard_k_annealing_half_step={h:g} must be below max_steps/2 = "
+                f"{self.train.max_steps / 2:g} (max_steps/2 is the linear schedule)")
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)

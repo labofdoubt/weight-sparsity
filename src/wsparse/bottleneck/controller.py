@@ -41,16 +41,30 @@ def resolve_layers(spec, n_layers: int) -> List[int]:
     return idx
 
 
-def annealed_k(step: int, k: int, j: int, max_steps: int) -> int:
-    """hard_k_annealing's width for zero-based optimizer step ``step``:
+def annealed_k(step: int, k: int, j: int, max_steps: int,
+               schedule: str = "linear", half_step: Optional[float] = None) -> int:
+    """hard_k_annealing's width for zero-based optimizer step ``step``.
 
-        K'(s) = K + J - floor((J + 1) s / max_steps),
-
+    ``linear``:  K'(s) = K + J - floor((J + 1) s / max_steps),
     so each of the J+1 widths K+J, ..., K holds for max_steps / (J+1) steps,
-    K+J at s = 0 and K at s = max_steps - 1 whenever max_steps >= J+1.  Steps
-    outside [0, max_steps) are clamped to the ends."""
-    step = min(max(int(step), 0), int(max_steps) - 1)
-    return int(k) + int(j) - ((int(j) + 1) * step) // int(max_steps)
+    K+J at s = 0 and K at s = max_steps - 1 whenever max_steps >= J+1.
+
+    ``log``:  K'(s) = K + J - min(J, floor((J + 1) f(s))),
+    f(s) = ln(1 + s/s_0) / ln(1 + max_steps/s_0),  s_0 = h^2 / (max_steps - 2h),
+    so half of the J features are gone at s = h = ``half_step`` and the
+    removal rate falls as 1/(s + s_0).
+
+    Steps outside [0, max_steps) are clamped to the ends."""
+    k, j, max_steps = int(k), int(j), int(max_steps)
+    step = min(max(int(step), 0), max_steps - 1)
+    if schedule == "linear":
+        return k + j - ((j + 1) * step) // max_steps
+    if schedule != "log":
+        raise ValueError(f"unknown hard_k_annealing_schedule: {schedule!r}")
+    h = float(half_step)
+    s0 = h * h / (max_steps - 2.0 * h)
+    frac = math.log1p(step / s0) / math.log1p(max_steps / s0)
+    return k + j - min(j, int(math.floor((j + 1) * frac)))
 
 
 #: where in a block the bottleneck is spliced in -> the attribute it replaces.
@@ -124,7 +138,9 @@ class ActivationBottleneckController:
         the configured K."""
         if not self.k_annealing:
             return int(self.cfg.k)
-        k_now = annealed_k(step, int(self.cfg.k), int(self.cfg.j), self.max_steps)
+        k_now = annealed_k(step, int(self.cfg.k), int(self.cfg.j), self.max_steps,
+                           getattr(self.cfg, "hard_k_annealing_schedule", "linear"),
+                           getattr(self.cfg, "hard_k_annealing_half_step", None))
         for _, layer in self.layers:
             layer.gate.set_active_count(k_now)
         return k_now
