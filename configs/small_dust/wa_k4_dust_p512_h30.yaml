@@ -1,4 +1,4 @@
-# Small-model DUST study (configs/small_dust/base_dust.yaml): K = 4, DUST, 512 draws per bottleneck (dust_population 2048), dust_schedule [30, 1] (30 hard steps per DUST step).
+# Small-model DUST study (configs/small_dust/base_dust.yaml): K = 4, DUST, 512 draws per bottleneck (dust_population 2048), dust_schedule [30, 1] (30 hard steps, then 1 DUST step).
 # Written by scripts/make_small_dust_configs.py.
 _base_:
   - base_dust.yaml

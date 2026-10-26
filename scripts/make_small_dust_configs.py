@@ -19,7 +19,10 @@ planned):
   alongside 128 draws split over GPUs 1-7, then 512 draws over all 8, then
   the schedule sweep at 512 draws over all 8, one run after another:
   dust_schedule [10, 1], [30, 1], [90, 1] (``wa_k4_dust_p512_h10`` etc.:
-  10, 30, 90 hard steps per DUST step).
+  10, 30, 90 hard steps per DUST step), then [30, 5] and [90, 10]
+  (``wa_k4_dust_p512_h30_d5``, ``_h90_d10``).  The last two share one phase
+  (a chain on the same GPUs): they were added while gpu_phases.sh was
+  running, and it fixes its list of phase numbers at start.
 * lyon (16 GPUs), plan_lyon.txt, runs ``ly_*``: 2048 draws over all 16
   (stopped at 4000 steps by request).
 
@@ -38,21 +41,27 @@ N_FEATURES = 512
 N_BOTTLENECKS = 4
 K_ORDER = (4, 8, 16)
 PLAN_K = (4,)
-#: the schedule sweep at 512 draws (K = 4): hard steps per DUST step
-SWEEP_HARD = (10, 30, 90)
+#: the schedule sweep at 512 draws (K = 4): dust_schedule [n_hard, n_dust]
+#: per run, grouped by phase (runs of one phase run one after another)
+SWEEP_PHASES = (((10, 1),), ((30, 1),), ((90, 1),), ((30, 5), (90, 10)))
 
 
 def name(prefix: str, k: int, draws: int = 0) -> str:
     return f"{prefix}_k{k}_hard" if not draws else f"{prefix}_k{k}_dust_p{draws}"
 
 
-def write(prefix: str, k: int, draws: int, steps: int, n_hard: int = 1) -> str:
-    run = name(prefix, k, draws) + (f"_h{n_hard}" if n_hard != 1 else "")
+def write(prefix: str, k: int, draws: int, steps: int, n_hard: int = 1,
+          n_dust: int = 1) -> str:
+    sched = (n_hard, n_dust) != (1, 1)
+    run = name(prefix, k, draws)
+    if sched:
+        run += f"_h{n_hard}" + (f"_d{n_dust}" if n_dust != 1 else "")
     base = "base_dust.yaml" if draws else "base.yaml"
     what = (f"DUST, {draws} draws per bottleneck (dust_population {N_BOTTLENECKS * draws})"
             if draws else "hard Top-K baseline")
-    if n_hard != 1:
-        what += f", dust_schedule [{n_hard}, 1] ({n_hard} hard steps per DUST step)"
+    if sched:
+        what += (f", dust_schedule [{n_hard}, {n_dust}] ({n_hard} hard steps, then "
+                 f"{n_dust} DUST step{'s' if n_dust > 1 else ''})")
     lines = [
         f"# Small-model DUST study (configs/small_dust/{base}): K = {k}, {what}.",
         "# Written by scripts/make_small_dust_configs.py.",
@@ -73,8 +82,8 @@ def write(prefix: str, k: int, draws: int, steps: int, n_hard: int = 1) -> str:
     ]
     if draws:
         lines.append(f"  dust_population: {N_BOTTLENECKS * draws}")
-    if n_hard != 1:
-        lines.append(f"  dust_schedule: [{n_hard}, 1]")
+    if sched:
+        lines.append(f"  dust_schedule: [{n_hard}, {n_dust}]")
     rel = f"configs/small_dust/{run}.yaml"
     with open(os.path.join(OUT, f"{run}.yaml"), "w") as f:
         f.write("\n".join(lines) + "\n")
@@ -105,13 +114,15 @@ def main() -> None:
         phase_w += 2
         lyon += [f"{phase_l + 1} {gpus(range(16))} {cfgs[3]}"]
         phase_l += 1
-    for h in SWEEP_HARD:
+    for group in SWEEP_PHASES:
         phase_w += 1
-        warsaw += [f"{phase_w} {gpus(range(8))} {write('wa', 4, 512, args.steps, n_hard=h)}"]
+        warsaw += [f"{phase_w} {gpus(range(8))} {write('wa', 4, 512, args.steps, h, d)}"
+                   for h, d in group]
     for box, plan in (("warsaw", warsaw), ("lyon", lyon)):
         with open(os.path.join(OUT, f"plan_{box}.txt"), "w") as f:
             f.write("\n".join(plan) + "\n")
-    print(f"wrote {4 * len(K_ORDER) + len(SWEEP_HARD)} configs, plan_warsaw.txt and "
+    n_sweep = sum(len(g) for g in SWEEP_PHASES)
+    print(f"wrote {4 * len(K_ORDER) + n_sweep} configs, plan_warsaw.txt and "
           f"plan_lyon.txt for {args.steps} steps")
 
 

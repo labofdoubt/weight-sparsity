@@ -1,0 +1,18 @@
+# Small-model DUST study (configs/small_dust/base_dust.yaml): K = 4, DUST, 512 draws per bottleneck (dust_population 2048), dust_schedule [90, 10] (90 hard steps, then 10 DUST steps).
+# Written by scripts/make_small_dust_configs.py.
+_base_:
+  - base_dust.yaml
+
+train:
+  run_name: wa_k4_dust_p512_h90_d10
+  max_steps: 10000
+  log_every_steps: 2
+  validate_every_steps: 20
+  checkpoint_every_steps: 500
+  keep_last_checkpoints: 20
+
+activation_bottleneck:
+  k: 4
+  j: 508
+  dust_population: 2048
+  dust_schedule: [90, 10]
