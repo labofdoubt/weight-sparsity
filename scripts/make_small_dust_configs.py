@@ -20,9 +20,11 @@ planned):
   the schedule sweep at 512 draws over all 8, one run after another:
   dust_schedule [10, 1], [30, 1], [90, 1] (``wa_k4_dust_p512_h10`` etc.:
   10, 30, 90 hard steps per DUST step), then [30, 5] and [90, 10]
-  (``wa_k4_dust_p512_h30_d5``, ``_h90_d10``).  The last two share one phase
-  (a chain on the same GPUs): they were added while gpu_phases.sh was
-  running, and it fixes its list of phase numbers at start.
+  (``wa_k4_dust_p512_h30_d5``, ``_h90_d10``), then the same five schedules
+  with ``dust_target: backprop`` (``wa_k4_dust_p512_bp_h10`` ...).  Everything
+  after [90, 1] shares one phase (a chain on the same GPUs): those runs were
+  added while gpu_phases.sh was running, and it fixes its list of phase
+  numbers at start.
 * lyon (16 GPUs), plan_lyon.txt, runs ``ly_*``: 2048 draws over all 16
   (stopped at 4000 steps by request).
 
@@ -41,9 +43,12 @@ N_FEATURES = 512
 N_BOTTLENECKS = 4
 K_ORDER = (4, 8, 16)
 PLAN_K = (4,)
-#: the schedule sweep at 512 draws (K = 4): dust_schedule [n_hard, n_dust]
+#: the schedule sweep at 512 draws (K = 4): (n_hard, n_dust, dust_target)
 #: per run, grouped by phase (runs of one phase run one after another)
-SWEEP_PHASES = (((10, 1),), ((30, 1),), ((90, 1),), ((30, 5), (90, 10)))
+SCHEDULES = ((10, 1), (30, 1), (90, 1), (30, 5), (90, 10))
+SWEEP_PHASES = (((10, 1, "encoder"),), ((30, 1, "encoder"),), ((90, 1, "encoder"),),
+                ((30, 5, "encoder"), (90, 10, "encoder"))
+                + tuple((h, d, "backprop") for h, d in SCHEDULES))
 
 
 def name(prefix: str, k: int, draws: int = 0) -> str:
@@ -51,9 +56,9 @@ def name(prefix: str, k: int, draws: int = 0) -> str:
 
 
 def write(prefix: str, k: int, draws: int, steps: int, n_hard: int = 1,
-          n_dust: int = 1) -> str:
+          n_dust: int = 1, target: str = "encoder") -> str:
     sched = (n_hard, n_dust) != (1, 1)
-    run = name(prefix, k, draws)
+    run = name(prefix, k, draws) + ("_bp" if target == "backprop" else "")
     if sched:
         run += f"_h{n_hard}" + (f"_d{n_dust}" if n_dust != 1 else "")
     base = "base_dust.yaml" if draws else "base.yaml"
@@ -62,6 +67,8 @@ def write(prefix: str, k: int, draws: int, steps: int, n_hard: int = 1,
     if sched:
         what += (f", dust_schedule [{n_hard}, {n_dust}] ({n_hard} hard steps, then "
                  f"{n_dust} DUST step{'s' if n_dust > 1 else ''})")
+    if target != "encoder":
+        what += f", dust_target {target}"
     lines = [
         f"# Small-model DUST study (configs/small_dust/{base}): K = {k}, {what}.",
         "# Written by scripts/make_small_dust_configs.py.",
@@ -84,6 +91,8 @@ def write(prefix: str, k: int, draws: int, steps: int, n_hard: int = 1,
         lines.append(f"  dust_population: {N_BOTTLENECKS * draws}")
     if sched:
         lines.append(f"  dust_schedule: [{n_hard}, {n_dust}]")
+    if target != "encoder":
+        lines.append(f"  dust_target: {target}")
     rel = f"configs/small_dust/{run}.yaml"
     with open(os.path.join(OUT, f"{run}.yaml"), "w") as f:
         f.write("\n".join(lines) + "\n")
@@ -116,8 +125,8 @@ def main() -> None:
         phase_l += 1
     for group in SWEEP_PHASES:
         phase_w += 1
-        warsaw += [f"{phase_w} {gpus(range(8))} {write('wa', 4, 512, args.steps, h, d)}"
-                   for h, d in group]
+        warsaw += [f"{phase_w} {gpus(range(8))} {write('wa', 4, 512, args.steps, h, d, t)}"
+                   for h, d, t in group]
     for box, plan in (("warsaw", warsaw), ("lyon", lyon)):
         with open(os.path.join(OUT, f"plan_{box}.txt"), "w") as f:
             f.write("\n".join(plan) + "\n")

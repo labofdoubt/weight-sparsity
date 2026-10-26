@@ -9,3 +9,8 @@
 5 0,1,2,3,4,5,6,7 configs/small_dust/wa_k4_dust_p512_h90.yaml
 6 0,1,2,3,4,5,6,7 configs/small_dust/wa_k4_dust_p512_h30_d5.yaml
 6 0,1,2,3,4,5,6,7 configs/small_dust/wa_k4_dust_p512_h90_d10.yaml
+6 0,1,2,3,4,5,6,7 configs/small_dust/wa_k4_dust_p512_bp_h10.yaml
+6 0,1,2,3,4,5,6,7 configs/small_dust/wa_k4_dust_p512_bp_h30.yaml
+6 0,1,2,3,4,5,6,7 configs/small_dust/wa_k4_dust_p512_bp_h90.yaml
+6 0,1,2,3,4,5,6,7 configs/small_dust/wa_k4_dust_p512_bp_h30_d5.yaml
+6 0,1,2,3,4,5,6,7 configs/small_dust/wa_k4_dust_p512_bp_h90_d10.yaml
