@@ -1,0 +1,20 @@
+s32_hard_k2|toy_mnist/configs/sparse_sweep/hard.yaml|topk.k=2 model.pre_sparsity=32
+s32_hard_k4|toy_mnist/configs/sparse_sweep/hard.yaml|topk.k=4 model.pre_sparsity=32
+s32_hard_k8|toy_mnist/configs/sparse_sweep/hard.yaml|topk.k=8 model.pre_sparsity=32
+s32_hard_k16|toy_mnist/configs/sparse_sweep/hard.yaml|topk.k=16 model.pre_sparsity=32
+s32_dust_k2_p128|toy_mnist/configs/sparse_sweep/dust.yaml|topk.k=2 model.pre_sparsity=32 topk.dust_population=128
+s32_dust_k2_p512|toy_mnist/configs/sparse_sweep/dust.yaml|topk.k=2 model.pre_sparsity=32 topk.dust_population=512
+s32_dust_k2_p2000|toy_mnist/configs/sparse_sweep/dust.yaml|topk.k=2 model.pre_sparsity=32 topk.dust_population=2000
+s32_dust_k2_p8000|toy_mnist/configs/sparse_sweep/dust.yaml|topk.k=2 model.pre_sparsity=32 topk.dust_population=8000
+s32_dust_k4_p128|toy_mnist/configs/sparse_sweep/dust.yaml|topk.k=4 model.pre_sparsity=32 topk.dust_population=128
+s32_dust_k4_p512|toy_mnist/configs/sparse_sweep/dust.yaml|topk.k=4 model.pre_sparsity=32 topk.dust_population=512
+s32_dust_k4_p2000|toy_mnist/configs/sparse_sweep/dust.yaml|topk.k=4 model.pre_sparsity=32 topk.dust_population=2000
+s32_dust_k4_p8000|toy_mnist/configs/sparse_sweep/dust.yaml|topk.k=4 model.pre_sparsity=32 topk.dust_population=8000
+s32_dust_k8_p128|toy_mnist/configs/sparse_sweep/dust.yaml|topk.k=8 model.pre_sparsity=32 topk.dust_population=128
+s32_dust_k8_p512|toy_mnist/configs/sparse_sweep/dust.yaml|topk.k=8 model.pre_sparsity=32 topk.dust_population=512
+s32_dust_k8_p2000|toy_mnist/configs/sparse_sweep/dust.yaml|topk.k=8 model.pre_sparsity=32 topk.dust_population=2000
+s32_dust_k8_p8000|toy_mnist/configs/sparse_sweep/dust.yaml|topk.k=8 model.pre_sparsity=32 topk.dust_population=8000
+s32_dust_k16_p128|toy_mnist/configs/sparse_sweep/dust.yaml|topk.k=16 model.pre_sparsity=32 topk.dust_population=128
+s32_dust_k16_p512|toy_mnist/configs/sparse_sweep/dust.yaml|topk.k=16 model.pre_sparsity=32 topk.dust_population=512
+s32_dust_k16_p2000|toy_mnist/configs/sparse_sweep/dust.yaml|topk.k=16 model.pre_sparsity=32 topk.dust_population=2000
+s32_dust_k16_p8000|toy_mnist/configs/sparse_sweep/dust.yaml|topk.k=16 model.pre_sparsity=32 topk.dust_population=8000

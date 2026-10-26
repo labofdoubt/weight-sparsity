@@ -10,6 +10,12 @@ with ``W0`` a bias-free linear layer 784 -> pre_width and the gate's hard mask
 passing the backward through the active entries only.  ``gate_input`` and
 ``forward_from_gate`` split the forward at the gate input ``u`` (``v`` or
 ``W0 v``) so that a DUST step can rerun the tail from a perturbed ``u``.
+
+``model.pre_sparsity = S > 0`` makes ``W0`` row-sparse by projection
+(``project_pre``): every row keeps its ``S`` entries of largest magnitude.
+The trainer applies it once at initialization and after every optimizer
+step; the gradient and the update themselves stay dense, so an entry at 0 can
+re-enter a row's support when its dense update is large enough.
 """
 
 from __future__ import annotations
@@ -116,6 +122,9 @@ class ToyMLP(nn.Module):
         self.rescale = DiagonalRescale(n) if cfg.rescale.enabled else None
         self.pre = (nn.Linear(n, cfg.model.pre_width, bias=False)
                     if cfg.model.pre_width > 0 else None)
+        self.pre_sparsity = int(cfg.model.pre_sparsity)
+        if self.pre_sparsity > 0 and self.pre is None:
+            raise ValueError("model.pre_sparsity needs model.pre_width > 0")
         self.gate_site = cfg.topk.site
         if self.pre is None and self.gate_site != "input":
             raise ValueError("topk.site='pre_linear' needs model.pre_width > 0")
@@ -125,6 +134,19 @@ class ToyMLP(nn.Module):
         self.fc1 = nn.Linear(cfg.model.pre_width if self.pre is not None else n,
                              cfg.model.hidden, bias=cfg.model.bias)
         self.fc2 = nn.Linear(cfg.model.hidden, N_CLASSES, bias=cfg.model.bias)
+
+    @torch.no_grad()
+    def project_pre(self) -> Optional[torch.Tensor]:
+        """PerRowAbsTopS on ``W0``: every row keeps its ``pre_sparsity``
+        entries of largest magnitude, the rest become 0.  Returns the boolean
+        support mask (``None`` when ``W0`` is absent or dense)."""
+        if self.pre is None or self.pre_sparsity <= 0:
+            return None
+        w = self.pre.weight
+        idx = torch.topk(w.abs(), self.pre_sparsity, dim=1, largest=True, sorted=False).indices
+        mask = torch.zeros_like(w, dtype=torch.bool).scatter_(1, idx, True)
+        w.mul_(mask)
+        return mask
 
     def gate_input(self, x: torch.Tensor) -> torch.Tensor:
         """The vector the gate acts on: ``exp(g) * x`` (or ``x``), mapped by

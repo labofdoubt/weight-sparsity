@@ -1,0 +1,9 @@
+# Sparse-W0 study, DUST arm: site_sweep/pre_linear_dust.yaml (DUST on the
+# gate input u = W0 x, sigma 0.1 absolute, the estimate applied to W0 as
+# G^ = sum_t g^_t x_t^T) with the same PerRowAbsTopS projection of W0 after
+# every step, hard or DUST.  K, S and dust_population come from the job line.
+_base_: [../site_sweep/pre_linear_dust.yaml]
+model:
+  pre_sparsity: 32
+train:
+  run_name: sparse_dust

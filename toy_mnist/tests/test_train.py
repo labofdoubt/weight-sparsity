@@ -183,3 +183,30 @@ def test_dust_training_at_the_pre_linear_site_moves_w0_on_dust_steps(tmp_path):
         assert w0_moved and fc1_moved == (kind == "hard"), (step, kind)
     recs = _read_metrics(summary["run_dir"])
     assert "dust/cosine" in [r for r in recs if "train/ce" in r][1]
+
+
+@pytest.mark.parametrize("mode", ["hard", "dust"])
+def test_w0_stays_row_sparse_after_every_step_with_dense_updates(tmp_path, mode):
+    topk = {"enabled": True, "k": 4, "site": "pre_linear", "surrogate_mode": mode}
+    if mode == "dust":
+        topk.update({"dust_population": 4, "dust_chunk_draws": 4})
+    cfg = small_config(tmp_path, "baseline", model={"pre_width": 20, "pre_sparsity": 6},
+                       topk=topk)
+    seen = []
+
+    def on_step(step, model, optimizer):
+        w = model.pre.weight.detach()
+        seen.append(int((w != 0).sum(1).max()))
+        if step > 0:
+            # the optimizer state is dense: the first moment has entries off the support
+            st = optimizer.state[model.pre.weight]
+            assert int((st["exp_avg"] != 0).sum(1).max()) > 6
+
+    summary = train(cfg, synthetic_data(), on_step=on_step)
+    assert summary["status"] == "finished"
+    assert seen and max(seen) <= 6  # at init and before every step: at most S per row
+    payload = torch.load(os.path.join(summary["run_dir"], "final.pt"), weights_only=False)
+    assert int((payload["model"]["pre.weight"] != 0).sum(1).max()) <= 6
+    recs = _read_metrics(summary["run_dir"])
+    churn = [r["pre/churn"] for r in recs if "pre/churn" in r]
+    assert churn and all(0.0 <= c <= 1.0 for c in churn)

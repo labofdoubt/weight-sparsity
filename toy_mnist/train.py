@@ -22,7 +22,9 @@ measured on the 10 000 test images with the deterministic hard forward;
 ``gate/features_seen`` counts the input features active at least once in the
 window's training forwards, ``gate/usage_eff`` is ``exp(H)`` of the normalized
 usage EMA (the effective number of used features); ``rescale/g_*`` summarize
-``g``.
+``g``.  With ``model.pre_sparsity`` the projection of ``W0`` runs after every
+step and ``pre/churn`` is the window mean of the fraction of support entries
+(rows x S) that entered the support at a step.
 """
 
 from __future__ import annotations
@@ -239,6 +241,10 @@ def train(cfg: Config, data: Optional[MNISTData] = None,
         torch.save(checkpoint_payload(step1), tmp)
         os.replace(tmp, path)
 
+    # PerRowAbsTopS on W0 at initialization, and after every step below
+    pre_mask = model.project_pre()
+    churn_sum, churn_n = 0.0, 0
+
     explicit = set(tr.checkpoint_steps)
     if 0 in explicit:
         save_checkpoint("ckpt_step0.pt", 0)  # the initial state
@@ -283,6 +289,11 @@ def train(cfg: Config, data: Optional[MNISTData] = None,
             internal_stop = f"non-finite gradient norm at step {step1}"
         if internal_stop is None:
             active_opt.step()
+            if pre_mask is not None:
+                new_mask = model.project_pre()
+                churn_sum += float((new_mask & ~pre_mask).sum()) / float(pre_mask.sum())
+                churn_n += 1
+                pre_mask = new_mask
         else:
             optimizer.zero_grad(set_to_none=True)
             status = f"stopped: {internal_stop}"
@@ -306,6 +317,9 @@ def train(cfg: Config, data: Optional[MNISTData] = None,
                 "perf/epoch": float(data.epoch),
             }
             metrics.update(gate_metrics(model))
+            if pre_mask is not None and churn_n:
+                metrics["pre/churn"] = churn_sum / churn_n
+                churn_sum, churn_n = 0.0, 0
             dm: Dict[str, float] = {}
             if dust is not None:
                 dm = dust_stats.metrics()

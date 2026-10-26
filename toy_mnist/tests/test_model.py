@@ -134,3 +134,31 @@ def test_pre_linear_layer_and_the_two_gate_sites():
         load_config(values={"model": {"pre_width": 12},
                             "topk": {"enabled": True, "k": 3, "site": "input",
                                      "surrogate_mode": "dust"}})
+
+
+def test_per_row_abs_top_s_projection_of_w0():
+    torch.manual_seed(4)
+    cfg = load_config(values={"model": {"hidden": 8, "pre_width": 12, "pre_sparsity": 5},
+                              "topk": {"enabled": True, "k": 3, "site": "pre_linear"}})
+    m = ToyMLP(cfg)
+    w_before = m.pre.weight.detach().clone()
+    mask = m.project_pre()
+    w = m.pre.weight.detach()
+    assert mask.shape == (12, 784) and torch.equal(mask.sum(1), torch.full((12,), 5))
+    assert int((w != 0).sum(1).max()) == 5
+    # the kept entries are the 5 of largest magnitude of each row, unchanged
+    for i in range(12):
+        top = torch.topk(w_before[i].abs(), 5).indices
+        assert set(top.tolist()) == set(torch.nonzero(w[i]).flatten().tolist())
+        assert torch.equal(w[i][top], w_before[i][top])
+    # idempotent
+    assert torch.equal(m.project_pre(), mask) and torch.equal(m.pre.weight.detach(), w)
+    # dense W0: no projection
+    cfg = load_config(values={"model": {"hidden": 8, "pre_width": 12},
+                              "topk": {"enabled": True, "k": 3, "site": "pre_linear"}})
+    assert ToyMLP(cfg).project_pre() is None
+    import pytest
+    with pytest.raises(ValueError, match="pre_sparsity"):
+        load_config(values={"model": {"pre_sparsity": 5}})
+    with pytest.raises(ValueError, match="pre_sparsity"):
+        load_config(values={"model": {"pre_width": 12, "pre_sparsity": 785}})

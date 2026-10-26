@@ -45,6 +45,11 @@ class ModelConfig:
     hidden: int = 256
     bias: bool = True
     pre_width: int = 0
+    # PerRowAbsTopS on W0: after every optimizer step (hard or DUST; the
+    # gradient and the AdamW update are dense) and once at initialization,
+    # every row of W0 (the incoming weights of one unit) keeps its S entries
+    # of largest magnitude and the others are set to 0.  0 = dense.
+    pre_sparsity: int = 0
 
 
 @dataclass
@@ -163,6 +168,11 @@ class Config:
             raise ValueError("model.hidden must be >= 1")
         if m.pre_width < 0:
             raise ValueError("model.pre_width must be >= 0 (0 = no W0)")
+        if m.pre_sparsity < 0 or m.pre_sparsity > N_PIXELS:
+            raise ValueError(f"model.pre_sparsity must be in [0, {N_PIXELS}] (a row of W0 has "
+                             f"{N_PIXELS} entries; 0 = dense)")
+        if m.pre_sparsity > 0 and m.pre_width < 1:
+            raise ValueError("model.pre_sparsity needs model.pre_width > 0 (the W0 layer)")
         if t.site not in ("input", "pre_linear"):
             raise ValueError(f"topk.site must be 'input' or 'pre_linear', got {t.site!r}")
         if t.site == "pre_linear" and m.pre_width < 1:

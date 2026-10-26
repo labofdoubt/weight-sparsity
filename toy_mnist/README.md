@@ -40,6 +40,14 @@ before the gate: $g$ at `site: input` (needs the rescaling), $W_0$ at
 $\hat G_{W_0} = \sum_t \hat g_t x_t^\top$ (`configs/site_sweep/pre_linear_dust.yaml`,
 report `reports/site_dust.tex`).
 
+`model.pre_sparsity: S` makes $W_0$ row-sparse by projection: at
+initialization and after every optimizer step (hard or DUST, the gradient and
+the AdamW update staying dense) each row keeps its $S$ entries of largest
+magnitude and the rest are zeroed, so an entry can re-enter a row's support
+when its dense update is large enough; `pre/churn` logs the fraction of
+support entries that entered at a step.  `configs/sparse_sweep/` is the
+$S = 32$ comparison of hard against DUST (report `reports/sparse_dust.tex`).
+
 **Hard mode.** The mask is numerically hard and the backward passes it:
 $\partial L / \partial u = m \odot \partial L / \partial x'$, so $g_n$
 receives a gradient from a sample only when pixel $n$ is in that sample's

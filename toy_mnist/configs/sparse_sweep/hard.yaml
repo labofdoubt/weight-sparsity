@@ -1,0 +1,10 @@
+# Sparse-W0 study (2026-10-26): site_sweep/pre_linear.yaml
+# (z = W2 relu(W1 AbsTopK_K(W0 x)), no rescaling, hidden 1024, 5000 steps,
+# hard backward) with W0 projected to S entries of largest magnitude per row
+# (PerRowAbsTopS) at initialization and after every dense AdamW step.
+# K and S come from the job line.
+_base_: [../site_sweep/pre_linear.yaml]
+model:
+  pre_sparsity: 32
+train:
+  run_name: sparse_hard
