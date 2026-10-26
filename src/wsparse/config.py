@@ -459,6 +459,20 @@ class ActivationBottleneckConfig:
     stochastic_width: str = "none"
     stochastic_width_param: float = 0.5
 
+    # Hard-K annealing (surrogate_mode="hard" only): the active count of every
+    # bottleneck starts at K' = K+J and falls by one feature at a time to K,
+    # on plateaus of equal length over the whole run,
+    #     K'(s) = K + J - floor((J + 1) s / max_steps),  s = 0 .. max_steps-1
+    # the zero-based optimizer step, so each width K+J, ..., K is trained for
+    # max_steps / (J+1) steps and the last step runs at K (needs max_steps >=
+    # J+1).  Every step is an ordinary hard step at its width.  Validation and
+    # checkpoints see the width of the step just taken, so the final val/ce is
+    # at K; bottleneck/active_count logs K'.  `k` is the final count and `j`
+    # the annealed range.  A model rebuilt from the config runs at K;
+    # load_for_inference restores the width of the checkpoint's last step
+    # (2026-10-26).
+    hard_k_annealing: bool = False
+
     # Constant kernel/barrier temperature shared by the lapsum and rblapsum
     # modes (unified 2026-09-28; formerly fixed_temperature and
     # rblapsum_temperature).  Deliberately not score-scaled.  Under
@@ -981,6 +995,18 @@ class ActivationBottleneckConfig:
                 raise ValueError("stochastic_width is not implemented for gated_topk")
             if not 0.0 <= float(self.stochastic_width_param) <= 1.0:
                 raise ValueError("stochastic_width_param must be in [0, 1]")
+        if self.hard_k_annealing:
+            if self.surrogate_mode != "hard":
+                raise ValueError("hard_k_annealing anneals the hard support; it needs "
+                                 f"surrogate_mode='hard', got {self.surrogate_mode!r}")
+            if self.j < 1:
+                raise ValueError("hard_k_annealing starts at K' = K+J; set j >= 1")
+            if self.stochastic_width != "none":
+                raise ValueError("hard_k_annealing and stochastic_width both set the "
+                                 "support width; use one of them")
+            if self.value_shift != "none":
+                raise ValueError("value_shift's lambda is fixed from k at construction; "
+                                 "it is not defined under hard_k_annealing")
         if self.temperature <= 0:
             raise ValueError("temperature must be positive")
         if self.rblapsum_boundary_floor is None:
@@ -1459,6 +1485,12 @@ class Config:
     def __post_init__(self) -> None:
         # a single source of truth for the context length
         self.model.max_seq_len = max(self.model.max_seq_len, self.data.seq_len)
+        ab = self.activation_bottleneck
+        if ab.enabled and ab.hard_k_annealing and self.train.max_steps < ab.j + 1:
+            raise ValueError(
+                f"hard_k_annealing trains each width K+J..K for max_steps/(J+1) steps; "
+                f"max_steps={self.train.max_steps} < J+1={ab.j + 1} would skip widths "
+                "and end above K")
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)

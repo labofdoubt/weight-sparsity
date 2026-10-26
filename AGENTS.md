@@ -182,6 +182,11 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
   averaged over blocks (§9b).
 - **Keep `train.compile=False`.** A graph break around the hand-written gate
   backward can zero gradients silently while the loss keeps falling (§11).
+- **`hard_k_annealing` trains hard Top-K' with K' falling from K+J to K**
+  (one feature per `max_steps/(J+1)` steps). `val/ce` at step s is measured at
+  K'(s), not K (read `bottleneck/active_count`); only the final one is at K.
+  Rebuilding from the config gives K; `load_for_inference` restores a
+  checkpoint's own width.
 - **`surrogate_mode: dust` alternates hard steps with zeroth-order DUST steps**
   (`dust_schedule`, docs/dust-topk.md). `train/ce` is the clean hard-forward
   CE on both kinds of step; `dust/*` describe the DUST steps only, and

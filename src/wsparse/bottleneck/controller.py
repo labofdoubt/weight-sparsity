@@ -41,6 +41,18 @@ def resolve_layers(spec, n_layers: int) -> List[int]:
     return idx
 
 
+def annealed_k(step: int, k: int, j: int, max_steps: int) -> int:
+    """hard_k_annealing's width for zero-based optimizer step ``step``:
+
+        K'(s) = K + J - floor((J + 1) s / max_steps),
+
+    so each of the J+1 widths K+J, ..., K holds for max_steps / (J+1) steps,
+    K+J at s = 0 and K at s = max_steps - 1 whenever max_steps >= J+1.  Steps
+    outside [0, max_steps) are clamped to the ends."""
+    step = min(max(int(step), 0), int(max_steps) - 1)
+    return int(k) + int(j) - ((int(j) + 1) * step) // int(max_steps)
+
+
 #: where in a block the bottleneck is spliced in -> the attribute it replaces.
 #: ``pre_mlp`` sits inside the MLP branch, so the residual skip routes around
 #: it; the two stream placements replace the stream itself, so nothing does --
@@ -96,19 +108,38 @@ class ActivationBottleneckController:
         self.cfg = cfg
         self.model = model
         self.enabled = cfg.enabled
+        self.max_steps = int(max_steps)
         self.layers: List[Tuple[str, SparseTopKBottleneck]] = []
         if self.enabled:
             self._install()
 
+    @property
+    def k_annealing(self) -> bool:
+        return bool(self.enabled and getattr(self.cfg, "hard_k_annealing", False))
+
+    def set_active_count_for_step(self, step: int) -> int:
+        """hard_k_annealing: set every gate to the width K'(step) of the
+        zero-based optimizer step ``step`` and return it (see
+        ``annealed_k``).  Without annealing nothing changes and this returns
+        the configured K."""
+        if not self.k_annealing:
+            return int(self.cfg.k)
+        k_now = annealed_k(step, int(self.cfg.k), int(self.cfg.j), self.max_steps)
+        for _, layer in self.layers:
+            layer.gate.set_active_count(k_now)
+        return k_now
+
     def set_step(self, step: int) -> float:
-        """Apply the step's schedules.  Only laplace_policy has one: its
+        """Apply the step's schedules.  hard_k_annealing sets every gate's
+        width K'(step) (``set_active_count_for_step``).  laplace_policy's
         scheduled tau(step) is written to every policy gate's ``policy_tau``
         (the configured ``temperature`` stays tau_0 for the dumped config) and
         returned.  Every other mode's temperature is a constant and this
         returns 0.0, as before.  ``train()`` calls it before the ``on_step``
-        probe and before any micro-batch; a resume recomputes tau from the
-        restored step; validation and probes never advance it.
+        probe and before any micro-batch; a resume recomputes both from the
+        restored step; validation and probes never advance them.
         """
+        self.set_active_count_for_step(step)
         gates = self.policy_gates
         if not gates:
             return 0.0
@@ -285,10 +316,13 @@ class ActivationBottleneckController:
         if out:
             out["bottleneck/layers"] = float(len(self.layers))
 
-            out["bottleneck/density"] = self.cfg.k / self.cfg.n_features
-            out["bottleneck/candidate_density"] = (
-                self.cfg.k + self.cfg.j
-            ) / self.cfg.n_features
+            # the gates' current K and J: the configured ones, except under
+            # hard_k_annealing, where K' is the width of the latest step
+            gate = self.layers[0][1].gate
+            out["bottleneck/density"] = gate.k / self.cfg.n_features
+            out["bottleneck/candidate_density"] = (gate.k + gate.j) / self.cfg.n_features
+            if self.k_annealing:
+                out["bottleneck/active_count"] = float(gate.k)
         return out
 
 

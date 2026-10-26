@@ -204,6 +204,9 @@ def load_for_inference(path: str, device: str = "cpu"):
     )
     model.load_state_dict(payload["model"])
     model.to(device)
+    # hard_k_annealing: the width of the checkpoint's last optimizer step
+    # (payload["step"] counts completed steps); a no-op otherwise
+    bottleneck.set_active_count_for_step(int(payload.get("step", cfg.train.max_steps)) - 1)
     # Weights and config only: the optional policy_state payload (baseline,
     # noise RNG) is a training resume's business.  eval() so a laplace_policy
     # model answers with clean deterministic supports by default; a probe that
@@ -553,6 +556,10 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             + (" (one encoder/decoder pair shared by every bottleneck)"
                if cb.share_projections else "")
         )
+        if bottleneck.k_annealing:
+            print(f"[train] hard_k_annealing: K' = K+J = {cb.k + cb.j} at step 0 -> "
+                  f"K = {cb.k} at step {cfg.train.max_steps - 1}, one feature every "
+                  f"{cfg.train.max_steps / (cb.j + 1):.2f} steps")
 
     model.train()
     t0 = time.time()
@@ -1003,7 +1010,9 @@ def log_feature_usage(logger, bottleneck, step: int) -> Dict[str, float]:
     if not usage:
         return {}
     cfg = bottleneck.cfg
-    uniform = cfg.k / cfg.n_features
+    # the gates' current K: the configured one, except under hard_k_annealing
+    k = bottleneck.layers[0][1].gate.k
+    uniform = k / cfg.n_features
     metrics: Dict[str, float] = {}
     pooled = []
     for name, u in usage.items():
@@ -1014,7 +1023,7 @@ def log_feature_usage(logger, bottleneck, step: int) -> Dict[str, float]:
         metrics[f"bottleneck/usage_p{int(q * 100)}"] = float(
             torch.quantile(stacked.flatten().float(), q)
         )
-    fig = usage_figure(usage, cfg.k, cfg.n_features)
+    fig = usage_figure(usage, k, cfg.n_features)
     if fig is not None:
         logger.log_figure(step, "usage/sorted", fig)
     return metrics

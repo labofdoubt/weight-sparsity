@@ -326,6 +326,21 @@ class AdaptiveLapSumTopKGate(nn.Module):
         """
         return {**self._forward_diag, **self._usage_diag, **self._grad_sink}
 
+    def set_active_count(self, k: int) -> None:
+        """hard_k_annealing: the hard support width of the forwards that follow.
+
+        The candidate pool ``m = K + J`` the gate was built with stays fixed,
+        so ``j`` becomes ``m - k`` and ``k + j == m`` keeps holding; both are
+        forward and diagnostics quantities only in the hard backward.
+        """
+        k = int(k)
+        if self.surrogate_mode != "hard":
+            raise ValueError("set_active_count anneals the hard gate only, "
+                             f"got surrogate_mode={self.surrogate_mode!r}")
+        if not 1 <= k <= self.m:
+            raise ValueError(f"active count {k} outside [1, K+J={self.m}]")
+        self.k, self.j = k, self.m - k
+
     # ---- selection --------------------------------------------------------- #
     @property
     def gated(self) -> bool:
