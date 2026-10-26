@@ -1,0 +1,63 @@
+{
+  "data": {
+    "data_dir": "/workspace/data/mnist",
+    "normalize": "none"
+  },
+  "model": {
+    "hidden": 1024,
+    "bias": true,
+    "pre_width": 784,
+    "pre_sparsity": 32
+  },
+  "rescale": {
+    "enabled": false
+  },
+  "topk": {
+    "enabled": true,
+    "k": 4,
+    "j": null,
+    "site": "pre_linear",
+    "surrogate_mode": "hard",
+    "dust_population": 32,
+    "dust_sigma": 0.1,
+    "dust_sigma_mode": "absolute",
+    "dust_gamma": 0.0,
+    "dust_schedule": [
+      1,
+      1
+    ],
+    "dust_target": "encoder",
+    "dust_grad_scale": 1.0,
+    "dust_optimizer": "shared",
+    "dust_lr_scale": 1.0,
+    "dust_chunk_draws": 1,
+    "dust_cosine_every_steps": 0
+  },
+  "train": {
+    "optimizer": "adamw",
+    "lr": 0.001,
+    "betas": [
+      0.9,
+      0.95
+    ],
+    "eps": 1e-08,
+    "weight_decay": 0.0,
+    "grad_clip": 0.0,
+    "lr_schedule": "cosine",
+    "warmup_steps": 100,
+    "min_lr_ratio": 0.1,
+    "batch_size": 128,
+    "max_steps": 5000,
+    "log_every_steps": 20,
+    "validate_every_steps": 200,
+    "val_batch_size": 1000,
+    "seed": 1337,
+    "device": "auto",
+    "out_dir": "/workspace/runs_mnist/sparse_sweep",
+    "run_name": "s32_hard_k4",
+    "tensorboard": true,
+    "save_checkpoint": true,
+    "checkpoint_every_steps": 500,
+    "checkpoint_steps": []
+  }
+}
