@@ -21,11 +21,13 @@ planned):
   dust_schedule [10, 1], [30, 1], [90, 1] (``wa_k4_dust_p512_h10`` etc.:
   10, 30, 90 hard steps per DUST step), then [30, 5] and [90, 10]
   (``wa_k4_dust_p512_h30_d5``, ``_h90_d10``), each followed by the same
-  schedule with ``dust_target: backprop`` (``wa_k4_dust_p512_bp_h10`` ...).
-  The phases group them as [h10] [bp_h10, h30] [bp_h30, h90] [bp_h90,
-  h30_d5, bp_h30_d5, h90_d10, bp_h90_d10] (chains on the same GPUs, so the
-  order is the alternation): the later runs were added while gpu_phases.sh
-  was running phase 3, and it fixes its list of phase numbers at start.
+  schedule with ``dust_target: backprop`` (``wa_k4_dust_p512_bp_h10`` ...);
+  after the two [10, 1] runs, the same two with ``dust_lr_scale: 3``
+  (``wa_k4_dust_p512_h10_lr3``, ``_bp_h10_lr3``).  The phases group them as
+  [h10] [bp_h10, h10_lr3, bp_h10_lr3, h30] [bp_h30, h90] [bp_h90, h30_d5,
+  bp_h30_d5, h90_d10, bp_h90_d10] (chains on the same GPUs, so the order is
+  the listed one): the later runs were added while gpu_phases.sh was
+  running phase 3, and it fixes its list of phase numbers at start.
 * lyon (16 GPUs), plan_lyon.txt, runs ``ly_*``: 2048 draws over all 16
   (stopped at 4000 steps by request).
 
@@ -47,8 +49,9 @@ PLAN_K = (4,)
 #: the schedule sweep at 512 draws (K = 4): (n_hard, n_dust, dust_target)
 #: per run, grouped by phase (runs of one phase run one after another)
 SCHEDULES = ((10, 1), (30, 1), (90, 1), (30, 5), (90, 10))
-_ORDER = tuple((h, d, t) for h, d in SCHEDULES for t in ("encoder", "backprop"))
-SWEEP_PHASES = (_ORDER[0:1], _ORDER[1:3], _ORDER[3:5], _ORDER[5:])
+_ORDER = [(h, d, t, 1) for h, d in SCHEDULES for t in ("encoder", "backprop")]
+_ORDER[2:2] = [(10, 1, "encoder", 3), (10, 1, "backprop", 3)]  # dust_lr_scale 3
+SWEEP_PHASES = (_ORDER[0:1], _ORDER[1:5], _ORDER[5:7], _ORDER[7:])
 
 
 def name(prefix: str, k: int, draws: int = 0) -> str:
@@ -56,11 +59,13 @@ def name(prefix: str, k: int, draws: int = 0) -> str:
 
 
 def write(prefix: str, k: int, draws: int, steps: int, n_hard: int = 1,
-          n_dust: int = 1, target: str = "encoder") -> str:
+          n_dust: int = 1, target: str = "encoder", lr_scale: float = 1) -> str:
     sched = (n_hard, n_dust) != (1, 1)
     run = name(prefix, k, draws) + ("_bp" if target == "backprop" else "")
     if sched:
         run += f"_h{n_hard}" + (f"_d{n_dust}" if n_dust != 1 else "")
+    if lr_scale != 1:
+        run += f"_lr{lr_scale:g}"
     base = "base_dust.yaml" if draws else "base.yaml"
     what = (f"DUST, {draws} draws per bottleneck (dust_population {N_BOTTLENECKS * draws})"
             if draws else "hard Top-K baseline")
@@ -69,6 +74,8 @@ def write(prefix: str, k: int, draws: int, steps: int, n_hard: int = 1,
                  f"{n_dust} DUST step{'s' if n_dust > 1 else ''})")
     if target != "encoder":
         what += f", dust_target {target}"
+    if lr_scale != 1:
+        what += f", dust_lr_scale {lr_scale:g}"
     lines = [
         f"# Small-model DUST study (configs/small_dust/{base}): K = {k}, {what}.",
         "# Written by scripts/make_small_dust_configs.py.",
@@ -93,6 +100,8 @@ def write(prefix: str, k: int, draws: int, steps: int, n_hard: int = 1,
         lines.append(f"  dust_schedule: [{n_hard}, {n_dust}]")
     if target != "encoder":
         lines.append(f"  dust_target: {target}")
+    if lr_scale != 1:
+        lines.append(f"  dust_lr_scale: {lr_scale:g}")
     rel = f"configs/small_dust/{run}.yaml"
     with open(os.path.join(OUT, f"{run}.yaml"), "w") as f:
         f.write("\n".join(lines) + "\n")
@@ -125,8 +134,8 @@ def main() -> None:
         phase_l += 1
     for group in SWEEP_PHASES:
         phase_w += 1
-        warsaw += [f"{phase_w} {gpus(range(8))} {write('wa', 4, 512, args.steps, h, d, t)}"
-                   for h, d, t in group]
+        warsaw += [f"{phase_w} {gpus(range(8))} {write('wa', 4, 512, args.steps, h, d, t, lr)}"
+                   for h, d, t, lr in group]
     for box, plan in (("warsaw", warsaw), ("lyon", lyon)):
         with open(os.path.join(OUT, f"plan_{box}.txt"), "w") as f:
             f.write("\n".join(plan) + "\n")
