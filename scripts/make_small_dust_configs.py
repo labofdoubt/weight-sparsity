@@ -20,11 +20,12 @@ planned):
   the schedule sweep at 512 draws over all 8, one run after another:
   dust_schedule [10, 1], [30, 1], [90, 1] (``wa_k4_dust_p512_h10`` etc.:
   10, 30, 90 hard steps per DUST step), then [30, 5] and [90, 10]
-  (``wa_k4_dust_p512_h30_d5``, ``_h90_d10``), then the same five schedules
-  with ``dust_target: backprop`` (``wa_k4_dust_p512_bp_h10`` ...).  Everything
-  after [90, 1] shares one phase (a chain on the same GPUs): those runs were
-  added while gpu_phases.sh was running, and it fixes its list of phase
-  numbers at start.
+  (``wa_k4_dust_p512_h30_d5``, ``_h90_d10``), each followed by the same
+  schedule with ``dust_target: backprop`` (``wa_k4_dust_p512_bp_h10`` ...).
+  The phases group them as [h10] [bp_h10, h30] [bp_h30, h90] [bp_h90,
+  h30_d5, bp_h30_d5, h90_d10, bp_h90_d10] (chains on the same GPUs, so the
+  order is the alternation): the later runs were added while gpu_phases.sh
+  was running phase 3, and it fixes its list of phase numbers at start.
 * lyon (16 GPUs), plan_lyon.txt, runs ``ly_*``: 2048 draws over all 16
   (stopped at 4000 steps by request).
 
@@ -46,9 +47,8 @@ PLAN_K = (4,)
 #: the schedule sweep at 512 draws (K = 4): (n_hard, n_dust, dust_target)
 #: per run, grouped by phase (runs of one phase run one after another)
 SCHEDULES = ((10, 1), (30, 1), (90, 1), (30, 5), (90, 10))
-SWEEP_PHASES = (((10, 1, "encoder"),), ((30, 1, "encoder"),), ((90, 1, "encoder"),),
-                ((30, 5, "encoder"), (90, 10, "encoder"))
-                + tuple((h, d, "backprop") for h, d in SCHEDULES))
+_ORDER = tuple((h, d, t) for h, d in SCHEDULES for t in ("encoder", "backprop"))
+SWEEP_PHASES = (_ORDER[0:1], _ORDER[1:3], _ORDER[3:5], _ORDER[5:])
 
 
 def name(prefix: str, k: int, draws: int = 0) -> str:
