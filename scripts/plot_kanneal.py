@@ -96,7 +96,7 @@ LADDER = [f"hard{k}" for k in KS] + ["h125", "h250", "h500"]
 
 def plot_val(data: dict, keys, fname: str, ncol: int = 3) -> None:
     keys = [k for k in keys if k in data]
-    fig, axes = plt.subplots(1, 2, figsize=(7.6, 3.3))
+    fig, axes = plt.subplots(1, 2, figsize=(7.6, 5.0))
     for ax, (lo, hi), (ylo, yhi) in zip(axes, ((0, 20000), (12000, 20000)),
                                          ((1.3, 2.7), (1.33, 1.72))):
         for key in keys:
@@ -117,7 +117,7 @@ def plot_val(data: dict, keys, fname: str, ncol: int = 3) -> None:
     axes[0].set_title("whole run", fontsize=8, color=INK)
     axes[1].set_title("steps 12000 to 20000", fontsize=8, color=INK)
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.tight_layout(rect=(0, 0.25, 1, 1))
+    fig.tight_layout(rect=(0, 0.17, 1, 1))
     fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.0), ncol=ncol,
                fontsize=7, frameon=False, columnspacing=1.2, handlelength=2.2,
                title="in parentheses: final validation CE", title_fontsize=7)
