@@ -21,6 +21,9 @@ DST="${2:?missing destination}"
 INTERVAL="${3:-300}"
 
 mkdir -p "$DST"
+# the marker keeps scripts/backup_runs.sh from uploading the mirror as this
+# box's own runs (--exclude-if-present .tb_mirror)
+touch "$DST/.tb_mirror"
 echo "[tb-mirror] every ${INTERVAL}s: $SRC -> $DST  (event files only)"
 while :; do
   rclone copy "$SRC" "$DST" \

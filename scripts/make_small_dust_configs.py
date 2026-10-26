@@ -1,19 +1,24 @@
-"""Write the run configs and the GPU plan of the small-model DUST study.
+"""Write the run configs and the GPU plans of the small-model DUST study.
 
-    python scripts/make_small_dust_configs.py --steps N [--prefix wa]
+    python scripts/make_small_dust_configs.py [--steps 10000]
 
-For K in (16, 8, 4): the hard Top-K run and the DUST runs with 128, 512,
-2048 and 8192 draws per bottleneck (dust_population = 4 x draws, 4
-bottlenecks), J = N_features - K, all from configs/small_dust/base*.yaml.
-Every run trains N steps (constant LR, so max_steps only sets the length),
-logs every 2 steps (one hard and one DUST step per window under [1, 1]),
-validates every 10 and checkpoints at N/2 and N (the last two kept).
+The grid (2026-10-26): for K in (4, 8, 16), in that order, the hard Top-K
+run and DUST with 128, 512 and 2048 draws per bottleneck
+(dust_population = 4 x draws, 4 bottlenecks), J = N_features - K, all from
+configs/small_dust/base*.yaml.  Every run trains --steps steps (constant LR,
+so max_steps only sets the length), logs every 2 steps (one hard and one
+DUST step per window under [1, 1]), validates every 20 and checkpoints every
+1000, all kept (the backup watcher uploads every one; a hard step takes
+67 ms, so pruning would outrun a 600 s watcher).
 
-The plan (configs/small_dust/plan.txt, read by scripts/gpu_phases.sh) runs
-in phases on 8 GPUs; 2048 draws are split over 4 GPUs and 8192 over 8
-(DustDrawGroup), the rest take one GPU each.  Step times on a 5090
-(2026-10-26): hard 67 ms, DUST 5.0 s (128), 19.5 s (512), 19.8 s (2048 / 4
-GPUs), 39.8 s (8192 / 8 GPUs); the plan takes about 89 N seconds.
+Two boxes, one plan each (read by scripts/gpu_phases.sh):
+
+* warsaw (8 GPUs), plan_warsaw.txt, runs ``wa_*``: per K, the hard run on
+  GPU 0 alongside 128 draws split over GPUs 1-7, then 512 draws over all 8.
+* lyon (16 GPUs), plan_lyon.txt, runs ``ly_*``: per K, 2048 draws over all 16.
+
+DUST step times on 5090s (2026-10-26): about 0.17 s + 38.4 ms x (draws per
+GPU); 128 over 7 GPUs ~0.9 s, 512 over 8 ~2.6 s, 2048 over 16 ~5 s.
 """
 
 from __future__ import annotations
@@ -25,9 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(os.path.dirname(HERE), "configs", "small_dust")
 N_FEATURES = 512
 N_BOTTLENECKS = 4
-K_LIST = (16, 8, 4)
-DRAWS = (128, 512, 2048, 8192)
-GPUS = {128: "1", 512: "1", 2048: "4", 8192: "8"}
+K_ORDER = (4, 8, 16)
 
 
 def name(prefix: str, k: int, draws: int = 0) -> str:
@@ -49,9 +52,9 @@ def write(prefix: str, k: int, draws: int, steps: int) -> str:
         f"  run_name: {run}",
         f"  max_steps: {steps}",
         "  log_every_steps: 2",
-        "  validate_every_steps: 10",
-        f"  checkpoint_every_steps: {max(1, steps // 2)}",
-        "  keep_last_checkpoints: 2",
+        "  validate_every_steps: 20",
+        "  checkpoint_every_steps: 1000",
+        f"  keep_last_checkpoints: {max(1, steps // 1000)}",
         "",
         "activation_bottleneck:",
         f"  k: {k}",
@@ -59,38 +62,34 @@ def write(prefix: str, k: int, draws: int, steps: int) -> str:
     ]
     if draws:
         lines.append(f"  dust_population: {N_BOTTLENECKS * draws}")
-    path = os.path.join(OUT, f"{run}.yaml")
-    with open(path, "w") as f:
+    rel = f"configs/small_dust/{run}.yaml"
+    with open(os.path.join(OUT, f"{run}.yaml"), "w") as f:
         f.write("\n".join(lines) + "\n")
-    return path
+    return rel
+
+
+def gpus(ids) -> str:
+    return ",".join(str(i) for i in ids)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--steps", type=int, required=True)
-    ap.add_argument("--prefix", default="wa")
+    ap.add_argument("--steps", type=int, default=10000)
     args = ap.parse_args()
-    for k in K_LIST:
-        write(args.prefix, k, 0, args.steps)
-        for d in DRAWS:
-            write(args.prefix, k, d, args.steps)
-    c = lambda k, d=0: f"configs/small_dust/{name(args.prefix, k, d)}.yaml"  # noqa: E731
-    all8, four = "0,1,2,3,4,5,6,7", "0,1,2,3"
-    plan = [
-        "# phase  gpus  config   (gpu_phases.sh: phases in order; within a phase one",
-        "# chain per GPU set, jobs on the same set one after another, sets in parallel)",
-        f"1 {four} {c(16, 2048)}", f"1 4 {c(16, 512)}", f"1 5 {c(16, 128)}",
-        f"1 6 {c(16)}", f"1 7 {c(8)}", f"1 7 {c(8, 128)}",
-        f"2 {all8} {c(16, 8192)}",
-        f"3 {four} {c(8, 2048)}", f"3 4 {c(8, 512)}", f"3 5 {c(4)}", f"3 5 {c(4, 128)}",
-        f"3 6 {c(4, 512)}",
-        f"4 {all8} {c(8, 8192)}",
-        f"5 {four} {c(4, 2048)}",
-        f"6 {all8} {c(4, 8192)}",
-    ]
-    with open(os.path.join(OUT, "plan.txt"), "w") as f:
-        f.write("\n".join(plan) + "\n")
-    print(f"wrote {len(K_LIST) * (1 + len(DRAWS))} configs and plan.txt for {args.steps} steps")
+    header = ["# phase  gpus  config   (scripts/gpu_phases.sh: phases in order; within a",
+              "# phase one chain per GPU set, jobs on the same set one after another,",
+              "# sets in parallel)"]
+    warsaw, lyon = list(header), list(header)
+    for i, k in enumerate(K_ORDER):
+        warsaw += [f"{2 * i + 1} 0 {write('wa', k, 0, args.steps)}",
+                   f"{2 * i + 1} {gpus(range(1, 8))} {write('wa', k, 128, args.steps)}",
+                   f"{2 * i + 2} {gpus(range(8))} {write('wa', k, 512, args.steps)}"]
+        lyon += [f"{i + 1} {gpus(range(16))} {write('ly', k, 2048, args.steps)}"]
+    for box, plan in (("warsaw", warsaw), ("lyon", lyon)):
+        with open(os.path.join(OUT, f"plan_{box}.txt"), "w") as f:
+            f.write("\n".join(plan) + "\n")
+    print(f"wrote {4 * len(K_ORDER)} configs, plan_warsaw.txt and plan_lyon.txt "
+          f"for {args.steps} steps")
 
 
 if __name__ == "__main__":

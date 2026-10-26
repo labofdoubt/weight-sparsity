@@ -211,7 +211,10 @@ TensorBoard names a run by its **path relative to `--logdir`**, so runs from two
 machines with the same name merge into one interleaved series — silently, and it
 looks like a noisy curve rather than an error. Keep other machines' events in a
 subdirectory (`/workspace/runs/<machine>/...`). `scripts/tb_mirror.sh` does this
-via Drive, since two vast boxes have no SSH trust with each other.
+via Drive, since two vast boxes have no SSH trust with each other. It marks the
+mirror directory with `.tb_mirror`, which `scripts/backup_runs.sh` skips
+(`--exclude-if-present`), so a box never re-uploads another box's runs as its
+own (2026-10-26).
 
 ---
 

@@ -1,0 +1,12 @@
+# phase  gpus  config   (scripts/gpu_phases.sh: phases in order; within a
+# phase one chain per GPU set, jobs on the same set one after another,
+# sets in parallel)
+1 0 configs/small_dust/wa_k4_hard.yaml
+1 1,2,3,4,5,6,7 configs/small_dust/wa_k4_dust_p128.yaml
+2 0,1,2,3,4,5,6,7 configs/small_dust/wa_k4_dust_p512.yaml
+3 0 configs/small_dust/wa_k8_hard.yaml
+3 1,2,3,4,5,6,7 configs/small_dust/wa_k8_dust_p128.yaml
+4 0,1,2,3,4,5,6,7 configs/small_dust/wa_k8_dust_p512.yaml
+5 0 configs/small_dust/wa_k16_hard.yaml
+5 1,2,3,4,5,6,7 configs/small_dust/wa_k16_dust_p128.yaml
+6 0,1,2,3,4,5,6,7 configs/small_dust/wa_k16_dust_p512.yaml

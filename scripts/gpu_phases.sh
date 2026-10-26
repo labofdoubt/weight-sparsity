@@ -32,8 +32,16 @@ done < "$PLAN"
   || { echo "[phases] this wsparse has no DustDrawGroup" >&2; fail=1; }
 [ $fail -eq 0 ] || exit 2
 
-# per-process CPU threads: the cgroup quota over the GPUs in use
-quota=$(awk '{ if ($1 == "max") print 0; else print int($1 / $2) }' /sys/fs/cgroup/cpu.max 2>/dev/null || echo 0)
+# per-process CPU threads: the cgroup quota (v2 cpu.max, else v1 cfs) over the GPUs
+if [ -r /sys/fs/cgroup/cpu.max ]; then
+  quota=$(awk '{ if ($1 == "max") print 0; else print int($1 / $2) }' /sys/fs/cgroup/cpu.max)
+elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ]; then
+  quota=$(awk -v q="$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)" \
+    '{ if (q <= 0) print 0; else print int(q / $1) }' /sys/fs/cgroup/cpu/cpu.cfs_period_us)
+else
+  quota=0
+fi
+[ "${quota:-0}" -gt 0 ] || quota=$(nproc)
 ngpu_total=$(nvidia-smi -L 2>/dev/null | wc -l)
 if [ "${quota:-0}" -gt 0 ] && [ "${ngpu_total:-0}" -gt 0 ]; then
   export OMP_NUM_THREADS=$(( quota / ngpu_total > 0 ? quota / ngpu_total : 1 ))

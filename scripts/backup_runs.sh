@@ -83,7 +83,9 @@ echo "[backup] $SRC -> $DST  (tier: $tier)"
 # at first stat and checksums only that, a consistent prefix of an append-only
 # file.  A file rewritten in place still fails the check.  Checkpoints are not
 # at risk: save_checkpoint writes a .tmp and renames, so they never change.
-rclone copy "$SRC" "$DST" "${FILTERS[@]}" \
+# --exclude-if-present: a directory scripts/tb_mirror.sh fills with ANOTHER
+# box's event files carries .tb_mirror and is never uploaded under this box.
+rclone copy "$SRC" "$DST" "${FILTERS[@]}" --exclude-if-present .tb_mirror \
     --drive-chunk-size 128M --drive-pacer-min-sleep 10ms \
     --transfers 4 --checkers 16 --retries 3 --low-level-retries 10 \
     --local-no-check-updated \
