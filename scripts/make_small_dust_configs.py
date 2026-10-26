@@ -8,8 +8,8 @@ run and DUST with 128, 512 and 2048 draws per bottleneck
 configs/small_dust/base*.yaml.  Every run trains --steps steps (constant LR,
 so max_steps only sets the length), logs every 2 steps (one hard and one
 DUST step per window under [1, 1]), validates every 20 and checkpoints every
-1000, all kept (the backup watcher uploads every one; a hard step takes
-67 ms, so pruning would outrun a 600 s watcher).
+500, all kept (the backup watcher uploads every one to Drive; a hard step
+takes 67 ms, so pruning would outrun the watcher).
 
 Two boxes, one plan each (read by scripts/gpu_phases.sh):
 
@@ -53,8 +53,8 @@ def write(prefix: str, k: int, draws: int, steps: int) -> str:
         f"  max_steps: {steps}",
         "  log_every_steps: 2",
         "  validate_every_steps: 20",
-        "  checkpoint_every_steps: 1000",
-        f"  keep_last_checkpoints: {max(1, steps // 1000)}",
+        "  checkpoint_every_steps: 500",
+        f"  keep_last_checkpoints: {max(1, steps // 500)}",
         "",
         "activation_bottleneck:",
         f"  k: {k}",
