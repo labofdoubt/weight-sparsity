@@ -11,11 +11,17 @@ DUST step per window under [1, 1]), validates every 20 and checkpoints every
 500, all kept (the backup watcher uploads every one to Drive; a hard step
 takes 67 ms, so pruning would outrun the watcher).
 
-Two boxes, one plan each (read by scripts/gpu_phases.sh):
+Two boxes, one plan each (read by scripts/gpu_phases.sh), K = 4 only
+since 2026-10-26 14:00 UTC (the K = 8 and 16 configs are written but not
+planned):
 
-* warsaw (8 GPUs), plan_warsaw.txt, runs ``wa_*``: per K, the hard run on
-  GPU 0 alongside 128 draws split over GPUs 1-7, then 512 draws over all 8.
-* lyon (16 GPUs), plan_lyon.txt, runs ``ly_*``: per K, 2048 draws over all 16.
+* warsaw (8 GPUs), plan_warsaw.txt, runs ``wa_*``: the hard run on GPU 0
+  alongside 128 draws split over GPUs 1-7, then 512 draws over all 8, then
+  the schedule sweep at 512 draws over all 8, one run after another:
+  dust_schedule [10, 1], [30, 1], [90, 1] (``wa_k4_dust_p512_h10`` etc.:
+  10, 30, 90 hard steps per DUST step).
+* lyon (16 GPUs), plan_lyon.txt, runs ``ly_*``: 2048 draws over all 16
+  (stopped at 4000 steps by request).
 
 DUST step times on 5090s (2026-10-26): about 0.17 s + 38.4 ms x (draws per
 GPU); 128 over 7 GPUs ~0.9 s, 512 over 8 ~2.6 s, 2048 over 16 ~5 s.
@@ -31,17 +37,22 @@ OUT = os.path.join(os.path.dirname(HERE), "configs", "small_dust")
 N_FEATURES = 512
 N_BOTTLENECKS = 4
 K_ORDER = (4, 8, 16)
+PLAN_K = (4,)
+#: the schedule sweep at 512 draws (K = 4): hard steps per DUST step
+SWEEP_HARD = (10, 30, 90)
 
 
 def name(prefix: str, k: int, draws: int = 0) -> str:
     return f"{prefix}_k{k}_hard" if not draws else f"{prefix}_k{k}_dust_p{draws}"
 
 
-def write(prefix: str, k: int, draws: int, steps: int) -> str:
-    run = name(prefix, k, draws)
+def write(prefix: str, k: int, draws: int, steps: int, n_hard: int = 1) -> str:
+    run = name(prefix, k, draws) + (f"_h{n_hard}" if n_hard != 1 else "")
     base = "base_dust.yaml" if draws else "base.yaml"
     what = (f"DUST, {draws} draws per bottleneck (dust_population {N_BOTTLENECKS * draws})"
             if draws else "hard Top-K baseline")
+    if n_hard != 1:
+        what += f", dust_schedule [{n_hard}, 1] ({n_hard} hard steps per DUST step)"
     lines = [
         f"# Small-model DUST study (configs/small_dust/{base}): K = {k}, {what}.",
         "# Written by scripts/make_small_dust_configs.py.",
@@ -62,6 +73,8 @@ def write(prefix: str, k: int, draws: int, steps: int) -> str:
     ]
     if draws:
         lines.append(f"  dust_population: {N_BOTTLENECKS * draws}")
+    if n_hard != 1:
+        lines.append(f"  dust_schedule: [{n_hard}, 1]")
     rel = f"configs/small_dust/{run}.yaml"
     with open(os.path.join(OUT, f"{run}.yaml"), "w") as f:
         f.write("\n".join(lines) + "\n")
@@ -80,16 +93,26 @@ def main() -> None:
               "# phase one chain per GPU set, jobs on the same set one after another,",
               "# sets in parallel)"]
     warsaw, lyon = list(header), list(header)
-    for i, k in enumerate(K_ORDER):
-        warsaw += [f"{2 * i + 1} 0 {write('wa', k, 0, args.steps)}",
-                   f"{2 * i + 1} {gpus(range(1, 8))} {write('wa', k, 128, args.steps)}",
-                   f"{2 * i + 2} {gpus(range(8))} {write('wa', k, 512, args.steps)}"]
-        lyon += [f"{i + 1} {gpus(range(16))} {write('ly', k, 2048, args.steps)}"]
+    phase_w = phase_l = 0
+    for k in K_ORDER:
+        planned = k in PLAN_K
+        cfgs = [write('wa', k, 0, args.steps), write('wa', k, 128, args.steps),
+                write('wa', k, 512, args.steps), write('ly', k, 2048, args.steps)]
+        if not planned:
+            continue
+        warsaw += [f"{phase_w + 1} 0 {cfgs[0]}", f"{phase_w + 1} {gpus(range(1, 8))} {cfgs[1]}",
+                   f"{phase_w + 2} {gpus(range(8))} {cfgs[2]}"]
+        phase_w += 2
+        lyon += [f"{phase_l + 1} {gpus(range(16))} {cfgs[3]}"]
+        phase_l += 1
+    for h in SWEEP_HARD:
+        phase_w += 1
+        warsaw += [f"{phase_w} {gpus(range(8))} {write('wa', 4, 512, args.steps, n_hard=h)}"]
     for box, plan in (("warsaw", warsaw), ("lyon", lyon)):
         with open(os.path.join(OUT, f"plan_{box}.txt"), "w") as f:
             f.write("\n".join(plan) + "\n")
-    print(f"wrote {4 * len(K_ORDER)} configs, plan_warsaw.txt and plan_lyon.txt "
-          f"for {args.steps} steps")
+    print(f"wrote {4 * len(K_ORDER) + len(SWEEP_HARD)} configs, plan_warsaw.txt and "
+          f"plan_lyon.txt for {args.steps} steps")
 
 
 if __name__ == "__main__":
