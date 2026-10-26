@@ -1,0 +1,7 @@
+# Gate-site study: z = W2 relu(W1 W0 AbsTopK_K(x) + b1) + b2, the same W0 but
+# the gate on the input (K of the 784 pixels pass); otherwise pre_linear.yaml.
+_base_: [pre_linear.yaml]
+train:
+  run_name: input
+topk:
+  site: input

@@ -28,6 +28,14 @@ switch:
 
 The baseline `z = W_2 \phi(W_1 x)` is both switches off.
 
+`model.pre_width` adds a bias-free linear layer $W_0$ ($784 \to$ `pre_width`)
+before $W_1$, and `topk.site` places the gate on its input
+($x' = W_0\,\operatorname{AbsTopK}_K(e^{g} \odot x)$, `input`) or on its
+output ($x' = \operatorname{AbsTopK}_K(W_0 (e^{g} \odot x))$, `pre_linear`,
+$K$ of the `pre_width` units pass).  `configs/site_sweep/` compares the two
+at $K \in \{2, 4, 8, 16\}$ without the rescaling (report
+`reports/site_sweep.tex`).  DUST is implemented for `site: input` only.
+
 **Hard mode.** The mask is numerically hard and the backward passes it:
 $\partial L / \partial u = m \odot \partial L / \partial x'$, so $g_n$
 receives a gradient from a sample only when pixel $n$ is in that sample's

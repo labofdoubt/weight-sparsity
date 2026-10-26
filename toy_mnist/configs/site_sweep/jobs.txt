@@ -1,0 +1,8 @@
+pre_k2|toy_mnist/configs/site_sweep/pre_linear.yaml|topk.k=2
+input_k2|toy_mnist/configs/site_sweep/input.yaml|topk.k=2
+pre_k4|toy_mnist/configs/site_sweep/pre_linear.yaml|topk.k=4
+input_k4|toy_mnist/configs/site_sweep/input.yaml|topk.k=4
+pre_k8|toy_mnist/configs/site_sweep/pre_linear.yaml|topk.k=8
+input_k8|toy_mnist/configs/site_sweep/input.yaml|topk.k=8
+pre_k16|toy_mnist/configs/site_sweep/pre_linear.yaml|topk.k=16
+input_k16|toy_mnist/configs/site_sweep/input.yaml|topk.k=16

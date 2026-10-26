@@ -303,6 +303,8 @@ def dust_micro_step(model, x: torch.Tensor, y: torch.Tensor, state: DustTraining
     gate, rescale = model.gate, model.rescale
     if gate is None or rescale is None:
         raise RuntimeError("dust needs the gate and the diagonal rescaling installed")
+    if getattr(model, "gate_site", "input") != "input":
+        raise RuntimeError("dust is implemented for topk.site='input' only")
     g = rescale.log_scale
     records: List[torch.Tensor] = []
     need_graph = state.target == "backprop" or want_cosine

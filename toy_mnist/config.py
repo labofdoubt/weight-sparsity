@@ -39,9 +39,12 @@ class DataConfig:
 
 @dataclass
 class ModelConfig:
-    # z = W2 relu(W1 x'), x' the (rescaled, gated) input
+    # z = W2 relu(W1 x'), x' the (rescaled, gated) input; with pre_width > 0 a
+    # bias-free linear layer W0 (784 -> pre_width) sits before W1, and
+    # topk.site says whether the gate acts on W0's output or on its input
     hidden: int = 256
     bias: bool = True
+    pre_width: int = 0
 
 
 @dataclass
@@ -62,6 +65,11 @@ class TopKConfig:
     enabled: bool = False
     k: int = 64
     j: Optional[int] = None
+    # where the gate sits when model.pre_width > 0:
+    #   input       x' = W0 AbsTopK(e^g * x)      (K of the 784 pixels pass)
+    #   pre_linear  x' = AbsTopK(W0 (e^g * x))    (K of the pre_width units pass)
+    # without W0 only "input" is possible
+    site: str = "input"
     # hard: the gradient passes the hard mask (active entries only)
     # dust: the hard gate, with ordinary hard steps alternating with DUST
     #       steps that estimate dL/du on the pool by reward-weighted noise
@@ -82,12 +90,12 @@ class TopKConfig:
     dust_chunk_draws: int = 1
     dust_cosine_every_steps: int = 0
 
-    def resolved_j(self) -> int:
-        """The pool width beyond k: ``j`` as given, else the whole input under
-        dust and 0 under hard."""
+    def resolved_j(self, n_features: int = N_PIXELS) -> int:
+        """The pool width beyond k: ``j`` as given, else the whole gated vector
+        (``n_features`` entries) under dust and 0 under hard."""
         if self.j is not None:
             return int(self.j)
-        return max(0, N_PIXELS - int(self.k)) if self.surrogate_mode == "dust" else 0
+        return max(0, int(n_features) - int(self.k)) if self.surrogate_mode == "dust" else 0
 
 
 @dataclass
@@ -152,12 +160,19 @@ class Config:
             raise ValueError(f"data.normalize must be one of {NORMALIZE_MODES}, got {d.normalize!r}")
         if m.hidden < 1:
             raise ValueError("model.hidden must be >= 1")
+        if m.pre_width < 0:
+            raise ValueError("model.pre_width must be >= 0 (0 = no W0)")
+        if t.site not in ("input", "pre_linear"):
+            raise ValueError(f"topk.site must be 'input' or 'pre_linear', got {t.site!r}")
+        if t.site == "pre_linear" and m.pre_width < 1:
+            raise ValueError("topk.site='pre_linear' needs model.pre_width > 0 (the W0 layer)")
         if t.surrogate_mode not in SURROGATE_MODES:
             raise ValueError(f"topk.surrogate_mode must be one of {SURROGATE_MODES}, "
                              f"got {t.surrogate_mode!r}")
         if t.enabled:
-            if t.k < 1 or t.k > N_PIXELS:
-                raise ValueError(f"topk.k must be in [1, {N_PIXELS}], got {t.k}")
+            n_gate = m.pre_width if t.site == "pre_linear" else N_PIXELS
+            if t.k < 1 or t.k > n_gate:
+                raise ValueError(f"topk.k must be in [1, {n_gate}] at site {t.site!r}, got {t.k}")
             if t.j is not None and t.j < 0:
                 raise ValueError("topk.j must be >= 0 (or null: the whole input under dust)")
         changed = [k for k, v in self.DUST_DEFAULTS.items() if getattr(t, k) != v]
@@ -171,6 +186,10 @@ class Config:
             if not r.enabled:
                 raise ValueError("surrogate_mode='dust' updates the parameters before the gate, "
                                  "which here is the diagonal rescaling: needs rescale.enabled")
+            if t.site != "input":
+                raise ValueError("surrogate_mode='dust' is implemented for topk.site='input' "
+                                 "only (the gate input e^g * x; an encoder target for W0 is "
+                                 "not implemented)")
             if int(t.dust_population) < 2:
                 raise ValueError("dust_population must be >= 2 (one gate; the baseline is "
                                  "the mean over its own draws)")

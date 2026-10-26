@@ -202,3 +202,22 @@ def test_running_stats_average_per_step_and_report_cosine_when_present():
     m = s.metrics()
     assert m["dust/steps"] == 1.0 and m["dust/ce_gap"] == pytest.approx(1.0)
     assert m["dust/cosine"] == pytest.approx(0.4) and m["dust/grad_norm"] == 3.0
+
+
+def test_dust_with_w0_after_an_input_gate_updates_g_only():
+    torch.manual_seed(6)
+    cfg = load_config(values={"rescale": {"enabled": True}, "model": {"hidden": 8, "pre_width": 16},
+                              "topk": {"enabled": True, "k": 5, "site": "input",
+                                       "surrogate_mode": "dust", "dust_population": 4}})
+    model = ToyMLP(cfg)
+    x = torch.rand(6, N_PIXELS)
+    y = torch.randint(0, 10, (6,))
+    grads = {}
+    for target in ("encoder", "backprop"):
+        cfg.topk.dust_target = target
+        st = DustTrainingState(cfg.topk, torch.device("cpu"), seed=2)
+        model.zero_grad(set_to_none=True)
+        dust_micro_step(model, x, y, st)
+        assert model.pre.weight.grad is None and model.fc1.weight.grad is None
+        grads[target] = model.rescale.log_scale.grad.clone()
+    assert torch.allclose(grads["encoder"], grads["backprop"], atol=1e-6, rtol=1e-4)

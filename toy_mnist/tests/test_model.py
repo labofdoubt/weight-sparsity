@@ -84,3 +84,47 @@ def test_capture_records_the_gate_input_and_forward_from_gate_matches():
     assert torch.equal(records[0], model.gate_input(x))
     assert torch.equal(model.forward_from_gate(records[0]), logits)
     assert model.gate._dust_capture is None
+
+
+def test_pre_linear_layer_and_the_two_gate_sites():
+    torch.manual_seed(3)
+    x = torch.rand(5, N_PIXELS)
+    y = torch.randint(0, 10, (5,))
+    # site input: x' = W0 AbsTopK(x)
+    cfg = load_config(values={"model": {"hidden": 8, "pre_width": 12},
+                              "topk": {"enabled": True, "k": 3, "site": "input"}})
+    m = ToyMLP(cfg)
+    assert m.pre.weight.shape == (12, N_PIXELS) and m.pre.bias is None
+    assert m.gate.n_features == N_PIXELS and m.fc1.in_features == 12
+    logits, _ = m(x)
+    ref = m.fc2(torch.relu(m.fc1(m.pre(m.gate(x)))))
+    assert torch.equal(logits, ref)
+    assert torch.equal(m.gate_input(x), x)
+    # site pre_linear: x' = AbsTopK(W0 x); the gate has pre_width units
+    cfg = load_config(values={"model": {"hidden": 8, "pre_width": 12},
+                              "topk": {"enabled": True, "k": 3, "site": "pre_linear"}})
+    m = ToyMLP(cfg)
+    assert m.gate.n_features == 12 and m.fc1.in_features == 12
+    logits, ce = m(x, y)
+    u = m.pre(x)
+    assert torch.equal(m.gate_input(x), u)
+    assert torch.equal(logits, m.fc2(torch.relu(m.fc1(m.gate(u)))))
+    assert int((m.gate(u) != 0).sum(-1).max()) == 3
+    # the hard backward reaches W0 through the active units only: a row of W0
+    # whose unit is never selected gets no gradient
+    ce.backward()
+    active = m.gate.seen
+    rows = m.pre.weight.grad.abs().sum(-1)
+    assert torch.equal(rows[~active], torch.zeros_like(rows[~active]))
+    assert rows[active].sum() > 0
+    # site pre_linear needs W0; k is bounded by the gated width
+    import pytest
+    with pytest.raises(ValueError, match="pre_width"):
+        load_config(values={"topk": {"enabled": True, "k": 3, "site": "pre_linear"}})
+    with pytest.raises(ValueError, match="topk.k"):
+        load_config(values={"model": {"pre_width": 12},
+                            "topk": {"enabled": True, "k": 13, "site": "pre_linear"}})
+    with pytest.raises(ValueError, match="site"):
+        load_config(values={"model": {"pre_width": 12}, "rescale": {"enabled": True},
+                            "topk": {"enabled": True, "k": 3, "site": "pre_linear",
+                                     "surrogate_mode": "dust"}})

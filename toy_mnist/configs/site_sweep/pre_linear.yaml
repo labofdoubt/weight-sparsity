@@ -1,0 +1,16 @@
+# Gate-site study (2026-10-26): z = W2 relu(W1 AbsTopK_K(W0 x) + b1) + b2 with
+# W0 a bias-free 784 -> 784 linear layer and the gate on its output (K of the
+# 784 units pass); no diagonal rescaling, hard backward.  hidden 1024, 5000
+# steps, the training settings of the population sweep.  K from the job line.
+_base_: [../base.yaml]
+model:
+  hidden: 1024
+  pre_width: 784
+train:
+  max_steps: 5000
+  run_name: pre_linear
+topk:
+  enabled: true
+  k: 8
+  site: pre_linear
+  surrogate_mode: hard

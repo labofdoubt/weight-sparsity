@@ -1,12 +1,15 @@
-"""The toy model: ``z = W2 relu(W1 x')`` with ``x'`` the optionally rescaled and
-gated input,
+"""The toy model: ``z = W2 relu(W1 x')`` with ``x'`` the optionally rescaled,
+linearly mapped and gated input,
 
-    u  = exp(g) * x           (rescale.enabled; g trainable, init 0)
-    x' = AbsTopK_k(u)         (topk.enabled; hard mask, backward through the
-                               active entries only)
+    v  = exp(g) * x                 (rescale.enabled; g trainable, init 0)
+    x' = AbsTopK_k(v)               (topk.enabled, no W0)
+    x' = W0 AbsTopK_k(v)            (model.pre_width > 0, topk.site = input)
+    x' = AbsTopK_k(W0 v)            (model.pre_width > 0, topk.site = pre_linear)
 
-``gate_input`` and ``forward_from_gate`` split the forward at the gate input
-``u`` so that a DUST step can rerun the tail from a perturbed ``u``.
+with ``W0`` a bias-free linear layer 784 -> pre_width and the gate's hard mask
+passing the backward through the active entries only.  ``gate_input`` and
+``forward_from_gate`` split the forward at the gate input ``u`` (``v`` or
+``W0 v``) so that a DUST step can rerun the tail from a perturbed ``u``.
 """
 
 from __future__ import annotations
@@ -111,18 +114,32 @@ class ToyMLP(nn.Module):
         super().__init__()
         n = N_PIXELS
         self.rescale = DiagonalRescale(n) if cfg.rescale.enabled else None
-        self.gate = (AbsTopKGate(n, cfg.topk.k, cfg.topk.resolved_j())
+        self.pre = (nn.Linear(n, cfg.model.pre_width, bias=False)
+                    if cfg.model.pre_width > 0 else None)
+        self.gate_site = cfg.topk.site
+        if self.pre is None and self.gate_site != "input":
+            raise ValueError("topk.site='pre_linear' needs model.pre_width > 0")
+        n_gate = cfg.model.pre_width if self.gate_site == "pre_linear" else n
+        self.gate = (AbsTopKGate(n_gate, cfg.topk.k, cfg.topk.resolved_j(n_gate))
                      if cfg.topk.enabled else None)
-        self.fc1 = nn.Linear(n, cfg.model.hidden, bias=cfg.model.bias)
+        self.fc1 = nn.Linear(cfg.model.pre_width if self.pre is not None else n,
+                             cfg.model.hidden, bias=cfg.model.bias)
         self.fc2 = nn.Linear(cfg.model.hidden, N_CLASSES, bias=cfg.model.bias)
 
     def gate_input(self, x: torch.Tensor) -> torch.Tensor:
-        """``u = exp(g) * x`` (or ``x`` without the rescaling)."""
-        return self.rescale(x) if self.rescale is not None else x
+        """The vector the gate acts on: ``exp(g) * x`` (or ``x``), mapped by
+        ``W0`` first when the gate sits after it."""
+        v = self.rescale(x) if self.rescale is not None else x
+        if self.pre is not None and self.gate_site == "pre_linear":
+            return self.pre(v)
+        return v
 
     def forward_from_gate(self, u: torch.Tensor) -> torch.Tensor:
-        """The tail from the gate input: gate (if any), the MLP; returns logits."""
+        """The tail from the gate input: gate (if any), ``W0`` when the gate
+        sits on the input, the MLP; returns logits."""
         h = self.gate(u) if self.gate is not None else u
+        if self.pre is not None and self.gate_site == "input":
+            h = self.pre(h)
         return self.fc2(F.relu(self.fc1(h)))
 
     def forward(self, x: torch.Tensor, y: Optional[torch.Tensor] = None

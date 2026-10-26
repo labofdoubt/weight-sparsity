@@ -150,3 +150,14 @@ def test_explicit_checkpoint_steps_including_the_initial_state(tmp_path):
     assert after1["step"] == 1 and after1["dust_state"]["dust_steps"] == 0
     after3 = torch.load(os.path.join(run_dir, "ckpt_step3.pt"), weights_only=False)
     assert after3["dust_state"]["dust_steps"] == 1  # steps 2 is the first DUST step
+
+
+@pytest.mark.parametrize("site", ["input", "pre_linear"])
+def test_training_with_w0_at_both_gate_sites(tmp_path, site):
+    cfg = small_config(tmp_path, "baseline", model={"pre_width": 20},
+                       topk={"enabled": True, "k": 4, "site": site})
+    summary = train(cfg, synthetic_data())
+    assert summary["status"] == "finished" and summary["steps"] == 6
+    payload = torch.load(os.path.join(summary["run_dir"], "final.pt"), weights_only=False)
+    assert payload["model"]["pre.weight"].shape == (20, 784)
+    assert payload["model"]["gate.usage"].shape == ((20,) if site == "pre_linear" else (784,))
