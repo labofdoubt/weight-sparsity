@@ -28,10 +28,14 @@ Launch on a box set up per AGENTS.md (repo, deps, rclone), from the repo
 directory:
 
 ```bash
-rclone copy gdrive:weight-sparsity/analysis_paris/dust_snr /workspace/analysis/dust_snr --drive-chunk-size 128M
-rclone copy gdrive:weight-sparsity/analysis_paris/dust_snr_single /workspace/analysis/dust_snr_single
-bash scripts/streamlit_install.sh install dust_snr
+rclone copy gdrive:weight-sparsity/analysis_paris/dust_snr /workspace/viewers/dust_snr --transfers 8
+rclone copy gdrive:weight-sparsity/analysis_paris/dust_snr_single /workspace/viewers/dust_snr_single --transfers 8
+bash scripts/streamlit_install.sh install dust_snr \
+    DUST_SNR_ROOT=/workspace/viewers/dust_snr DUST_SNR_SINGLE_ROOT=/workspace/viewers/dust_snr_single
 ```
+
+(`/workspace/viewers/` rather than `/workspace/analysis/`, so that the box's
+analysis watcher does not upload a second copy of the data.)
 
 then tunnel `ssh -p <port> root@<host> -L 8501:localhost:8501` and open
 http://localhost:8501. The full entry (service script, environment variables,

@@ -19,9 +19,17 @@ After the box is set up per AGENTS.md (repo, deps, rclone), restore the
 viewer's data as given in its entry, then from the repo directory:
 
 ```bash
-bash scripts/streamlit_install.sh install <viewer>    # supervisor service, survives reboots
+bash scripts/streamlit_install.sh install <viewer> [KEY=VALUE ...]   # supervisor service, survives reboots
 bash scripts/streamlit_install.sh status  <viewer>    # also: log, restart (after a git pull), stop
 ```
+
+Each `KEY=VALUE` (a data root or `STREAMLIT_SERVER_PORT`) is written into the
+installed conf's `environment=` line, and the service script reads it in place
+of its default. Restore data that comes from another box's Drive prefix into
+`/workspace/viewers/`, not `/workspace/analysis/`: the `backup_analysis`
+watcher copies everything under `/workspace/analysis` to this box's own
+`analysis_<name>` prefix and would upload a second copy. The viewers need no
+GPU, so they can share a box with running training.
 
 The services bind 127.0.0.1 only; reach one through a tunnel,
 `ssh -p <port> root@<host> -L <viewer port>:localhost:<viewer port>` and
@@ -89,13 +97,19 @@ linear axis and the pure-noise reference. Probe script:
   `gdrive:weight-sparsity/analysis_paris/dust_snr_single` (231 MB, 21 probes
   of `pa_snr_k32_jall_sg0p2_p4096`). The training runs and their checkpoints
   are in `gdrive:weight-sparsity/runs_paris/pa_snr_*`.
-- Restore:
-  `rclone copy gdrive:weight-sparsity/analysis_paris/dust_snr /workspace/analysis/dust_snr --drive-chunk-size 128M`
-  and the same for `dust_snr_single`.
+- Restore and install (as on tallinn, 2026-10-27):
+  ```bash
+  rclone copy gdrive:weight-sparsity/analysis_paris/dust_snr /workspace/viewers/dust_snr --transfers 8
+  rclone copy gdrive:weight-sparsity/analysis_paris/dust_snr_single /workspace/viewers/dust_snr_single --transfers 8
+  bash scripts/streamlit_install.sh install dust_snr \
+      DUST_SNR_ROOT=/workspace/viewers/dust_snr DUST_SNR_SINGLE_ROOT=/workspace/viewers/dust_snr_single
+  ```
+  On the box that produced the data the defaults under `/workspace/analysis` apply.
 - Service: `scripts/dust_snr_service.sh` + `scripts/dust_snr.supervisor.conf`, port 8501.
 - Ad hoc: `streamlit run analysis/dust_snr_viewer.py -- --root /workspace/analysis/dust_snr --single-root /workspace/analysis/dust_snr_single`.
 - Needs no GPU; new probe files are picked up on the next page load.
-- Last served: paris (8x 5090), 127.0.0.1:8501, supervisor program `dust_snr`, from 2026-10-23.
+- Last served: tallinn (8x 5090), 127.0.0.1:8501, supervisor program `dust_snr`, data in
+  `/workspace/viewers/`, from 2026-10-27; before that paris, 2026-10-23 to 2026-10-24.
 
 ## mnist_snr: DUST SNR per coordinate, MNIST toy
 
@@ -114,9 +128,10 @@ script: `toy_mnist/snr_probe.py`; documentation `toy_mnist/README.md`.
   `toy_mnist/reports/snr_sweep/` (13 MB), so a checkout is all the viewer
   needs. The runs themselves (checkpoints, metrics) are in
   `gdrive:weight-sparsity/runs_osaka_mnist/snr_sweep`.
+- Install: `bash scripts/streamlit_install.sh install mnist_snr`; nothing to restore.
 - Service: `scripts/mnist_snr_service.sh` + `scripts/mnist_snr.supervisor.conf`, port 8502.
 - Ad hoc: `streamlit run toy_mnist/snr_viewer.py --server.port 8502 -- --root toy_mnist/reports/snr_sweep`.
 - Needs no GPU and nothing outside the checkout.
-- Last served: paris, 127.0.0.1:8502, ad hoc in tmux `mnist_snr_viewer` from
-  a second checkout `/workspace/mnist_viewer/weight-sparsity`, 2026-10-23;
-  before that osaka_mnist on 8501.
+- Last served: tallinn, 127.0.0.1:8502, supervisor program `mnist_snr`, from
+  2026-10-27; before that paris, ad hoc in tmux `mnist_snr_viewer` from a
+  second checkout, 2026-10-23, and osaka_mnist on 8501.
