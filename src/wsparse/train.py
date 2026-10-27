@@ -882,6 +882,18 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 metrics["val_soft/ce"] = soft["ce"]
                 metrics["val_soft/ppl"] = soft["ppl"]
                 line += f" | soft ce {soft['ce']:.4f}"
+                # the same windows under the plain hard Top-K and Top-(K+J)
+                # forwards, named as under hard_k_annealing so the curves
+                # overlay (val/ce is hard Top-K as well, but with the floor b0
+                # under rblapsum_sf)
+                cb = cfg.activation_bottleneck
+                for tag, width in (("val_topk", cb.k), ("val_topkj", cb.k + cb.j)):
+                    with bottleneck.hard_eval_width(width):
+                        ev = evaluate(model, val_stream, micro_bs, cfg.train.val_batches,
+                                      device, dtype)
+                    metrics[f"{tag}/ce"], metrics[f"{tag}/ppl"] = ev["ce"], ev["ppl"]
+                line += (f" | @K {metrics['val_topk/ce']:.4f}"
+                         f" | @K+J {metrics['val_topkj/ce']:.4f}")
             if bottleneck.k_annealing:
                 # hard_k_annealing: the same windows at the two ends of the
                 # anneal, Top-K (the final width) and Top-(K+J) (the initial

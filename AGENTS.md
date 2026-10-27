@@ -168,8 +168,9 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
 - **RBLapSum with `code_residual`** needs `rblapsum_surrogate_scope=first_order` or a
   support scale <= 0.3; the default backward multiplies the support terms along the carry and collapses (§9).
 - **`rblapsum_sf` and `soft_lapsum` log two losses:** `val/ce` is the hard
-  Top-K forward, `val_soft/ce` the soft forward they train (§9). Under
-  `temperature_annealing` their `temperature` is T_0: read
+  Top-K forward, `val_soft/ce` the soft forward they train (§9); `val_topk/ce`
+  and `val_topkj/ce` are the plain hard Top-K and Top-(K+J) on the same
+  windows. Under `temperature_annealing` their `temperature` is T_0: read
   `bottleneck/temperature` for the T a step used (`val_soft/ce` is at it).
 - **`laplace_policy` logs two CEs as well:** `train/ce` is the SAMPLED-support
   training CE (alias `train_stochastic/ce`), `val/ce` the clean deterministic

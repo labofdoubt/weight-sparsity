@@ -321,6 +321,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
         # actual hard selection ("mask", bool, the scores' shape) at every
         # forward while set; None otherwise (no effect on training)
         self._mask_sink = None
+        # validation override (BottleneckController.hard_eval_width): while set
+        # to W and the gate is in eval(), the forward is the plain hard Top-W,
+        # whatever the mode; None otherwise (no effect on training)
+        self._hard_eval_width: Optional[int] = None
 
     @property
     def diagnostics(self) -> Dict[str, torch.Tensor]:
@@ -416,6 +420,13 @@ class AdaptiveLapSumTopKGate(nn.Module):
                     "a separate value branch is only used by gated_topk"
                 )
             scores, value = self.scores_of(a), a
+
+        if self._hard_eval_width is not None and not self.training:
+            # the hard Top-W forward of the validation override: value on the
+            # W largest scores, 0 elsewhere (no floor, no soft weights)
+            idx = torch.topk(scores, int(self._hard_eval_width), dim=-1,
+                             largest=True, sorted=False).indices
+            return value * torch.zeros_like(scores).scatter(-1, idx, 1.0)
 
         if self.trivial:
             # k == n_features: every feature is active, so the mask is all ones

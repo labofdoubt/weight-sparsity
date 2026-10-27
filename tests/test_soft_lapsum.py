@@ -111,6 +111,28 @@ def test_eval_is_hard_topk_unless_hard_inference_is_off():
         assert torch.allclose(g(a), soft_train, atol=1e-12)
 
 
+def test_hard_eval_width_is_the_hard_gate_of_that_width():
+    torch.manual_seed(5)
+    a = torch.randn(5, 16, dtype=torch.float64)
+    m = build_model(ModelConfig(vocab_size=61, max_seq_len=16, n_layers=2, d_model=24,
+                                n_heads=4))
+    for mode in ("soft_lapsum", "rblapsum_sf"):
+        ctl = apply_activation_bottleneck(m, ActivationBottleneckConfig(
+            enabled=True, n_features=16, k=3, j=5, surrogate_mode=mode), max_steps=10)
+        g = ctl.layers[0][1].gate
+        g.train()
+        soft = g(a)
+        for width in (3, 8):
+            hard = AdaptiveLapSumTopKGate(n_features=16, k=width, j=0,
+                                          surrogate_mode="hard").eval()
+            with ctl.hard_eval_width(width):
+                assert torch.equal(g(a), soft)  # training forwards are untouched
+                g.eval()
+                assert torch.equal(g(a), hard(a))
+                g.train()
+        assert g._hard_eval_width is None
+
+
 def test_set_temperature_is_a_gate_of_that_temperature():
     torch.manual_seed(4)
     a = torch.randn(5, 16, dtype=torch.float64)
@@ -240,8 +262,8 @@ def soft_config(data_dir, out_dir, mode="soft_lapsum", max_steps=12, **anneal):
     cfg.train.log_every_steps = 1
     cfg.train.validate_every_steps = 6
     ab = ActivationBottleneckConfig(
-        enabled=True, n_features=128, k=4, j=12, layers="all", placement="pre_mlp",
-        surrogate_mode=mode, temperature=1.5, **anneal)
+        enabled=True, n_features=128, k=4, j=12, layers="all", placement="residual_out",
+        code_residual=True, post_norm=False, surrogate_mode=mode, temperature=1.5, **anneal)
     return Config(model=cfg.model, data=cfg.data, train=cfg.train,
                   activation_bottleneck=ActivationBottleneckConfig(**dataclasses.asdict(ab)))
 
@@ -253,7 +275,10 @@ def test_soft_lapsum_trains_and_logs_both_validations(tmp_path):
     run = os.path.join(out, "test")
     records = [json.loads(line) for line in open(os.path.join(run, "metrics.jsonl"))]
     val = [r for r in records if "val/ce" in r]
-    assert val and all("val_soft/ce" in r and math.isfinite(r["val_soft/ce"]) for r in val)
+    for key in ("val_soft/ce", "val_topk/ce", "val_topkj/ce"):
+        assert val and all(key in r and math.isfinite(r[key]) for r in val)
+    # val/ce is the hard Top-K forward too
+    assert all(r["val_topk/ce"] == pytest.approx(r["val/ce"], abs=1e-6) for r in val)
     trained = [r for r in records if "bottleneck/soft_tail_mass" in r]
     assert trained and all(0 < r["bottleneck/soft_tail_mass"] < 4 for r in trained)
 
@@ -289,7 +314,7 @@ def test_training_follows_the_temperature_schedule_resumes_and_reloads(tmp_path,
     # the step logged as s+1 ran at T(s)
     assert logged and all(v == pytest.approx(annealed_temperature(s - 1, 1.5, 0.25, 10, **sched))
                           for s, v in logged.items())
-    assert all("val_soft/ce" in r for r in records if "val/ce" in r)
+    assert all("val_soft/ce" in r and "val_topkj/ce" in r for r in records if "val/ce" in r)
 
     # a checkpoint reloads at the temperature of its last step
     _, cfg6, ctl = load_for_inference(os.path.join(run, "ckpt_step6.pt"))

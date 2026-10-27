@@ -9,8 +9,9 @@ the gates stay per module regardless.
 
 from __future__ import annotations
 
+import contextlib
 import math
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -255,6 +256,24 @@ class ActivationBottleneckController:
         for _, layer in self.layers:
             layer.gate.set_temperature(t_now)
         return t_now
+
+    @contextlib.contextmanager
+    def hard_eval_width(self, width: int) -> Iterator[None]:
+        """Every gate in eval() runs the plain hard Top-``width`` forward inside
+        the block, whatever its mode (the soft-forward modes' val_topk/ce and
+        val_topkj/ce); training forwards are unaffected.  Restored on exit."""
+        width = int(width)
+        if not 1 <= width <= int(self.cfg.n_features):
+            raise ValueError(f"hard eval width {width} outside [1, {self.cfg.n_features}]")
+        gates = [layer.gate for _, layer in self.layers]
+        prior = [g._hard_eval_width for g in gates]
+        for g in gates:
+            g._hard_eval_width = width
+        try:
+            yield
+        finally:
+            for g, w in zip(gates, prior):
+                g._hard_eval_width = w
 
     def set_step(self, step: int) -> float:
         """Apply the step's schedules.  hard_k_annealing sets every gate's
