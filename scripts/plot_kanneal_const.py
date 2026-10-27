@@ -74,8 +74,8 @@ def style(ax) -> None:
 
 
 def plot(data: dict) -> None:
-    fig, (top, bot) = plt.subplots(2, 1, figsize=(7.6, 6.6), sharex=True,
-                                   gridspec_kw={"height_ratios": [2.1, 1]})
+    fig, (top, bot) = plt.subplots(2, 1, figsize=(7.6, 7.7), sharex=True,
+                                   gridspec_kw={"height_ratios": [2.1, 1.5]})
     hard_lines, anneal_lines = [], []
     for key, label, *_ in HARD:
         xs, ys = zip(*data[key]["val"])
@@ -93,7 +93,7 @@ def plot(data: dict) -> None:
     for ax in (top, bot):
         ax.axvline(S, color=MUTED, lw=0.8, ls=":")
         style(ax)
-    top.set_ylim(1.42, 2.6)
+    top.set_ylim(1.42, 2.2)
     top.set_ylabel("validation CE (nats)")
     top.set_title("validation: Top-32 forward for K-annealing, Top-K for hard Top-K",
                   fontsize=8, color=INK)
