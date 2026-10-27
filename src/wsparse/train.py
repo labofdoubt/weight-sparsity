@@ -220,11 +220,10 @@ def load_for_inference(path: str, device: str = "cpu"):
 # --------------------------------------------------------------------------- #
 
 
-def bottleneck_width(cb, step: int, max_steps: int) -> int:
+def bottleneck_width(cb, step: int, anneal_steps: int) -> int:
     """hard_k_annealing: K' at zero-based ``step`` for config section ``cb``."""
-    from .bottleneck.controller import annealed_k
-    return annealed_k(step, cb.k, cb.j, max_steps, cb.hard_k_annealing_schedule,
-                      cb.hard_k_annealing_half_step)
+    from .bottleneck.controller import anneal_kwargs, annealed_k
+    return annealed_k(step, cb.k, cb.j, anneal_steps, **anneal_kwargs(cb))
 
 
 def log_bottleneck_geometry(counts: Dict[str, Any], cfg) -> None:
@@ -563,18 +562,26 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             + (" (one encoder/decoder pair shared by every bottleneck)"
                if cb.share_projections else "")
         )
-        if bottleneck.k_annealing and cb.hard_k_annealing_schedule == "log":
-            h, n = cb.hard_k_annealing_half_step, cfg.train.max_steps
-            print(f"[train] hard_k_annealing (log): K' = K+J = {cb.k + cb.j} at step 0 -> "
-                  f"K = {cb.k} at step {n - 1}, half of J removed by step {h:g} "
-                  f"(s_0 = {h * h / (n - 2 * h):.4g}); K' at steps "
-                  + ", ".join(f"{s}: {bottleneck_width(cb, s, n)}"
-                              for s in (100, 500, 1000, 2000, 5000, 10000, 15000, n - 1)
-                              if s < n))
-        elif bottleneck.k_annealing:
-            print(f"[train] hard_k_annealing: K' = K+J = {cb.k + cb.j} at step 0 -> "
-                  f"K = {cb.k} at step {cfg.train.max_steps - 1}, one feature every "
-                  f"{cfg.train.max_steps / (cb.j + 1):.2f} steps")
+        if bottleneck.k_annealing:
+            n = bottleneck.anneal_steps
+            sched = cb.hard_k_annealing_schedule
+            if sched == "linear":
+                detail = f"one feature every {n / (cb.j + 1):.2f} steps"
+            else:
+                s0 = cb.hard_k_annealing_s0
+                if s0 is None:
+                    h = cb.hard_k_annealing_half_step
+                    s0 = h * h / (n - 2 * h)
+                detail = f"s_0 = {s0:.4g}"
+                if sched == "power":
+                    detail += f", gamma = {cb.hard_k_annealing_gamma:g}"
+                detail += "; K' at steps " + ", ".join(
+                    f"{s}: {bottleneck_width(cb, s, n)}"
+                    for s in (1, 10, 100, 500, 1000, 2000, 5000, 10000, 15000, n - 1)
+                    if s < n)
+            print(f"[train] hard_k_annealing ({sched}): K' = K+J = {cb.k + cb.j} at step 0 "
+                  f"-> K = {cb.k} at step {n - 1}, K until step {cfg.train.max_steps - 1}; "
+                  + detail)
 
     model.train()
     t0 = time.time()
@@ -849,6 +856,20 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 metrics["val_soft/ce"] = soft["ce"]
                 metrics["val_soft/ppl"] = soft["ppl"]
                 line += f" | soft ce {soft['ce']:.4f}"
+            if bottleneck.k_annealing:
+                # hard_k_annealing: the same windows at the two ends of the
+                # anneal, Top-K (the final width) and Top-(K+J) (the initial
+                # one); eval() and no_grad, the gates' K'(s) restored after
+                cb = cfg.activation_bottleneck
+                k_now = bottleneck.active_count
+                for tag, width in (("val_topk", cb.k), ("val_topkj", cb.k + cb.j)):
+                    bottleneck.set_active_count(width)
+                    ev = evaluate(model, val_stream, micro_bs, cfg.train.val_batches,
+                                  device, dtype)
+                    metrics[f"{tag}/ce"], metrics[f"{tag}/ppl"] = ev["ce"], ev["ppl"]
+                bottleneck.set_active_count(k_now)
+                line += (f" | K'={k_now} | @K {metrics['val_topk/ce']:.4f}"
+                         f" | @K+J {metrics['val_topkj/ce']:.4f}")
             if bottleneck.enabled and cfg.activation_bottleneck.log_diagnostics:
                 metrics.update(log_feature_usage(logger, bottleneck, step1))
             logger.log(step1, metrics, console=line)

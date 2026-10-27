@@ -195,3 +195,92 @@ def test_training_follows_the_log_schedule(tmp_path):
     model, _, ctl = load_for_inference(os.path.join(str(tmp_path / "runs_log"), "test",
                                                     "ckpt_step6.pt"))
     assert {layer.gate.k for _, layer in ctl.layers} == expected[5]
+
+
+def test_power_schedule_endpoints_limits_and_anneal_length():
+    k, j, n = 32, 224, 18_000
+    for s0, g in ((1.0, 0.1), (10.0, 0.6), (10.0, -0.5)):
+        widths = [annealed_k(s, k, j, n, "power", s0=s0, gamma=g) for s in range(20_000)]
+        assert widths[0] == k + j and widths[n - 1] == k
+        assert all(a >= b for a, b in zip(widths, widths[1:]))
+        assert set(widths[n:]) == {k}  # K from step S on
+    # gamma = 1 is the linear schedule, gamma -> 0 the log one at the same s_0
+    for s0 in (1.0, 10.0):
+        lin = [annealed_k(s, k, j, n) for s in range(n)]
+        p1 = [annealed_k(s, k, j, n, "power", s0=s0, gamma=1.0) for s in range(n)]
+        assert max(abs(a - b) for a, b in zip(p1, lin)) <= 1
+        lg = [annealed_k(s, k, j, n, "log", s0=s0) for s in range(n)]
+        p0 = [annealed_k(s, k, j, n, "power", s0=s0, gamma=1e-7) for s in range(n)]
+        assert p0 == lg
+    # smaller gamma removes more features early
+    early = [annealed_k(500, k, j, n, "power", s0=10.0, gamma=g) for g in (0.1, 0.4, 0.6)]
+    assert early[0] < early[1] < early[2]
+    # the log schedule's two parameterizations agree
+    h = 250
+    assert ([annealed_k(s, k, j, n, "log", half_step=h) for s in range(0, n, 7)]
+            == [annealed_k(s, k, j, n, "log", s0=h * h / (n - 2 * h)) for s in range(0, n, 7)])
+
+
+def test_power_s0_and_steps_config_rules():
+    base = dict(enabled=True, k=8, j=24, hard_k_annealing=True)
+    ActivationBottleneckConfig(**base, hard_k_annealing_schedule="power",
+                               hard_k_annealing_s0=10, hard_k_annealing_gamma=0.2,
+                               hard_k_annealing_steps=90)
+    ActivationBottleneckConfig(**base, hard_k_annealing_schedule="log", hard_k_annealing_s0=1)
+    for bad in (dict(hard_k_annealing_schedule="power", hard_k_annealing_s0=10),
+                dict(hard_k_annealing_schedule="power", hard_k_annealing_gamma=0.2),
+                dict(hard_k_annealing_schedule="power", hard_k_annealing_s0=10,
+                     hard_k_annealing_gamma=0.0),
+                dict(hard_k_annealing_schedule="power", hard_k_annealing_s0=10,
+                     hard_k_annealing_gamma=0.2, hard_k_annealing_half_step=5),
+                dict(hard_k_annealing_schedule="log", hard_k_annealing_s0=1,
+                     hard_k_annealing_half_step=5),
+                dict(hard_k_annealing_schedule="linear", hard_k_annealing_s0=1),
+                dict(hard_k_annealing_steps=0)):
+        with pytest.raises(ValueError):
+            ActivationBottleneckConfig(**base, **bad)
+    with pytest.raises(ValueError):
+        ActivationBottleneckConfig(enabled=True, k=8, j=24, hard_k_annealing_steps=50)
+    cfg = Config()
+    cfg.train.max_steps = 100
+    for steps in (101, 20):  # beyond max_steps; below J+1
+        with pytest.raises(ValueError):
+            Config(train=cfg.train, activation_bottleneck=ActivationBottleneckConfig(
+                **base, hard_k_annealing_steps=steps))
+
+
+def power_config(data_dir, out_dir, validate_every):
+    cfg = annealing_config(data_dir, out_dir)
+    ab = dataclasses.asdict(cfg.activation_bottleneck)
+    ab.update(hard_k_annealing_schedule="power", hard_k_annealing_s0=1.0,
+              hard_k_annealing_gamma=0.4, hard_k_annealing_steps=8)
+    cfg.train.validate_every_steps = validate_every
+    cfg.train.checkpoint_every_steps = 12
+    return Config(model=cfg.model, data=cfg.data, train=cfg.train,
+                  activation_bottleneck=ActivationBottleneckConfig(**ab))
+
+
+def test_validation_at_both_ends_is_logged_and_does_not_perturb_training(tmp_path):
+    data_dir = make_fake_dataset(tmp_path, 6000, 1200)
+    seen = {}
+
+    def record(step, model, bottleneck, optimizer):
+        seen[step] = bottleneck.active_count
+
+    train(power_config(data_dir, str(tmp_path / "with_val"), 3), on_step=record)
+    assert seen == {s: annealed_k(s, 4, 5, 8, "power", s0=1.0, gamma=0.4) for s in range(12)}
+    assert seen[0] == 9 and all(seen[s] == 4 for s in range(8, 12))
+    run = os.path.join(str(tmp_path / "with_val"), "test")
+    val = [json.loads(l) for l in open(os.path.join(run, "metrics.jsonl"))]
+    val = {r["step"]: r for r in val if "val/ce" in r}
+    assert sorted(val) == [3, 6, 9, 12]
+    for r in val.values():
+        assert {"val_topk/ce", "val_topkj/ce"} <= set(r)
+    # past S the run is at K, so its own validation IS the Top-K one
+    assert val[12]["val_topk/ce"] == val[12]["val/ce"]
+    # the extra passes restore K'(s): validating changes nothing in training
+    train(power_config(data_dir, str(tmp_path / "no_val"), 0))
+    a = torch.load(os.path.join(run, "ckpt_step12.pt"), weights_only=False)["model"]
+    b = torch.load(os.path.join(str(tmp_path / "no_val"), "test", "ckpt_step12.pt"),
+                   weights_only=False)["model"]
+    assert a.keys() == b.keys() and all(torch.equal(a[n], b[n]) for n in a)

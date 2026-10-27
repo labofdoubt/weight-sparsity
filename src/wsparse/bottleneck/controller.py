@@ -41,30 +41,50 @@ def resolve_layers(spec, n_layers: int) -> List[int]:
     return idx
 
 
-def annealed_k(step: int, k: int, j: int, max_steps: int,
-               schedule: str = "linear", half_step: Optional[float] = None) -> int:
-    """hard_k_annealing's width for zero-based optimizer step ``step``.
+def annealed_k(step: int, k: int, j: int, steps: int,
+               schedule: str = "linear", half_step: Optional[float] = None,
+               s0: Optional[float] = None, gamma: Optional[float] = None) -> int:
+    """hard_k_annealing's width for zero-based optimizer step ``step`` of an
+    anneal over S = ``steps`` steps; K from step S on.
 
-    ``linear``:  K'(s) = K + J - floor((J + 1) s / max_steps),
-    so each of the J+1 widths K+J, ..., K holds for max_steps / (J+1) steps,
-    K+J at s = 0 and K at s = max_steps - 1 whenever max_steps >= J+1.
+    ``linear``:  K'(s) = K + J - floor((J + 1) s / S),
+    so each of the J+1 widths K+J, ..., K holds for S / (J+1) steps, K+J at
+    s = 0 and K at s = S - 1 whenever S >= J+1.
 
-    ``log``:  K'(s) = K + J - min(J, floor((J + 1) f(s))),
-    f(s) = ln(1 + s/s_0) / ln(1 + max_steps/s_0),  s_0 = h^2 / (max_steps - 2h),
-    so half of the J features are gone at s = h = ``half_step`` and the
-    removal rate falls as 1/(s + s_0).
+    ``log`` and ``power``:  K'(s) = K + J - min(J, floor((J + 1) f(s))),
+        log    f(s) = ln(1 + s/s_0) / ln(1 + S/s_0),
+        power  f(s) = ((1 + s/s_0)^gamma - 1) / ((1 + S/s_0)^gamma - 1),
+    the removal rate falling as (s + s_0)^(gamma - 1) (gamma = 0: log).  The
+    log schedule takes ``s0`` or ``half_step`` = h, the step by which half of
+    J is removed, s_0 = h^2 / (S - 2h).
 
-    Steps outside [0, max_steps) are clamped to the ends."""
-    k, j, max_steps = int(k), int(j), int(max_steps)
-    step = min(max(int(step), 0), max_steps - 1)
+    Negative steps are clamped to 0."""
+    k, j, steps = int(k), int(j), int(steps)
+    step = max(int(step), 0)
+    if step >= steps:
+        return k
     if schedule == "linear":
-        return k + j - ((j + 1) * step) // max_steps
-    if schedule != "log":
+        return k + j - ((j + 1) * step) // steps
+    if schedule == "log":
+        if s0 is None:
+            h = float(half_step)
+            s0 = h * h / (steps - 2.0 * h)
+        frac = math.log1p(step / s0) / math.log1p(steps / s0)
+    elif schedule == "power":
+        g = float(gamma)
+        frac = (math.expm1(g * math.log1p(step / s0))
+                / math.expm1(g * math.log1p(steps / s0)))
+    else:
         raise ValueError(f"unknown hard_k_annealing_schedule: {schedule!r}")
-    h = float(half_step)
-    s0 = h * h / (max_steps - 2.0 * h)
-    frac = math.log1p(step / s0) / math.log1p(max_steps / s0)
     return k + j - min(j, int(math.floor((j + 1) * frac)))
+
+
+def anneal_kwargs(cfg) -> dict:
+    """The schedule arguments of ``annealed_k`` from a bottleneck config."""
+    return {"schedule": getattr(cfg, "hard_k_annealing_schedule", "linear"),
+            "half_step": getattr(cfg, "hard_k_annealing_half_step", None),
+            "s0": getattr(cfg, "hard_k_annealing_s0", None),
+            "gamma": getattr(cfg, "hard_k_annealing_gamma", None)}
 
 
 #: where in a block the bottleneck is spliced in -> the attribute it replaces.
@@ -138,12 +158,25 @@ class ActivationBottleneckController:
         the configured K."""
         if not self.k_annealing:
             return int(self.cfg.k)
-        k_now = annealed_k(step, int(self.cfg.k), int(self.cfg.j), self.max_steps,
-                           getattr(self.cfg, "hard_k_annealing_schedule", "linear"),
-                           getattr(self.cfg, "hard_k_annealing_half_step", None))
-        for _, layer in self.layers:
-            layer.gate.set_active_count(k_now)
+        k_now = annealed_k(step, int(self.cfg.k), int(self.cfg.j), self.anneal_steps,
+                           **anneal_kwargs(self.cfg))
+        self.set_active_count(k_now)
         return k_now
+
+    @property
+    def anneal_steps(self) -> int:
+        """hard_k_annealing's S: hard_k_annealing_steps, else max_steps."""
+        return int(getattr(self.cfg, "hard_k_annealing_steps", None) or self.max_steps)
+
+    @property
+    def active_count(self) -> int:
+        """The gates' current width (all gates share it)."""
+        return int(self.layers[0][1].gate.k)
+
+    def set_active_count(self, k: int) -> None:
+        """Every gate to hard width ``k`` (hard_k_annealing only)."""
+        for _, layer in self.layers:
+            layer.gate.set_active_count(k)
 
     def set_step(self, step: int) -> float:
         """Apply the step's schedules.  hard_k_annealing sets every gate's

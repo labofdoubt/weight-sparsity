@@ -1,0 +1,127 @@
+# vi_cr_kpow_g02_s1_k32_j224_const: power-law K-annealing, gamma = 0.2, s_0 = 1,
+#   f(s) = ((1 + s/s_0)^gamma - 1) / ((1 + S/s_0)^gamma - 1),
+# K' anneals from K+J = 256 to K = 32 over the first S = 18000 steps
+# (hard_k_annealing_steps) and stays at K = 32 for the last 2000.
+#
+# Shared by the campaign (configs/hard_k_anneal_const/): configs/cr_kj/
+# ma_cr_hard_k32_pnorm.yaml (code-carried hard Top-K, docs/kj-vs-hard-topk-
+# code-residual.tex, run on madrid) with
+#   activation_bottleneck.post_norm: true -> false
+#   train.lr_schedule: cosine -> constant, train.warmup_steps: 500 -> 0
+#     (lr 6e-4 at every step; min_lr_ratio is not read)
+#   train.keep_last_checkpoints: 3 -> 10   (all kept; no effect on training)
+#   activation_bottleneck.hard_k_annealing: true, j: 64 -> 224,
+#   activation_bottleneck.hard_k_annealing_schedule: power, hard_k_annealing_s0: 1,
+#   activation_bottleneck.hard_k_annealing_gamma: 0.2
+#   activation_bottleneck.hard_k_annealing_steps: 18000
+#   train.run_name
+# Baselines: ta_cr_hard_k<K>_const, K = 32 .. 512 (runs_tallinn).
+model:
+  vocab_size: 50257
+  max_seq_len: 512
+  n_layers: 8
+  d_model: 768
+  n_heads: 12
+  mlp_ratio: 4.0
+  mlp_activation: gelu
+  dropout: 0.0
+  attn_dropout: 0.0
+  bias: false
+  norm_eps: 1.0e-06
+  tie_embeddings: true
+  pos_encoding: rope
+  rope_theta: 10000.0
+  decouple: true
+  decouple_gains: row_col
+  bottleneck_init: standard
+  bottleneck_decoder_scale: none
+  md_init: false
+  init_scheme: fixed_std
+  init_std: 0.02
+  init_gain: 1.0
+  init_std_embedding: null
+  init_std_pos: null
+  init_std_unembedding: null
+  init_scale_residual: true
+  logit_scale: none
+data:
+  dataset: roneneldan/TinyStories
+  data_dir: /workspace/data/tinystories
+  seq_len: 512
+  tokenizer: gpt_neo
+  tokenizer_path: data/tinystories/tokenizer
+  bpe_vocab_size: 8192
+  bpe_train_docs: 200000
+  num_proc: 8
+  val_fraction: 0.0
+train:
+  optimizer: adamw
+  lr: 0.0006
+  betas:
+  - 0.9
+  - 0.95
+  eps: 1.0e-08
+  weight_decay: 0.1
+  grad_clip: 1.0
+  lr_schedule: constant
+  warmup_steps: 0
+  min_lr_ratio: 0.1
+  batch_size: 96
+  final_val_batches: 0
+  micro_batch_size: 24
+  max_steps: 20000
+  log_every_steps: 20
+  validate_every_steps: 500
+  val_batches: 40
+  checkpoint_every_steps: 2000
+  keep_last_checkpoints: 10
+  sample_every_steps: 2000
+  sample_prompt: Once upon a time
+  sample_tokens: 96
+  sample_count: 4
+  seed: 1337
+  device: auto
+  dtype: bfloat16
+  compile: false
+  out_dir: /workspace/runs
+  run_name: vi_cr_kpow_g02_s1_k32_j224_const
+  resume: ''
+  wandb_project: ''
+  wandb_entity: ''
+  tensorboard: true
+activation_bottleneck:
+  enabled: true
+  layers: all
+  placement: residual_out
+  n_features: 1536
+  k: 32
+  j: 224
+  selection_mode: abs_topk
+  surrogate_mode: hard
+  hard_k_annealing: true
+  hard_k_annealing_schedule: power
+  hard_k_annealing_s0: 1
+  hard_k_annealing_gamma: 0.2
+  hard_k_annealing_steps: 18000
+  temperature: 1.0
+  rblapsum_boundary_grad_mode: detach
+  rblapsum_support_scale: 1.0
+  rblapsum_rho_random_perm_prob_grad: 0.0
+  rblapsum_surrogate_scope: pool
+  rblapsum_relative_temperature: false
+  rblapsum_center_tokens: false
+  rblapsum_sf_value_grad: pool
+  post_norm: false
+  rblapsum_boundary_floor: 0.0
+  init_mode: default
+  tie_encoder_decoder: false
+  share_projections: false
+  value_shift: none
+  value_shift_lambda: null
+  code_residual: true
+  code_residual_scale: 1.0
+  barrier_solver_tol: 1.0e-06
+  solver_dtype: float32
+  log_diagnostics: true
+  bias: false
+  hard_inference: true
