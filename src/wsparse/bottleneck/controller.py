@@ -41,6 +41,35 @@ def resolve_layers(spec, n_layers: int) -> List[int]:
     return idx
 
 
+def anneal_fraction(step: int, steps: int, schedule: str = "linear",
+                    half_step: Optional[float] = None, s0: Optional[float] = None,
+                    gamma: Optional[float] = None) -> float:
+    """The annealed fraction f(s) = u(s) / u(S) at zero-based step ``step`` of
+    an anneal over S = ``steps`` steps, shared by hard_k_annealing and
+    temperature_annealing; f(0) = 0, f(S) = 1:
+
+        linear  f(s) = s/S,
+        log     f(s) = ln(1 + s/s_0) / ln(1 + S/s_0),
+        power   f(s) = ((1 + s/s_0)^gamma - 1) / ((1 + S/s_0)^gamma - 1),
+
+    the rate f'(s) falling as (s + s_0)^(gamma - 1) (gamma = 0: log, gamma =
+    1: linear).  The log schedule takes ``s0`` or ``half_step`` = h, the step
+    at which f = 1/2, s_0 = h^2 / (S - 2h).  No clamping: callers clamp ``step``
+    to [0, S)."""
+    if schedule == "linear":
+        return step / steps
+    if schedule == "log":
+        if s0 is None:
+            h = float(half_step)
+            s0 = h * h / (steps - 2.0 * h)
+        return math.log1p(step / s0) / math.log1p(steps / s0)
+    if schedule == "power":
+        g = float(gamma)
+        return (math.expm1(g * math.log1p(step / s0))
+                / math.expm1(g * math.log1p(steps / s0)))
+    raise ValueError(f"unknown annealing schedule: {schedule!r}")
+
+
 def annealed_k(step: int, k: int, j: int, steps: int,
                schedule: str = "linear", half_step: Optional[float] = None,
                s0: Optional[float] = None, gamma: Optional[float] = None) -> int:
@@ -49,14 +78,11 @@ def annealed_k(step: int, k: int, j: int, steps: int,
 
     ``linear``:  K'(s) = K + J - floor((J + 1) s / S),
     so each of the J+1 widths K+J, ..., K holds for S / (J+1) steps, K+J at
-    s = 0 and K at s = S - 1 whenever S >= J+1.
+    s = 0 and K at s = S - 1 whenever S >= J+1 (integer arithmetic, exact).
 
     ``log`` and ``power``:  K'(s) = K + J - min(J, floor((J + 1) f(s))),
-        log    f(s) = ln(1 + s/s_0) / ln(1 + S/s_0),
-        power  f(s) = ((1 + s/s_0)^gamma - 1) / ((1 + S/s_0)^gamma - 1),
-    the removal rate falling as (s + s_0)^(gamma - 1) (gamma = 0: log).  The
-    log schedule takes ``s0`` or ``half_step`` = h, the step by which half of
-    J is removed, s_0 = h^2 / (S - 2h).
+    f(s) from :func:`anneal_fraction`; under ``log`` with ``half_step`` = h,
+    half of J is removed by step h.
 
     Negative steps are clamped to 0."""
     k, j, steps = int(k), int(j), int(steps)
@@ -65,26 +91,41 @@ def annealed_k(step: int, k: int, j: int, steps: int,
         return k
     if schedule == "linear":
         return k + j - ((j + 1) * step) // steps
-    if schedule == "log":
-        if s0 is None:
-            h = float(half_step)
-            s0 = h * h / (steps - 2.0 * h)
-        frac = math.log1p(step / s0) / math.log1p(steps / s0)
-    elif schedule == "power":
-        g = float(gamma)
-        frac = (math.expm1(g * math.log1p(step / s0))
-                / math.expm1(g * math.log1p(steps / s0)))
-    else:
+    if schedule not in ("log", "power"):
         raise ValueError(f"unknown hard_k_annealing_schedule: {schedule!r}")
+    frac = anneal_fraction(step, steps, schedule, half_step, s0, gamma)
     return k + j - min(j, int(math.floor((j + 1) * frac)))
 
 
-def anneal_kwargs(cfg) -> dict:
-    """The schedule arguments of ``annealed_k`` from a bottleneck config."""
-    return {"schedule": getattr(cfg, "hard_k_annealing_schedule", "linear"),
-            "half_step": getattr(cfg, "hard_k_annealing_half_step", None),
-            "s0": getattr(cfg, "hard_k_annealing_s0", None),
-            "gamma": getattr(cfg, "hard_k_annealing_gamma", None)}
+def annealed_temperature(step: int, t0: float, tf: float, steps: int,
+                         schedule: str = "linear", half_step: Optional[float] = None,
+                         s0: Optional[float] = None,
+                         gamma: Optional[float] = None) -> float:
+    """temperature_annealing's kernel temperature for zero-based optimizer step
+    ``step`` of an anneal over S = ``steps`` steps; T_f from step S on:
+
+        T(s) = T_f + (T_0 - T_f) (1 - f(s)),    f(s) = u(s) / u(S),
+
+    f from :func:`anneal_fraction` (the hard_k_annealing schedules), so T(0) =
+    T_0 and T moves monotonically to T_f, reached at s = S.  Under ``log``
+    with ``half_step`` = h, T(h) is midway between T_0 and T_f.  Negative
+    steps are clamped to 0."""
+    t0, tf, steps = float(t0), float(tf), int(steps)
+    step = max(int(step), 0)
+    if step >= steps:
+        return tf
+    frac = anneal_fraction(step, steps, schedule, half_step, s0, gamma)
+    return tf + (t0 - tf) * (1.0 - frac)
+
+
+def anneal_kwargs(cfg, prefix: str = "hard_k_annealing") -> dict:
+    """The schedule arguments of ``annealed_k`` (prefix ``hard_k_annealing``)
+    or ``annealed_temperature`` (``temperature_annealing``) from a bottleneck
+    config."""
+    return {"schedule": getattr(cfg, f"{prefix}_schedule", "linear"),
+            "half_step": getattr(cfg, f"{prefix}_half_step", None),
+            "s0": getattr(cfg, f"{prefix}_s0", None),
+            "gamma": getattr(cfg, f"{prefix}_gamma", None)}
 
 
 #: where in a block the bottleneck is spliced in -> the attribute it replaces.
@@ -178,17 +219,56 @@ class ActivationBottleneckController:
         for _, layer in self.layers:
             layer.gate.set_active_count(k)
 
+    @property
+    def temperature_annealing(self) -> bool:
+        return bool(self.enabled and getattr(self.cfg, "temperature_annealing", False))
+
+    @property
+    def temperature_anneal_steps(self) -> int:
+        """temperature_annealing's S: temperature_annealing_steps, else max_steps."""
+        return int(getattr(self.cfg, "temperature_annealing_steps", None) or self.max_steps)
+
+    def temperature_at(self, step: int) -> float:
+        """temperature_annealing's T at zero-based optimizer step ``step`` (see
+        ``annealed_temperature``); the configured constant without annealing."""
+        cfg = self.cfg
+        if not self.temperature_annealing:
+            return float(cfg.temperature)
+        return annealed_temperature(step, float(cfg.temperature),
+                                    float(cfg.temperature_annealing_final),
+                                    self.temperature_anneal_steps,
+                                    **anneal_kwargs(cfg, "temperature_annealing"))
+
+    @property
+    def temperature(self) -> float:
+        """The gates' current kernel temperature (all gates share it)."""
+        return float(self.layers[0][1].gate.temperature)
+
+    def set_temperature_for_step(self, step: int) -> float:
+        """temperature_annealing: set every gate's kernel temperature to T(step)
+        of the zero-based optimizer step ``step`` and return it.  Without
+        annealing nothing changes and this returns the configured constant.
+        The configured ``temperature`` stays T_0 for the dumped config."""
+        if not self.temperature_annealing:
+            return float(self.cfg.temperature)
+        t_now = self.temperature_at(step)
+        for _, layer in self.layers:
+            layer.gate.set_temperature(t_now)
+        return t_now
+
     def set_step(self, step: int) -> float:
         """Apply the step's schedules.  hard_k_annealing sets every gate's
-        width K'(step) (``set_active_count_for_step``).  laplace_policy's
-        scheduled tau(step) is written to every policy gate's ``policy_tau``
-        (the configured ``temperature`` stays tau_0 for the dumped config) and
-        returned.  Every other mode's temperature is a constant and this
-        returns 0.0, as before.  ``train()`` calls it before the ``on_step``
-        probe and before any micro-batch; a resume recomputes both from the
-        restored step; validation and probes never advance them.
+        width K'(step) (``set_active_count_for_step``), temperature_annealing
+        every gate's kernel temperature T(step) (``set_temperature_for_step``).
+        laplace_policy's scheduled tau(step) is written to every policy gate's
+        ``policy_tau`` (the configured ``temperature`` stays tau_0 for the
+        dumped config) and returned; every other mode returns 0.0, as before.
+        ``train()`` calls it before the ``on_step`` probe and before any
+        micro-batch; a resume recomputes all of them from the restored step;
+        validation and probes never advance them.
         """
         self.set_active_count_for_step(step)
+        self.set_temperature_for_step(step)
         gates = self.policy_gates
         if not gates:
             return 0.0
@@ -372,6 +452,10 @@ class ActivationBottleneckController:
             out["bottleneck/candidate_density"] = (gate.k + gate.j) / self.cfg.n_features
             if self.k_annealing:
                 out["bottleneck/active_count"] = float(gate.k)
+            # temperature_annealing: T of the latest step (soft_lapsum's own
+            # diagnostics already carry it; rblapsum_sf's do not)
+            if self.temperature_annealing:
+                out["bottleneck/temperature"] = float(gate.temperature)
         return out
 
 

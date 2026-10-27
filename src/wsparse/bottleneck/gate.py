@@ -12,6 +12,11 @@ mask that is numerically inert in the forward pass::
 so ``m == m_hard`` numerically while ``dm/dr == lambda * dp/dr``.  Everything
 outside Top(K+J) gets exactly zero gradient from this module.
 
+The two soft-forward modes are the exceptions: in training they output
+``a_i p_i`` over the Top(K+J) pool -- ``soft_lapsum`` with LapSum's barrier
+``sum_i p_i = K``, ``rblapsum_sf`` with the rank boundary ``max(b0, r_(K+1))`` --
+and fall back to the hard TopK forward in eval while ``hard_inference``.
+
 One ``torch.topk`` per call supplies the sorted candidate pool that the hard
 mask, the temperature solve, the barrier solve, the probabilities, the backward
 and the diagnostics all share -- nothing is sorted twice.
@@ -107,11 +112,11 @@ class AdaptiveLapSumTopKGate(nn.Module):
             raise ValueError(
                 f"unknown selection_mode: {selection_mode!r} (topk | abs_topk | gated_topk)"
             )
-        if surrogate_mode not in ("lapsum", "rblapsum", "rblapsum_sf", "hard", "soft_ste",
-                                  "laplace_policy", "dust"):
+        if surrogate_mode not in ("lapsum", "soft_lapsum", "rblapsum", "rblapsum_sf", "hard",
+                                  "soft_ste", "laplace_policy", "dust"):
             raise ValueError(
-                f"unknown surrogate_mode: {surrogate_mode!r} "
-                "(lapsum | rblapsum | rblapsum_sf | hard | soft_ste | laplace_policy | dust)"
+                f"unknown surrogate_mode: {surrogate_mode!r} (lapsum | soft_lapsum | "
+                "rblapsum | rblapsum_sf | hard | soft_ste | laplace_policy | dust)"
             )
         if temperature <= 0:
             raise ValueError("temperature must be positive")
@@ -341,6 +346,18 @@ class AdaptiveLapSumTopKGate(nn.Module):
             raise ValueError(f"active count {k} outside [1, K+J={self.m}]")
         self.k, self.j = k, self.m - k
 
+    def set_temperature(self, t: float) -> None:
+        """temperature_annealing: the kernel/barrier temperature of the forwards
+        that follow (soft_lapsum and rblapsum_sf; the controller sets T(step)).
+        A plain attribute, so state_dicts are unchanged."""
+        t = float(t)
+        if self.surrogate_mode not in ("soft_lapsum", "rblapsum_sf"):
+            raise ValueError("set_temperature anneals the soft-forward gates only, "
+                             f"got surrogate_mode={self.surrogate_mode!r}")
+        if not (math.isfinite(t) and t > 0):
+            raise ValueError(f"temperature must be positive and finite, got {t!r}")
+        self.temperature = t
+
     # ---- selection --------------------------------------------------------- #
     @property
     def gated(self) -> bool:
@@ -431,7 +448,14 @@ class AdaptiveLapSumTopKGate(nn.Module):
         if self.log_diagnostics and self.training:
             self._record_usage(hard_mask)
 
-        if not self.surrogate_active():
+        # soft_lapsum: the LapSum probabilities are IN the forward, y = z * p
+        # over the Top(K+J) pool with sum p = K, whenever the gate trains, with
+        # or without grad.  In eval, hard_inference=True (the default) gives
+        # the hard Top-K forward below, so val/ce stays comparable across
+        # regimes; the soft-forward CE is logged separately as val_soft/ce.
+        soft = (self.surrogate_mode == "soft_lapsum"
+                and (self.training or not self.hard_inference))
+        if not soft and not self.surrogate_active():
             if self.log_diagnostics and self.training:
                 # Keep the hard baseline comparable with the surrogate runs: the
                 # forward-side statistics are all still meaningful, and the
@@ -450,7 +474,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         # SCORE space (d~L/ds over the K+J pool, |z|-space under abs_topk,
         # BEFORE the sign chain back to z).  Enabled by assigning a dict to
         # `_score_grad_capture`; costs nothing when None (the default).
-        if getattr(self, "_score_grad_capture", None) is not None:
+        if getattr(self, "_score_grad_capture", None) is not None and cand.requires_grad:
             _cap = self._score_grad_capture
             _cap["idx"] = cand_idx.detach()
             cand.register_hook(lambda g, _cap=_cap: _cap.__setitem__("grad", g.detach()))
@@ -467,6 +491,18 @@ class AdaptiveLapSumTopKGate(nn.Module):
         # and keeps the exponent small if b ever drifts far from the scores.
         centre = detached[..., self.k - 1 : self.k]
         p = lapsum_probs(cand - centre, b - centre.squeeze(-1), t, self.k, sink)
+        if soft:
+            # y = z * p on the pool, 0 outside; the backward is the gradient of
+            # this forward: p on the values, and on the scores the exact
+            # implicit-barrier VJP of _LapSumProbs, kappa_i (u_i - <q, u>) with
+            # u = g * z.  The product is taken over the K+J pool in the wider
+            # of the two dtypes and rounded once.
+            value_c = torch.gather(value, -1, cand_idx)
+            wide = torch.promote_types(value_c.dtype, p.dtype)
+            y_c = value_c.to(wide) * p.to(wide)
+            if self.log_diagnostics and self.training:
+                self._record(detached, b, t, p.detach(), solver_diag)
+            return torch.zeros_like(value).scatter(-1, cand_idx, y_c.to(value.dtype))
         p_full = (
             torch.zeros_like(scores, dtype=p.dtype)
             .scatter(-1, cand_idx, p)
@@ -907,6 +943,11 @@ class AdaptiveLapSumTopKGate(nn.Module):
             "score_gap": gap.mean(),
             "score_span": span.mean(),
         }
+        if self.surrogate_mode == "soft_lapsum":
+            # the forward's mass outside the hard Top-K, sum_{rank > K} p_i;
+            # with sum p = K it equals the shortfall inside, sum_{rank <= K}
+            # (1 - p_i), and it is what the hard-inference forward drops
+            d["soft_tail_mass"] = p[..., k:].sum(-1).mean()
         self._forward_diag = {key: value.detach() for key, value in d.items()}
 
     def _budget_tolerance(self, cand: torch.Tensor, t: torch.Tensor) -> torch.Tensor:

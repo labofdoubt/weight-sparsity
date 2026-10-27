@@ -371,6 +371,60 @@ class TrainConfig:
 # --------------------------------------------------------------------------- #
 
 
+def _check_anneal_schedule(cfg, prefix: str, on: bool) -> None:
+    """The schedule rules shared by hard_k_annealing and temperature_annealing
+    (``prefix``): ``<prefix>_schedule`` and the parameters it reads, all at
+    their defaults unless ``on``.  Normalizes the numbers in place."""
+    sched = getattr(cfg, f"{prefix}_schedule")
+    if sched not in ("linear", "log", "power"):
+        raise ValueError(f"unknown {prefix}_schedule: {sched!r} "
+                         "(linear | log | power)")
+    half, s0, gamma, steps = (f"{prefix}_half_step", f"{prefix}_s0",
+                              f"{prefix}_gamma", f"{prefix}_steps")
+    params = {name: getattr(cfg, name) for name in (half, s0, gamma)}
+    if not on and (sched != "linear" or getattr(cfg, steps) is not None
+                   or any(v is not None for v in params.values())):
+        raise ValueError(f"the {prefix}_* fields are read only under {prefix}: true")
+    allowed = {"linear": (), "log": (half, s0), "power": (s0, gamma)}[sched]
+    stray = [n for n, v in params.items() if v is not None and n not in allowed]
+    if stray:
+        raise ValueError(f"{', '.join(stray)} not read by {prefix}_schedule {sched!r}")
+    if sched == "log" and (params[half] is None) == (params[s0] is None):
+        raise ValueError(f"the log schedule takes exactly one of {half} and {s0}")
+    if sched == "power" and (params[s0] is None or params[gamma] is None):
+        raise ValueError(f"the power schedule needs {s0} and {gamma}")
+    for name in (half, s0):
+        v = getattr(cfg, name)
+        if v is not None:
+            setattr(cfg, name, float(v))
+            if not (math.isfinite(float(v)) and float(v) > 0):
+                raise ValueError(f"{name} must be positive and finite")
+    if params[gamma] is not None:
+        g = float(params[gamma])
+        setattr(cfg, gamma, g)
+        if not math.isfinite(g) or g == 0:
+            raise ValueError(f"{gamma} must be finite and nonzero "
+                             "(gamma -> 0 is schedule 'log')")
+    n = getattr(cfg, steps)
+    if n is not None:
+        if int(n) != n or int(n) < 1:
+            raise ValueError(f"{steps} must be a positive integer")
+        setattr(cfg, steps, int(n))
+
+
+def _check_anneal_length(cfg, prefix: str, max_steps: int) -> int:
+    """The run-level rules of an anneal over S steps: S <= max_steps and, for
+    the log schedule's half step h, h < S/2.  Returns S."""
+    n = getattr(cfg, f"{prefix}_steps") or max_steps
+    if n > max_steps:
+        raise ValueError(f"{prefix}_steps={n} exceeds max_steps={max_steps}")
+    h = getattr(cfg, f"{prefix}_half_step")
+    if h is not None and not h < n / 2:
+        raise ValueError(f"{prefix}_half_step={h:g} must be below S/2 = {n / 2:g} "
+                         "(S/2 is the linear schedule)")
+    return n
+
+
 @dataclass
 class ActivationBottleneckConfig:
     """A hard-TopK activation bottleneck inserted in front of selected MLPs.
@@ -419,6 +473,13 @@ class ActivationBottleneckConfig:
 
     # lapsum      -> soft-in-gradient LapSum: hard TopK forward, exact
     #                fixed-temperature barrier VJP (sum p_i = K) in the backward
+    # soft_lapsum -> LapSum with the probabilities in the forward: every
+    #                Top(K+J) candidate outputs z_i p_i, p_i = F((s_i - b)/T),
+    #                b the barrier with sum p_i = K over the pool, 0 outside
+    #                it; the backward is the gradient of that forward (p on the
+    #                values, the implicit-barrier VJP on the scores).  Eval as
+    #                rblapsum_sf: hard Top-K under hard_inference (val/ce), the
+    #                soft forward as val_soft/ce (2026-10-27)
     # rblapsum    -> hard forward, rank-boundary local kernel (see below)
     # rblapsum_sf -> the probabilities in the forward: y_i = z_i p_i
     # hard        -> plain hard-mask backward, no surrogate
@@ -495,8 +556,34 @@ class ActivationBottleneckConfig:
     # modes (unified 2026-09-28; formerly fixed_temperature and
     # rblapsum_temperature).  Deliberately not score-scaled.  Under
     # laplace_policy it is the INITIAL scheduled parameter tau_0 (score units
-    # in the absolute mode, dimensionless in the relative modes).
+    # in the absolute mode, dimensionless in the relative modes); under
+    # temperature_annealing it is T_0.
     temperature: float = 1.0
+
+    # Temperature annealing (surrogate_mode soft_lapsum | rblapsum_sf only):
+    # the kernel/barrier temperature of every gate moves from T_0 =
+    # `temperature` to T_f = temperature_annealing_final over the first S steps
+    # (S = temperature_annealing_steps, default max_steps) and stays at T_f
+    # after,
+    #     T(s) = T_f + (T_0 - T_f) (1 - f(s)),   s = 0 .. S-1,
+    # s the zero-based optimizer step and f(s) = u(s)/u(S) the schedule of
+    # hard_k_annealing with the same parameters: "linear" f(s) = s/S, "log"
+    # (temperature_annealing_s0, or temperature_annealing_half_step h, the
+    # step at which T is midway between T_0 and T_f), "power"
+    # (temperature_annealing_s0, temperature_annealing_gamma).  T_f is
+    # reached at s = S, so with S = max_steps the last step runs at T(S-1),
+    # (T_0 - T_f)/S above T_f under the linear schedule.  The configured
+    # `temperature` stays T_0 in the dumped config; the gates carry T(s) as a
+    # plain attribute, logged as bottleneck/temperature, and val_soft/ce at
+    # step s is measured at the T of the step just taken.  load_for_inference
+    # restores the T of the checkpoint's last step (2026-10-27).
+    temperature_annealing: bool = False
+    temperature_annealing_final: Optional[float] = None
+    temperature_annealing_schedule: str = "linear"
+    temperature_annealing_half_step: Optional[float] = None
+    temperature_annealing_s0: Optional[float] = None
+    temperature_annealing_gamma: Optional[float] = None
+    temperature_annealing_steps: Optional[int] = None
 
     # ---- laplace_policy (surrogate_mode: laplace_policy) -------------------- #
     # See wsparse.bottleneck.laplace_policy for the method.  Every field here
@@ -993,11 +1080,11 @@ class ActivationBottleneckConfig:
                 f"unknown selection_mode: {self.selection_mode} "
                 "(topk | abs_topk | gated_topk)"
             )
-        if self.surrogate_mode not in ("lapsum", "rblapsum", "rblapsum_sf", "hard",
-                                       "soft_ste", "laplace_policy", "dust"):
+        if self.surrogate_mode not in ("lapsum", "soft_lapsum", "rblapsum", "rblapsum_sf",
+                                       "hard", "soft_ste", "laplace_policy", "dust"):
             raise ValueError(
-                f"unknown surrogate_mode: {self.surrogate_mode} "
-                "(lapsum | rblapsum | rblapsum_sf | hard | soft_ste | laplace_policy | dust)"
+                f"unknown surrogate_mode: {self.surrogate_mode} (lapsum | soft_lapsum | "
+                "rblapsum | rblapsum_sf | hard | soft_ste | laplace_policy | dust)"
             )
         if self.stochastic_width not in ("none", "uniform", "two_point", "geometric"):
             raise ValueError(
@@ -1025,49 +1112,24 @@ class ActivationBottleneckConfig:
             if self.value_shift != "none":
                 raise ValueError("value_shift's lambda is fixed from k at construction; "
                                  "it is not defined under hard_k_annealing")
-        sched = self.hard_k_annealing_schedule
-        if sched not in ("linear", "log", "power"):
-            raise ValueError(f"unknown hard_k_annealing_schedule: {sched!r} "
-                             "(linear | log | power)")
-        params = {"hard_k_annealing_half_step": self.hard_k_annealing_half_step,
-                  "hard_k_annealing_s0": self.hard_k_annealing_s0,
-                  "hard_k_annealing_gamma": self.hard_k_annealing_gamma}
-        if not self.hard_k_annealing and (
-                sched != "linear" or self.hard_k_annealing_steps is not None
-                or any(v is not None for v in params.values())):
-            raise ValueError("the hard_k_annealing_* fields are read only under "
-                             "hard_k_annealing: true")
-        allowed = {"linear": (), "log": ("hard_k_annealing_half_step", "hard_k_annealing_s0"),
-                   "power": ("hard_k_annealing_s0", "hard_k_annealing_gamma")}[sched]
-        stray = [n for n, v in params.items() if v is not None and n not in allowed]
-        if stray:
-            raise ValueError(f"{', '.join(stray)} not read by hard_k_annealing_schedule "
-                             f"{sched!r}")
-        if sched == "log" and (self.hard_k_annealing_half_step is None) == (
-                self.hard_k_annealing_s0 is None):
-            raise ValueError("the log schedule takes exactly one of "
-                             "hard_k_annealing_half_step and hard_k_annealing_s0")
-        if sched == "power" and (self.hard_k_annealing_s0 is None
-                                 or self.hard_k_annealing_gamma is None):
-            raise ValueError("the power schedule needs hard_k_annealing_s0 and "
-                             "hard_k_annealing_gamma")
-        for name in ("hard_k_annealing_half_step", "hard_k_annealing_s0"):
-            v = getattr(self, name)
-            if v is not None:
-                setattr(self, name, float(v))
-                if not (math.isfinite(float(v)) and float(v) > 0):
-                    raise ValueError(f"{name} must be positive and finite")
-        if self.hard_k_annealing_gamma is not None:
-            self.hard_k_annealing_gamma = float(self.hard_k_annealing_gamma)
-            g = self.hard_k_annealing_gamma
-            if not math.isfinite(g) or g == 0:
-                raise ValueError("hard_k_annealing_gamma must be finite and nonzero "
-                                 "(gamma -> 0 is schedule 'log')")
-        if self.hard_k_annealing_steps is not None:
-            if int(self.hard_k_annealing_steps) != self.hard_k_annealing_steps or \
-                    int(self.hard_k_annealing_steps) < 1:
-                raise ValueError("hard_k_annealing_steps must be a positive integer")
-            self.hard_k_annealing_steps = int(self.hard_k_annealing_steps)
+        _check_anneal_schedule(self, "hard_k_annealing", self.hard_k_annealing)
+        if self.temperature_annealing:
+            if self.surrogate_mode not in ("soft_lapsum", "rblapsum_sf"):
+                raise ValueError(
+                    "temperature_annealing anneals the soft forward's temperature; it "
+                    "needs surrogate_mode='soft_lapsum' or 'rblapsum_sf', got "
+                    f"{self.surrogate_mode!r}")
+            tf = self.temperature_annealing_final
+            if tf is None:
+                raise ValueError("temperature_annealing needs temperature_annealing_final "
+                                 "(T_f)")
+            self.temperature_annealing_final = float(tf)
+            if not (math.isfinite(float(tf)) and float(tf) > 0):
+                raise ValueError("temperature_annealing_final must be positive and finite")
+        elif self.temperature_annealing_final is not None:
+            raise ValueError("the temperature_annealing_* fields are read only under "
+                             "temperature_annealing: true")
+        _check_anneal_schedule(self, "temperature_annealing", self.temperature_annealing)
         if self.temperature <= 0:
             raise ValueError("temperature must be positive")
         if self.rblapsum_boundary_floor is None:
@@ -1548,19 +1610,13 @@ class Config:
         self.model.max_seq_len = max(self.model.max_seq_len, self.data.seq_len)
         ab = self.activation_bottleneck
         if ab.enabled and ab.hard_k_annealing:
-            n = ab.hard_k_annealing_steps or self.train.max_steps
-            if n > self.train.max_steps:
-                raise ValueError(f"hard_k_annealing_steps={n} exceeds max_steps="
-                                 f"{self.train.max_steps}")
+            n = _check_anneal_length(ab, "hard_k_annealing", self.train.max_steps)
             if n < ab.j + 1:
                 raise ValueError(
                     f"hard_k_annealing runs over S={n} steps < J+1={ab.j + 1}: the "
                     "schedule would skip widths and end above K")
-            h = ab.hard_k_annealing_half_step
-            if h is not None and not h < n / 2:
-                raise ValueError(
-                    f"hard_k_annealing_half_step={h:g} must be below S/2 = {n / 2:g} "
-                    "(S/2 is the linear schedule)")
+        if ab.enabled and ab.temperature_annealing:
+            _check_anneal_length(ab, "temperature_annealing", self.train.max_steps)
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)

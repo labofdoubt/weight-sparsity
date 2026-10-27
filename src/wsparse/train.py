@@ -204,9 +204,12 @@ def load_for_inference(path: str, device: str = "cpu"):
     )
     model.load_state_dict(payload["model"])
     model.to(device)
-    # hard_k_annealing: the width of the checkpoint's last optimizer step
-    # (payload["step"] counts completed steps); a no-op otherwise
-    bottleneck.set_active_count_for_step(int(payload.get("step", cfg.train.max_steps)) - 1)
+    # hard_k_annealing / temperature_annealing: the width and the temperature
+    # of the checkpoint's last optimizer step (payload["step"] counts
+    # completed steps); no-ops otherwise
+    last_step = int(payload.get("step", cfg.train.max_steps)) - 1
+    bottleneck.set_active_count_for_step(last_step)
+    bottleneck.set_temperature_for_step(last_step)
     # Weights and config only: the optional policy_state payload (baseline,
     # noise RNG) is a training resume's business.  eval() so a laplace_policy
     # model answers with clean deterministic supports by default; a probe that
@@ -582,6 +585,28 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             print(f"[train] hard_k_annealing ({sched}): K' = K+J = {cb.k + cb.j} at step 0 "
                   f"-> K = {cb.k} at step {n - 1}, K until step {cfg.train.max_steps - 1}; "
                   + detail)
+        if bottleneck.temperature_annealing:
+            n = bottleneck.temperature_anneal_steps
+            sched = cb.temperature_annealing_schedule
+            detail = ""
+            if sched != "linear":
+                s0 = cb.temperature_annealing_s0
+                if s0 is None:
+                    h = cb.temperature_annealing_half_step
+                    s0 = h * h / (n - 2 * h)
+                detail = f"s_0 = {s0:.4g}"
+                if sched == "power":
+                    detail += f", gamma = {cb.temperature_annealing_gamma:g}"
+                detail += "; "
+            detail += "T at steps " + ", ".join(
+                f"{s}: {bottleneck.temperature_at(s):.4g}"
+                for s in (1, 10, 100, 500, 1000, 2000, 5000, 10000, 15000, n - 1)
+                if s < n)
+            reach = (f"T_f until step {cfg.train.max_steps - 1}" if n < cfg.train.max_steps
+                     else f"the last step at T = {bottleneck.temperature_at(n - 1):.4g}")
+            print(f"[train] temperature_annealing ({sched}): T = {cb.temperature:g} at step 0 "
+                  f"-> T_f = {cb.temperature_annealing_final:g} at step {n}, {reach}; "
+                  + detail)
 
     model.train()
     t0 = time.time()
@@ -605,10 +630,10 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             set_lr(dust_optimizer, lr * dust.lr_scale)
         elif dust_step:
             set_lr(optimizer, lr * dust.lr_scale)  # this step only; reset above next step
-        # the only schedule here is laplace_policy's tau(step); every other
-        # mode's temperature is constant and this returns 0.0 without touching
-        # anything.  Before on_step and before any micro-batch, so the probe
-        # and the whole step see the same value.
+        # the step's schedules: hard_k_annealing's K'(step),
+        # temperature_annealing's T(step) and laplace_policy's tau(step), which
+        # is returned (0.0 under every other mode).  Before on_step and before
+        # any micro-batch, so the probe and the whole step see the same values.
         policy_tau = bottleneck.set_step(step)
 
         if on_step is not None:
@@ -838,12 +863,13 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 line += f" | sto ce {sto['ce']:.4f}"
                 if "mc_std" in sto:
                     line += f" (+-{sto['mc_std']:.4f}, {int(sto['samples'])} draws)"
-            if (bottleneck.enabled
-                    and cfg.activation_bottleneck.surrogate_mode == "rblapsum_sf"):
+            if (bottleneck.enabled and cfg.activation_bottleneck.surrogate_mode
+                    in ("rblapsum_sf", "soft_lapsum")):
                 # val/ce above used the hard Top-K forward (hard_inference), so
                 # it stays name-comparable across regimes; this second pass
                 # evaluates the soft forward actually trained, z * p over the
-                # Top(K+J) pool.
+                # Top(K+J) pool (at the temperature of the step just taken,
+                # under temperature_annealing).
                 gates = [mod.gate for _, mod in bottleneck.layers]
                 prior = [g.hard_inference for g in gates]
                 for g in gates:
