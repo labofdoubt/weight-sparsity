@@ -25,11 +25,15 @@ FIG = os.path.join(ROOT, "figures")
 
 HS = (125, 250, 500, 1000, 2000, 4000, 6000, 8000)
 KS = (32, 64, 128, 256, 512)
+# the smaller-J arm: K' starts at K + J = 256 or 128
+JS, HS_J = (224, 96), (30, 60, 120, 250)
 # (key, Drive folder, run name); the hard ladder is the code-carried one of
 # docs/kj-vs-hard-topk-code-residual.tex
 RUNS = ([(f"hard{k}", "runs_madrid", f"ma_cr_hard_k{k}_pnorm") for k in KS]
         + [("linear", "runs_riga", "ri_cr_hard_kanneal_k32_j480_pnorm")]
-        + [(f"h{h}", "runs_tallinn", f"ta_cr_hard_klog_h{h}_k32_j480_pnorm") for h in HS])
+        + [(f"h{h}", "runs_tallinn", f"ta_cr_hard_klog_h{h}_k32_j480_pnorm") for h in HS]
+        + [(f"j{j}_h{h}", "runs_tallinn", f"ta_cr_hard_klog_h{h}_k32_j{j}_pnorm")
+           for j in JS for h in HS_J])
 
 # the log runs on a blue ramp, light -> dark with h; the hard ladder dashed on
 # an orange ramp, light -> dark with K; the linear schedule in magenta.  The
@@ -40,6 +44,10 @@ HARD_RAMP = ["#f39a6b", "#ee7f48", "#eb6834", "#c4501f", "#8f3a14"]
 COLOR = {f"h{h}": c for h, c in zip(HS, RAMP)}
 COLOR.update({f"hard{k}": c for k, c in zip(KS, HARD_RAMP)})
 COLOR["linear"] = "#d55181"   # magenta
+# at fixed J (224 or 96) the four h values on four spread steps of the blue ramp
+for j in JS:
+    COLOR.update({f"j{j}_h{h}": c for h, c in
+                  zip(HS_J, ["#86b6ef", "#3987e5", "#256abf", "#0d366b"])})
 INK, MUTED, GRID = "#0b0b0b", "#52514e", "#e4e3df"
 
 
@@ -73,6 +81,8 @@ def name_of(key: str) -> str:
         return f"hard Top-{key[4:]}"
     if key == "linear":
         return "linear schedule ($h = S/2$)"
+    if key.startswith("j"):
+        return f"log, $h = {key.split('_h')[1]}$"
     return f"log, $h = {key[1:]}$"
 
 
@@ -95,7 +105,7 @@ LADDER = [f"hard{k}" for k in KS] + ["h125", "h250", "h500"]
 
 
 def plot_val(data: dict, keys, fname: str, ncol: int = 3) -> None:
-    keys = [k for k in keys if k in data]
+    keys = [k for k in keys if k in data and data[k]["val_ce"]]
     fig, axes = plt.subplots(1, 2, figsize=(7.6, 4.2))
     for ax, (lo, hi), (ylo, yhi) in zip(axes, ((0, 20000), (12000, 20000)),
                                          ((1.3, 2.7), (1.33, 1.72))):
@@ -161,7 +171,11 @@ def main() -> None:
     plot_val(data, MAIN, "val_ce.png")
     plot_active(data)
     plot_val(data, LADDER, "val_ce_ladder.png", ncol=3)
-    print(f"wrote {FIG}/val_ce.png, active_count.png, val_ce_ladder.png")
+    for j in JS:
+        keys = [f"hard{k}" for k in KS] + [f"j{j}_h{h}" for h in HS_J]
+        if any(k in data for k in keys[len(KS):]):
+            plot_val(data, keys, f"val_ce_ladder_j{j}.png", ncol=3)
+    print(f"wrote {FIG}/val_ce.png, active_count.png, val_ce_ladder*.png")
 
 
 if __name__ == "__main__":

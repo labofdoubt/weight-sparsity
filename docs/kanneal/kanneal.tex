@@ -39,7 +39,7 @@ gradient to those $\Kp$ only.
 
 \textbf{Annealing.} At optimizer step $s = 0, \dots, S-1$ every bottleneck is
 an ordinary hard Top-$\Kp(s)$ bottleneck, forward and backward, with the
-width falling from $K + J$ to $K$ (here $K = 32$, $J = 480$):
+width falling from $K + J$ to $K$ (here $K = 32$ and $J = 480$, $224$ or $96$):
 \begin{equation*}
 \Kp(s) = K + J - \min\bigl(J,\ \lfloor (J+1)\, f(s) \rfloor\bigr),
 \qquad f(0) = 0,\quad f(S) = 1,
@@ -54,9 +54,11 @@ f(s) = \frac{\ln(1 + s/s_0)}{\ln(1 + S/s_0)},
 \end{equation*}
 where $h \in (0, S/2)$ is the step at which half of the $J$ features have
 been removed, $f(h) = 1/2$. Small $h$ removes most features early; as
-$h \to S/2$ the log schedule tends to the linear one. The grid is
+$h \to S/2$ the log schedule tends to the linear one. At $J = 480$ the grid is
 $h \in \{125, 250, 500, 1000, 2000, 4000, 6000, 8000\}$
-($s_0 = 0.79$ to $16000$). The width $\Kp$ at step $s$ is a function of $s$
+($s_0 = 0.79$ to $16000$). At $J = 224$ and $J = 96$, starting from
+$\Kp = 256$ and $\Kp = 128$, it is $h \in \{30, 60, 120, 250\}$
+($s_0 = 0.045$ to $3.2$). The width $\Kp$ at step $s$ is a function of $s$
 only, identical at all eight bottlenecks.
 
 \clearpage
@@ -101,6 +103,32 @@ right: steps 12000 to 20000. Legend: final validation CE.}
 \label{fig:ladder}
 \end{figure}
 
+\begin{figure}[!htb]
+\centering
+\includegraphics[width=\textwidth]{figures/val_ce_ladder_j224.png}
+\caption{As Figure~\ref{fig:ladder} at $J = 224$: the log schedule from
+$\Kp = K + J = 256$ to $K = 32$ at $h = 30$, $60$, $120$, $250$ (solid,
+blue from light to dark with $h$) against the code-carried hard Top-$K$
+ladder (dashed, orange from light to dark with $K$). The annealed runs are
+measured at their current width $\Kp(s)$; only their last point (dot) is at
+$K = 32$. Left: the whole run; right: steps 12000 to 20000. Legend: final
+validation CE.}
+\label{fig:ladder224}
+\end{figure}
+
+\begin{figure}[!htb]
+\centering
+\includegraphics[width=\textwidth]{figures/val_ce_ladder_j96.png}
+\caption{As Figure~\ref{fig:ladder} at $J = 96$: the log schedule from
+$\Kp = K + J = 128$ to $K = 32$ at $h = 30$, $60$, $120$, $250$ (solid,
+blue from light to dark with $h$) against the code-carried hard Top-$K$
+ladder (dashed, orange from light to dark with $K$). The annealed runs are
+measured at their current width $\Kp(s)$; only their last point (dot) is at
+$K = 32$. Left: the whole run; right: steps 12000 to 20000. Legend: final
+validation CE.}
+\label{fig:ladder96}
+\end{figure}
+
 \clearpage
 % ============================================================
 \section*{Runs}
@@ -118,15 +146,23 @@ hard Top-64  & \code{runs\_madrid/ma\_cr\_hard\_k64\_pnorm}  & \code{configs/cr\
 hard Top-128 & \code{runs\_madrid/ma\_cr\_hard\_k128\_pnorm} & \code{configs/cr\_kj/} \\
 hard Top-256 & \code{runs\_madrid/ma\_cr\_hard\_k256\_pnorm} & \code{configs/cr\_kj/} \\
 hard Top-512 & \code{runs\_madrid/ma\_cr\_hard\_k512\_pnorm} & \code{configs/cr\_kj/} \\
-linear       & \code{runs\_riga/ri\_cr\_hard\_kanneal\_k32\_j480\_pnorm} & \code{configs/hard\_k\_anneal/} \\
-log, $h = 125$  & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h125\_k32\_j480\_pnorm}  & \code{configs/hard\_k\_anneal/} \\
-log, $h = 250$  & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h250\_k32\_j480\_pnorm}  & \code{configs/hard\_k\_anneal/} \\
-log, $h = 500$  & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h500\_k32\_j480\_pnorm}  & \code{configs/hard\_k\_anneal/} \\
-log, $h = 1000$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h1000\_k32\_j480\_pnorm} & \code{configs/hard\_k\_anneal/} \\
-log, $h = 2000$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h2000\_k32\_j480\_pnorm} & \code{configs/hard\_k\_anneal/} \\
-log, $h = 4000$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h4000\_k32\_j480\_pnorm} & \code{configs/hard\_k\_anneal/} \\
-log, $h = 6000$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h6000\_k32\_j480\_pnorm} & \code{configs/hard\_k\_anneal/} \\
-log, $h = 8000$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h8000\_k32\_j480\_pnorm} & \code{configs/hard\_k\_anneal/} \\
+linear, $J = 480$ & \code{runs\_riga/ri\_cr\_hard\_kanneal\_k32\_j480\_pnorm} & \code{configs/hard\_k\_anneal/} \\
+log, $J = 480$, $h = 125$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h125\_k32\_j480\_pnorm}  & \code{configs/hard\_k\_anneal/} \\
+log, $J = 480$, $h = 250$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h250\_k32\_j480\_pnorm}  & \code{configs/hard\_k\_anneal/} \\
+log, $J = 480$, $h = 500$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h500\_k32\_j480\_pnorm}  & \code{configs/hard\_k\_anneal/} \\
+log, $J = 480$, $h = 1000$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h1000\_k32\_j480\_pnorm} & \code{configs/hard\_k\_anneal/} \\
+log, $J = 480$, $h = 2000$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h2000\_k32\_j480\_pnorm} & \code{configs/hard\_k\_anneal/} \\
+log, $J = 480$, $h = 4000$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h4000\_k32\_j480\_pnorm} & \code{configs/hard\_k\_anneal/} \\
+log, $J = 480$, $h = 6000$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h6000\_k32\_j480\_pnorm} & \code{configs/hard\_k\_anneal/} \\
+log, $J = 480$, $h = 8000$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h8000\_k32\_j480\_pnorm} & \code{configs/hard\_k\_anneal/} \\
+log, $J = 224$, $h = 30$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h30\_k32\_j224\_pnorm} & \code{configs/hard\_k\_anneal/} \\
+log, $J = 224$, $h = 60$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h60\_k32\_j224\_pnorm} & \code{configs/hard\_k\_anneal/} \\
+log, $J = 224$, $h = 120$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h120\_k32\_j224\_pnorm} & \code{configs/hard\_k\_anneal/} \\
+log, $J = 224$, $h = 250$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h250\_k32\_j224\_pnorm} & \code{configs/hard\_k\_anneal/} \\
+log, $J = 96$, $h = 30$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h30\_k32\_j96\_pnorm} & \code{configs/hard\_k\_anneal/} \\
+log, $J = 96$, $h = 60$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h60\_k32\_j96\_pnorm} & \code{configs/hard\_k\_anneal/} \\
+log, $J = 96$, $h = 120$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h120\_k32\_j96\_pnorm} & \code{configs/hard\_k\_anneal/} \\
+log, $J = 96$, $h = 250$ & \code{runs\_tallinn/ta\_cr\_hard\_klog\_h250\_k32\_j96\_pnorm} & \code{configs/hard\_k\_anneal/} \\
 \bottomrule
 \end{tabular}
 \end{center}
