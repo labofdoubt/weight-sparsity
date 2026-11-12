@@ -720,6 +720,12 @@ class ActivationBottleneckConfig:
     # others take their deterministic TopK(s) and add no policy term.  The
     # paired sampled validation draws n gates per batch in the same way.
     gumbel_gates_per_forward: int = 0
+    # with gumbel_gates_per_forward = n > 0, what the n gates are drawn for:
+    # forward -- one draw per forward, shared by every sequence and position;
+    # token -- one draw per (sequence, position): at each gate the positions
+    # that drew it sample, the others keep the deterministic TopK(s), and the
+    # gate's log-probability is summed over its sampling positions only
+    gumbel_gates_draw: str = "forward"  # forward | token
     # learned_score_topk only: the scorer's CE gradient on the support S of the
     # forward (deterministic TopK(s), or the Gumbel draw), with the forward
     # unchanged (y = v * m):
@@ -1548,6 +1554,7 @@ class ActivationBottleneckConfig:
         "gumbel_policy_coef": 1.0,
         "gumbel_pool": "all",
         "gumbel_gates_per_forward": 0,
+        "gumbel_gates_draw": "forward",
     }
 
     def _validate_gumbel_fields(self) -> None:
@@ -1618,6 +1625,11 @@ class ActivationBottleneckConfig:
                              "scores; set j >= 1 (with j = 0 the support is forced)")
         if int(self.gumbel_gates_per_forward) < 0:
             raise ValueError("gumbel_gates_per_forward must be >= 0 (0: every gate samples)")
+        if self.gumbel_gates_draw not in ("forward", "token"):
+            raise ValueError(f"unknown gumbel_gates_draw: {self.gumbel_gates_draw!r} "
+                             "(forward | token)")
+        if self.gumbel_gates_draw == "token" and int(self.gumbel_gates_per_forward) == 0:
+            raise ValueError("gumbel_gates_draw='token' needs gumbel_gates_per_forward > 0")
         self.gumbel_temperature, self.gumbel_policy_coef = tau, coef
 
     #: the dust fields and their defaults (a non-default value under another

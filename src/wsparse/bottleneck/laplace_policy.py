@@ -445,6 +445,9 @@ class PolicyForwardSettings:
     # to sample in this forward; the others take their deterministic Top-K.
     # ``None``: every gate samples.
     only: Optional[frozenset] = None
+    # gumbel_gates_draw: token: ``id()`` -> bool [B, T] mask of the positions
+    # at which that gate samples (the others take its deterministic Top-K).
+    token_masks: Optional[dict] = None
 
 
 def samples_support(gate) -> bool:

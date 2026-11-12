@@ -641,6 +641,17 @@ class AdaptiveLapSumTopKGate(nn.Module):
         draw = gumbel_topk(scores, self.k, self.gumbel_temperature, generator,
                            pool=self.m if self.gumbel_pool == "top_kj" else None)
         hard_mask = torch.zeros_like(scores).scatter(-1, draw.idx, 1.0)
+        tok = None
+        masks = getattr(settings, "token_masks", None) if settings is not None else None
+        if masks is not None:
+            # gumbel_gates_draw: token -- this gate samples at the positions of
+            # its mask only; the others keep the deterministic TopK(s)
+            tok = masks.get(id(self))
+            if tok is None or tuple(tok.shape) != tuple(scores.shape[:-1]):
+                raise ValueError("token_masks needs a [B, T] mask for every sampling gate")
+            det = torch.topk(scores.detach(), self.k, dim=-1, largest=True, sorted=False).indices
+            hard_mask = torch.where(tok[..., None], hard_mask,
+                                    torch.zeros_like(scores).scatter(-1, det, 1.0))
         if self._mask_sink is not None:
             self._mask_sink["mask"] = (hard_mask != 0).detach()
         y = self._support_score_grad(value * hard_mask, scores, value, hard_mask)
@@ -649,6 +660,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
             with torch.autocast(device_type=scores.device.type, enabled=False):
                 # normalized over all N, or over the Top(K+J) pool (gumbel_pool)
                 log_prob = ordered_log_prob(draw.pool_logits, draw.pos)  # scores.shape[:-1]
+                if tok is not None:
+                    log_prob = torch.where(tok, log_prob, log_prob.new_zeros(()))
         diag: Dict[str, torch.Tensor] = {}
         if self.log_diagnostics and self.training:
             self._record_usage(hard_mask)

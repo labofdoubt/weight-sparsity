@@ -678,3 +678,48 @@ def test_gates_per_forward_config_rules():
     with pytest.raises(ValueError, match=">= 0"):
         ab(gumbel_policy=True, gumbel_gates_per_forward=-1)
     ab(gumbel_policy=True, gumbel_gates_per_forward=3)
+
+
+def test_token_masks_sample_only_at_their_positions():
+    """gumbel_gates_draw: token -- a gate samples where its mask is set and
+    keeps TopK(|a|) elsewhere; its log-probability is zero off the mask."""
+    g = AdaptiveLapSumTopKGate(n_features=16, k=3, j=5, selection_mode="abs_topk",
+                               surrogate_mode="hard", gumbel_policy=True,
+                               gumbel_temperature=2.0, gumbel_pool="top_kj")
+    g.train()
+    torch.manual_seed(7)
+    a = torch.randn(3, 6, 16, requires_grad=True)
+    tok = torch.rand(3, 6) < 0.5
+    col = PolicyCollector()
+    with policy_forward([g], PolicyForwardSettings(sample=True, collector=col,
+                                                   generator=make_generator(CPU, 0),
+                                                   token_masks={id(g): tok})):
+        y = g(a)
+    mask = y != 0
+    assert (mask.sum(-1) == 3).all()
+    clean = torch.zeros_like(mask).scatter(-1, torch.topk(a.abs(), 3, -1).indices, True)
+    assert torch.equal(mask[~tok], clean[~tok])
+    assert not torch.equal(mask[tok], clean[tok])        # tau 2: some draw leaves the Top-K
+    lp = col.records[0].log_prob
+    assert (lp[~tok] == 0).all() and (lp[tok] != 0).all()
+
+
+def test_gate_token_masks_pick_exactly_n_gates_per_position():
+    from wsparse.train import gate_token_masks
+    gates = [object() for _ in range(8)]
+    m = gate_token_masks(gates, 3, (64, 32), torch.Generator().manual_seed(0))
+    stack = torch.stack([m[id(g)] for g in gates], -1)
+    assert (stack.sum(-1) == 3).all()
+    assert np.allclose(stack.float().mean((0, 1)).numpy(), 3 / 8, atol=0.03)
+
+
+def test_training_with_token_draw_and_resume(tmp_path):
+    kw = dict(code_residual=True, gumbel_pool="top_kj", selection_mode="abs_topk",
+              gumbel_gates_per_forward=1, gumbel_gates_draw="token")
+    summary = train(train_cfg(tmp_path, "tok", **kw))
+    assert math.isfinite(summary["val/ce"]) and "val_stochastic/ce" in summary
+    cfg2 = train_cfg(tmp_path, "tok", max_steps=6, **kw)
+    cfg2.train.resume = "auto"
+    assert math.isfinite(train(cfg2)["val/ce"])
+    with pytest.raises(ValueError, match="needs gumbel_gates_per_forward > 0"):
+        ab(gumbel_policy=True, gumbel_gates_draw="token")

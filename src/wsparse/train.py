@@ -98,6 +98,7 @@ def evaluate_stochastic(
     seed: int,
     gates: Optional[List[Any]] = None,
     gates_per_forward: int = 0,
+    gates_draw: str = "forward",
 ) -> Dict[str, float]:
     """laplace_policy: the paired stochastic validation.
 
@@ -125,10 +126,8 @@ def evaluate_stochastic(
             losses = []
             for i in range(batches):
                 x, y = stream.batch(batch_size, device, deterministic_offset=i * stride)
-                fwd = settings
-                if gates and gates_per_forward:
-                    fwd = replace(settings, only=gate_subset(gates, gates_per_forward,
-                                                             settings.generator))
+                fwd = gate_draw(settings, gates or [], gates_per_forward, gates_draw,
+                                tuple(x.shape))
                 with autocast_context(device, dtype):
                     _, loss = base(x, y, policy=fwd)
                 losses.append(loss.float().item())
@@ -455,7 +454,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                   + f", leave-one-out baseline over the other {int(cfg.train.micro_batch_size) - 1} "
                   f"sequences of each micro-batch; val draws {cfg.train.policy_val_samples}; "
                   f"gradient split {split_note}; sampling gates per forward: "
-                  + (f"{gumbel_per_fwd} of {len(gumbel_gate_list)}" if gumbel_per_fwd
+                  + (f"{gumbel_per_fwd} of {len(gumbel_gate_list)}, drawn per "
+                     f"{gc.gumbel_gates_draw}" if gumbel_per_fwd
                      else f"all {len(gumbel_gate_list)}"))
         if learned:
             sources = (["support (sign(v) dL/dy on S)"] if gc.learned_score_support_grad
@@ -763,12 +763,10 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 step1 % gumbel_split_every == 0 or step1 == 1)
             for mi in range(accum):
                 x, y = train_stream.batch(micro_bs, device)
-                fwd_settings = gumbel_settings
-                if gumbel_per_fwd:
-                    # n of the L gates sample in this forward, the others are
-                    # deterministic (gumbel_gates_per_forward)
-                    fwd_settings = replace(gumbel_settings, only=gate_subset(
-                        gumbel_gate_list, gumbel_per_fwd, gumbel.generator))
+                # n of the L gates sample in this forward (or, per token, at
+                # each position), the others are deterministic
+                fwd_settings = gate_draw(gumbel_settings, gumbel_gate_list, gumbel_per_fwd,
+                                         gc.gumbel_gates_draw, tuple(x.shape))
                 with autocast_context(device, dtype):
                     out = model(x, y, return_loss_details=True, policy=fwd_settings)
                 if out.policy_log_prob is None:
@@ -1029,7 +1027,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 sto = evaluate_stochastic(
                     model, val_stream, micro_bs, cfg.train.val_batches, device, dtype,
                     cfg.train.policy_val_samples, cfg.train.policy_val_seed,
-                    gumbel_gate_list, gumbel_per_fwd)
+                    gumbel_gate_list, gumbel_per_fwd,
+                    cfg.activation_bottleneck.gumbel_gates_draw)
                 metrics.update(policy_val_metrics("val", val, sto))
                 line += f" | sto ce {sto['ce']:.4f}"
                 if "mc_std" in sto:
@@ -1185,7 +1184,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             sto = evaluate_stochastic(
                 model, val_stream, micro_bs, cfg.train.final_val_batches, device, dtype,
                 cfg.train.policy_val_samples, cfg.train.policy_val_seed,
-                gumbel_gate_list, gumbel_per_fwd)
+                gumbel_gate_list, gumbel_per_fwd,
+                cfg.activation_bottleneck.gumbel_gates_draw)
             final.update(policy_val_metrics("val_final", fv, sto))
             console += f" | sto ce {sto['ce']:.4f}"
         logger.log(cfg.train.max_steps, final, console=console)
@@ -1209,6 +1209,26 @@ def gate_subset(gates: List[Any], n: int, generator: torch.Generator) -> frozens
     ``generator`` (gumbel_gates_per_forward)."""
     perm = torch.randperm(len(gates), generator=generator, device=generator.device)
     return frozenset(id(gates[i]) for i in perm[:n].tolist())
+
+
+def gate_token_masks(gates: List[Any], n: int, shape, generator: torch.Generator) -> dict:
+    """``id()`` -> bool [B, T]: for every position, n of ``gates`` uniformly
+    without replacement (the n largest of L uniform draws), from ``generator``
+    (gumbel_gates_draw: token)."""
+    r = torch.rand(*shape, len(gates), generator=generator, device=generator.device)
+    pick = torch.zeros_like(r, dtype=torch.bool).scatter(
+        -1, torch.topk(r, n, dim=-1).indices, True)
+    return {id(g): pick[..., i] for i, g in enumerate(gates)}
+
+
+def gate_draw(settings, gates: List[Any], n: int, draw: str, shape):
+    """The forward's settings under gumbel_gates_per_forward = n (unchanged for n = 0)."""
+    if not n or not gates:
+        return settings
+    if draw == "token":
+        return replace(settings, token_masks=gate_token_masks(gates, n, shape,
+                                                              settings.generator))
+    return replace(settings, only=gate_subset(gates, n, settings.generator))
 
 
 def gumbel_grad_split(params, g_pol, scorer_params, factor: float) -> Dict[str, float]:
