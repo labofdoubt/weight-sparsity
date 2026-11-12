@@ -79,7 +79,11 @@ def main():
     ap.add_argument("--close", required=True)
     ap.add_argument("--selection", required=True)
     ap.add_argument("--poll", type=int, default=60)
+    ap.add_argument("--lambdas", type=float, nargs="+", default=None,
+                    help="override make_gumbel_cr_configs.LAMBDAS (the search grid)")
     args = ap.parse_args()
+    if args.lambdas:
+        M.LAMBDAS = list(args.lambdas)
     sc = args.scores
     lock = os.path.join(args.runs, ".queue.lock")
     settings = [(t, l) for t in M.TAUS[sc] for l in M.LAMBDAS]
@@ -87,6 +91,19 @@ def main():
     promoted = set()  # searched cells whose best run was resumed
     started = set()   # borrowed cells started
     log = {"scores": sc, "stop_step": M.SEARCH_STOP, "cells": {}, "borrowed": {}}
+    if os.path.exists(args.selection):
+        # restart: decisions already taken (and jobs already appended) stand
+        log = json.load(open(args.selection))
+        for key, entry in log["cells"].items():
+            k, j = map(int, key.split(","))
+            promoted.add((k, j))
+            byname = entry["candidates"]
+            table[(k, j)] = {s: byname[M.gum_name(sc, k, j, *s)] for s in settings
+                             if M.gum_name(sc, k, j, *s) in byname}
+        for key in log["borrowed"]:
+            started.add(tuple(map(int, key.split(","))))
+        print(f"[ctl] restart: {len(promoted)} searched and {len(started)} borrowed cells "
+              "already decided", flush=True)
 
     def save():
         os.makedirs(os.path.dirname(args.selection), exist_ok=True)
@@ -135,7 +152,8 @@ def main():
         for (k, j), sources in M.BORROW.items():
             if (k, j) in started or not all(s in table for s in sources):
                 continue
-            mean = {s: sum(table[c][s] for c in sources) / len(sources) for s in settings}
+            mean = {s: sum(table[c].get(s, math.inf) for c in sources) / len(sources)
+                    for s in settings}
             best = min(settings, key=lambda s: mean[s])
             src = sources[0]
             name = M.gum_name(sc, k, j, *best)
