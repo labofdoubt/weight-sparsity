@@ -11,9 +11,8 @@ after a 500-step warmup, checkpoints every 5000 steps) with the gate changed:
 (learned_score_topk: ranked by the separately computed s = W_s h + b_s, with
 the support gradient).  A search run is stopped at step 2500 (job overrides:
 --stop-step 2500, checkpoint every 2500); the controller
-(scripts/gcr_controller.py) resumes the best setting of each searched (K, J)
-from that checkpoint to 20000 and starts the other (K, J) cells with the
-setting of their closest searched cell.
+(scripts/gcr_controller.py) resumes the best setting of each (K, J) from that
+checkpoint to 20000.
 
     python scripts/make_gumbel_cr_configs.py            # write the configs
     python scripts/make_gumbel_cr_configs.py --jobs abs # print abs job lines
@@ -30,11 +29,16 @@ HARD_K = {"abs": [16, 32, 64, 128, 256], "sep": [16, 32, 64, 128]}
 # (K, J) cells of the 20000-step grid (K + J in {32, 64, 128, 256}, J > 0)
 GRID = [(16, 16), (16, 48), (16, 112), (16, 240), (32, 32), (32, 96), (32, 224),
         (64, 64), (64, 192)]
-# cells with a (tau, lambda) search, in queue order
-SEARCH = [(16, 16), (16, 240), (32, 32), (32, 224), (64, 64), (64, 192)]
-# the other cells take the setting of: one searched cell, or the setting with
-# the best mean over two (equally close) searched cells
-BORROW = {(16, 48): [(16, 16)], (16, 112): [(16, 240)], (32, 96): [(32, 32), (32, 224)]}
+# cells with a (tau, lambda) search: every cell of the grid (2026-11-12, the
+# user's request once the separate-score runs were paused; at first only six
+# were searched and the other three borrowed a neighbour's setting)
+SEARCH = list(GRID)
+# cells without a search take the setting of one searched cell, or the setting
+# with the best mean over two (no longer used)
+BORROW: dict = {}
+# score types whose search configs are written (the separate-score ones of the
+# first grid stay in the repo for the runs they back)
+SEARCH_SCORES = ["abs"]
 # tau per score type: at initialization (K = 32, pool all N) these put about
 # 10 %, 30 % and 60 % of the drawn support outside TopK(s)
 # (analysis/gumbel_tau_calibration.py)
@@ -90,7 +94,7 @@ def write_all() -> int:
                 f"activation_bottleneck:\n  k: {k}\n  selection_mode: {MODE[scores]}\n"
                 "  surrogate_mode: hard\n"))
             n += 1
-    for scores in MODE:
+    for scores in SEARCH_SCORES:
         for (k, j) in SEARCH:
             for tau in TAUS[scores]:
                 for lam in LAMBDAS:

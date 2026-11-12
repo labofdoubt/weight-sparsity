@@ -60,14 +60,23 @@ def ended(run_dir: str, name: str, log_text: str) -> bool:
             or f" DONE  {name} " in log_text)
 
 
+FRONT = False  # --front: the 20000-step jobs go to the head of the queue
+
+
 def append(queue: str, line: str, lock: str) -> None:
-    """Append under gpu_queue's own lock ($OUT/.queue.lock): its pop is
-    ``head -1; sed -i 1d``, which rewrites the file, so an unlocked append
-    could land between the read and the rename and be lost."""
+    """Add a job under gpu_queue's own lock ($OUT/.queue.lock): its pop is
+    ``head -1; sed -i 1d``, which rewrites the file, so an unlocked write
+    could land between the read and the rename and be lost.  At the end of
+    the queue, or at its head with --front (long jobs first)."""
     with open(lock, "a") as lk:
         fcntl.flock(lk, fcntl.LOCK_EX)
-        with open(queue, "a") as f:
-            f.write(line.rstrip("\n") + "\n")
+        if FRONT:
+            rest = open(queue).read() if os.path.exists(queue) else ""
+            with open(queue, "w") as f:
+                f.write(line.rstrip("\n") + "\n" + rest)
+        else:
+            with open(queue, "a") as f:
+                f.write(line.rstrip("\n") + "\n")
 
 
 def main():
@@ -85,7 +94,11 @@ def main():
                     help="searched K,J cells this box decides (default: all of SEARCH)")
     ap.add_argument("--borrow", nargs="*", default=None,
                     help="borrowed cells as K,J:K1,J1[+K2,J2] (default: BORROW)")
+    ap.add_argument("--front", action="store_true",
+                    help="put the 20000-step jobs at the head of the queue")
     args = ap.parse_args()
+    global FRONT
+    FRONT = args.front
     if args.lambdas:
         M.LAMBDAS = list(args.lambdas)
     if args.cells:
