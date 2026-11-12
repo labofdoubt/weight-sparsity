@@ -39,7 +39,13 @@ BORROW = {(16, 48): [(16, 16)], (16, 112): [(16, 240)], (32, 96): [(32, 32), (32
 # 10 %, 30 % and 60 % of the drawn support outside TopK(s)
 # (analysis/gumbel_tau_calibration.py)
 TAUS = {"abs": [0.2, 0.5, 1.2], "sep": [0.1, 0.3, 0.7]}
-LAMBDAS = [0.0, 0.01, 0.1, 1.0]
+# lambda: the first grid {0, 0.01, 0.1, 1} collapsed every lambda > 0 to the
+# unigram level within 2500 steps (and 1e-3 within 1000), so the search runs
+# below the collapse; the runs of the first grid stay in the record
+# (configs search/*_l0.01, _l0.1, _l1)
+LAMBDAS = [0.0, 1e-5, 3e-5, 1e-4]
+# 2026-11-12: the separate-score (sep) runs did not train in any tested
+# configuration and were paused by the user; only abs runs are queued
 MODE = {"abs": "abs_topk", "sep": "learned_score_topk"}
 SEARCH_STOP = 2500
 
@@ -108,10 +114,11 @@ def rel(path: str) -> str:
     return os.path.relpath(path, ROOT)
 
 
-def job_lines(scores: str):
+def job_lines(scores: str, cells=None, hard=True):
     """Hard 20000-step runs first (longest), then the search cells in order."""
-    lines = [f"{hard_name(scores, k)}|{rel(hard_path(scores, k))}|" for k in HARD_K[scores]]
-    for (k, j) in SEARCH:
+    lines = ([f"{hard_name(scores, k)}|{rel(hard_path(scores, k))}|" for k in HARD_K[scores]]
+             if hard else [])
+    for (k, j) in (cells or SEARCH):
         for tau in TAUS[scores]:
             for lam in LAMBDAS:
                 lines.append(f"{gum_name(scores, k, j, tau, lam)}|"
@@ -123,9 +130,12 @@ def job_lines(scores: str):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--jobs", choices=list(MODE))
+    ap.add_argument("--cells", nargs="*", default=None, help="K,J pairs (default: SEARCH)")
+    ap.add_argument("--no-hard", action="store_true")
     args = ap.parse_args()
     if args.jobs:
-        print("\n".join(job_lines(args.jobs)))
+        cells = [tuple(map(int, c.split(","))) for c in args.cells] if args.cells else None
+        print("\n".join(job_lines(args.jobs, cells, hard=not args.no_hard)))
     else:
         print(f"wrote {write_all()} configs under {rel(OUT)}")
 

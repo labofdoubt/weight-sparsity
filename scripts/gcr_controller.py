@@ -81,9 +81,19 @@ def main():
     ap.add_argument("--poll", type=int, default=60)
     ap.add_argument("--lambdas", type=float, nargs="+", default=None,
                     help="override make_gumbel_cr_configs.LAMBDAS (the search grid)")
+    ap.add_argument("--cells", nargs="+", default=None,
+                    help="searched K,J cells this box decides (default: all of SEARCH)")
+    ap.add_argument("--borrow", nargs="*", default=None,
+                    help="borrowed cells as K,J:K1,J1[+K2,J2] (default: BORROW)")
     args = ap.parse_args()
     if args.lambdas:
         M.LAMBDAS = list(args.lambdas)
+    if args.cells:
+        M.SEARCH = [tuple(map(int, c.split(","))) for c in args.cells]
+    if args.borrow is not None:
+        M.BORROW = {tuple(map(int, b.split(":")[0].split(","))):
+                    [tuple(map(int, s.split(","))) for s in b.split(":")[1].split("+")]
+                    for b in args.borrow}
     sc = args.scores
     lock = os.path.join(args.runs, ".queue.lock")
     settings = [(t, l) for t in M.TAUS[sc] for l in M.LAMBDAS]
