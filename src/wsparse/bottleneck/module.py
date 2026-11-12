@@ -139,6 +139,9 @@ class SparseTopKBottleneck(nn.Module):
     supplies the value ``v``.  That splits the two roles the single projection
     otherwise plays, at the cost of ``d_model * n_features`` more parameters
     per layer.  No nonlinearity is applied to ``v``, so values stay signed.
+    ``learned_score_topk`` is the same two-branch module with a hard mask and,
+    under ``gumbel_policy``, a Gumbel-Top-K support in training
+    (``wsparse.bottleneck.gumbel_policy``).
 
     ``share_from`` makes this module reuse another one's projections instead of
     creating its own: ``in_proj``, ``score_proj`` and ``out_proj`` become the
@@ -154,7 +157,10 @@ class SparseTopKBottleneck(nn.Module):
         super().__init__()
         self.d_model = int(d_model)
         self.n_features = int(cfg.n_features)
-        self.gated = cfg.selection_mode == "gated_topk"
+        # two branches: the score s = W_s x + b_s ranks, in_proj carries the
+        # value (gated_topk; learned_score_topk, which adds the Gumbel policy
+        # of wsparse.bottleneck.gumbel_policy and the code-residual stack)
+        self.gated = cfg.selection_mode in ("gated_topk", "learned_score_topk")
         self.tied = bool(getattr(cfg, "tie_encoder_decoder", False))
         # The config flag, true for every bottleneck built under it -- the one
         # the others adopt from included; `share_from` is the mechanism.
@@ -211,6 +217,9 @@ class SparseTopKBottleneck(nn.Module):
             policy_rb_scope=getattr(cfg, "policy_rb_scope", "full"),
             policy_width_gradient=getattr(cfg, "policy_width_gradient", "frozen"),
             policy_rb_samples=getattr(cfg, "policy_rb_samples", 1),
+            gumbel_policy=getattr(cfg, "gumbel_policy", False),
+            gumbel_temperature=getattr(cfg, "gumbel_temperature", 1.0),
+            gumbel_pool=getattr(cfg, "gumbel_pool", "all"),
         )
         self.init_mode = getattr(cfg, "init_mode", "default")
         if self.init_mode in _RENAMED_INIT_MODES:
@@ -366,7 +375,8 @@ class SparseTopKBottleneck(nn.Module):
         return self.gate.diagnostics
 
     def extra_repr(self) -> str:
-        branches = "score+value" if self.gated else "single"
+        branches = ("learned score+value" if self.gate.selection_mode == "learned_score_topk"
+                    else "score+value" if self.gated else "single")
         scale = "" if self.decoder_scale == 1.0 else f", g_D={self.decoder_scale:.4g}"
         shared = ", projections shared" if self.shared else ""
         return (

@@ -342,11 +342,21 @@ class TrainConfig:
     # a positive value sets the cadence, -1 disables the probe.  Both
     # validation CEs are always kept regardless of this setting.
     policy_train_deterministic_every_steps: int = 0
+    # gumbel_policy (activation_bottleneck.gumbel_policy) only: cadence of the
+    # gradient split -- the first micro-batch's policy-term gradient alone (one
+    # extra backward) against the rest, logged as gumbel/grad_split/*.  0
+    # inherits log_every_steps, a positive value sets it, -1 disables it;
+    # single process only (it reads rank-local .grad).  train.policy_val_samples
+    # and policy_val_seed set the paired sampled validation under gumbel_policy
+    # as they do under laplace_policy.
+    gumbel_grad_split_every_steps: int = 0
 
     def __post_init__(self) -> None:
         self.betas = tuple(self.betas)  # type: ignore[assignment]
         if int(self.policy_val_samples) < 1:
             raise ValueError("policy_val_samples must be a positive integer")
+        if int(self.gumbel_grad_split_every_steps) < -1:
+            raise ValueError("gumbel_grad_split_every_steps must be -1, 0 or positive")
         if int(self.policy_train_deterministic_every_steps) < -1:
             raise ValueError("policy_train_deterministic_every_steps must be -1, 0 "
                              "or a positive integer")
@@ -469,7 +479,13 @@ class ActivationBottleneckConfig:
     # magnitude).  gated_topk adds an independent score projection: the support
     # is ranked by s, the value v is carried separately, so dL/dv is the exact
     # hard-mask gradient while dL/ds is the constrained LapSum VJP.
-    selection_mode: str = "abs_topk"  # topk | abs_topk | gated_topk
+    # learned_score_topk: the same two branches, s = W_s h + b_s scored from
+    # the residual-stream state h at the bottleneck (under code_residual too),
+    # a binary mask with surrogate_mode 'hard' and no scaling of the kept
+    # values; with gumbel_policy (below) the training support is drawn from
+    # the Gumbel-Top-K policy and the scorer trains through its policy
+    # gradient (wsparse.bottleneck.gumbel_policy, docs/gumbel-policy-topk.md)
+    selection_mode: str = "abs_topk"  # topk | abs_topk | gated_topk | learned_score_topk
 
     # lapsum      -> soft-in-gradient LapSum: hard TopK forward, exact
     #                fixed-temperature barrier VJP (sum p_i = K) in the backward
@@ -667,6 +683,33 @@ class ActivationBottleneckConfig:
     # over (1 = the forward's own draw; R > 1 adds R - 1 draws that only re-rank
     # the pool in the backward, same linearization point)
     policy_rb_samples: int = 1
+
+    # ---- gumbel_policy (selection_mode: learned_score_topk) ------------------ #
+    # See wsparse.bottleneck.gumbel_policy.  Off: the support is the
+    # deterministic TopK(s) in training too, and the scorer receives no
+    # gradient at all (the hard mask passes none).  On: every training forward
+    # draws, per sequence, position and bottleneck, the ordered support
+    # TopK_K(s / tau + G), G ~ Gumbel(0, 1), and the trainer adds
+    #     lambda * sum_b w_b stopgrad(l_b - beta_b) P_b
+    # to the CE (beta_b the leave-one-out mean CE of the micro-batch's other
+    # sequences, P_b the sequence's summed ordered log-probabilities over its
+    # valid targets and all bottlenecks).  Evaluation is the deterministic
+    # TopK(s) (train.policy_val_samples adds the paired sampled validation).
+    # Needs train.micro_batch_size >= 2.
+    gumbel_policy: bool = False
+    # tau > 0, in score units: the policy's weights are exp(s / tau)
+    gumbel_temperature: float = 1.0
+    # lambda >= 0: 1 is the unbiased policy gradient of the expected sampled
+    # CE; smaller values trade bias for variance (search ~1e-4 .. 1e-1); 0
+    # keeps the sampled forward and gives the scorer a zero gradient
+    gumbel_policy_coef: float = 1.0
+    # where the K members are drawn from.  all: every one of the N features
+    # (TopK_K(s / tau + G)).  top_kj: the deterministic candidate pool
+    # C = TopIndices_{K+J}(s) of the learned scores, S = TopK_K(s_C / tau + G_C),
+    # the ordered log-probability normalized over the remaining members of C;
+    # C is fixed in the backward (no policy gradient outside it).  Needs j >= 1.
+    # Evaluation is the deterministic TopK(s) over all N either way.
+    gumbel_pool: str = "all"  # all | top_kj
 
     # ---- dust (surrogate_mode: dust) ---------------------------------------- #
     # See wsparse.bottleneck.dust.  Every field here is read by that mode only;
@@ -1070,15 +1113,16 @@ class ActivationBottleneckConfig:
                 "tie_encoder_decoder requires init_mode='unit_norm_dictionary', "
                 f"got init_mode={self.init_mode!r}"
             )
-        if self.tie_encoder_decoder and self.selection_mode == "gated_topk":
+        if self.tie_encoder_decoder and self.selection_mode in ("gated_topk",
+                                                                 "learned_score_topk"):
             raise ValueError(
                 "tie_encoder_decoder is incompatible with selection_mode="
-                "'gated_topk': the value and score branches are separate matrices"
+                f"{self.selection_mode!r}: the value and score branches are separate matrices"
             )
-        if self.selection_mode not in ("topk", "abs_topk", "gated_topk"):
+        if self.selection_mode not in ("topk", "abs_topk", "gated_topk", "learned_score_topk"):
             raise ValueError(
                 f"unknown selection_mode: {self.selection_mode} "
-                "(topk | abs_topk | gated_topk)"
+                "(topk | abs_topk | gated_topk | learned_score_topk)"
             )
         if self.surrogate_mode not in ("lapsum", "soft_lapsum", "rblapsum", "rblapsum_sf",
                                        "hard", "soft_ste", "laplace_policy", "dust"):
@@ -1096,8 +1140,9 @@ class ActivationBottleneckConfig:
                                  f"surrogate_mode='hard', got {self.surrogate_mode!r}")
             if self.j < 1:
                 raise ValueError("stochastic_width draws K' from [K, K+J]; set j >= 1")
-            if self.selection_mode == "gated_topk":
-                raise ValueError("stochastic_width is not implemented for gated_topk")
+            if self.selection_mode in ("gated_topk", "learned_score_topk"):
+                raise ValueError("stochastic_width is not implemented for "
+                                 f"{self.selection_mode}")
             if not 0.0 <= float(self.stochastic_width_param) <= 1.0:
                 raise ValueError("stochastic_width_param must be in [0, 1]")
         if self.hard_k_annealing:
@@ -1145,7 +1190,7 @@ class ActivationBottleneckConfig:
             if self.selection_mode not in ("topk", "abs_topk"):
                 raise ValueError(
                     f"surrogate_mode={self.surrogate_mode!r} requires selection_mode "
-                    "'topk' or 'abs_topk' (not gated_topk)"
+                    f"'topk' or 'abs_topk', got {self.selection_mode!r}"
                 )
             if self.rblapsum_boundary_grad_mode not in (
                     "detach", "project", "through_rank", "through_rank_kappa"):
@@ -1294,6 +1339,7 @@ class ActivationBottleneckConfig:
             if not self.code_residual_scale > 0:
                 raise ValueError("code_residual_scale must be positive")
         self._validate_policy_fields()
+        self._validate_gumbel_fields()
         self._validate_dust_fields()
         # shape rules live with the gate so the module can be built standalone
         from .bottleneck.gate import validate_gate_shapes
@@ -1471,6 +1517,58 @@ class ActivationBottleneckConfig:
                              "(relative_b | relative_span): an absolute width has no "
                              "activation scale to differentiate")
 
+    #: the gumbel_policy parameters and their defaults (a non-default value
+    #: with gumbel_policy off is rejected, see _validate_gumbel_fields)
+    _GUMBEL_DEFAULTS = {
+        "gumbel_temperature": 1.0,
+        "gumbel_policy_coef": 1.0,
+        "gumbel_pool": "all",
+    }
+
+    def _validate_gumbel_fields(self) -> None:
+        """learned_score_topk / gumbel_policy: reject what they do not support.
+
+        ``learned_score_topk`` is the hard two-branch gate: no surrogate, no
+        support-width scheme, and a real selection (``k < n_features``).  With
+        ``gumbel_policy`` off its parameters must stay at their defaults, so a
+        temperature or a coefficient written into a deterministic config is not
+        silently ignored.
+        """
+        if self.selection_mode == "learned_score_topk":
+            if self.surrogate_mode != "hard":
+                raise ValueError(
+                    "selection_mode='learned_score_topk' uses the binary mask only; it needs "
+                    f"surrogate_mode='hard', got {self.surrogate_mode!r}")
+            if self.k >= self.n_features:
+                raise ValueError(
+                    "selection_mode='learned_score_topk' needs k < n_features: with every "
+                    "feature kept there is no selection for the scorer to learn")
+            if self.hard_k_annealing:
+                raise ValueError("hard_k_annealing is not implemented for learned_score_topk")
+        if not self.gumbel_policy:
+            changed = [name for name, default in self._GUMBEL_DEFAULTS.items()
+                       if getattr(self, name) != default]
+            if changed:
+                raise ValueError(f"{', '.join(changed)}: these apply to gumbel_policy: true "
+                                 "only")
+            return
+        if self.selection_mode != "learned_score_topk":
+            raise ValueError("gumbel_policy samples the learned-score support; it needs "
+                             f"selection_mode='learned_score_topk', got {self.selection_mode!r}")
+        tau = float(self.gumbel_temperature)
+        if not (math.isfinite(tau) and tau > 0):
+            raise ValueError(f"gumbel_temperature must be positive and finite, got {tau!r}")
+        coef = float(self.gumbel_policy_coef)
+        if not (math.isfinite(coef) and coef >= 0):
+            raise ValueError(f"gumbel_policy_coef must be finite and >= 0, got {coef!r}")
+        from .bottleneck.gumbel_policy import POOLS
+        if self.gumbel_pool not in POOLS:
+            raise ValueError(f"unknown gumbel_pool: {self.gumbel_pool!r} ({' | '.join(POOLS)})")
+        if self.gumbel_pool == "top_kj" and self.j < 1:
+            raise ValueError("gumbel_pool='top_kj' draws K of the Top(K+J) candidates of the "
+                             "learned scores; set j >= 1 (with j = 0 the support is forced)")
+        self.gumbel_temperature, self.gumbel_policy_coef = tau, coef
+
     #: the dust fields and their defaults (a non-default value under another
     #: surrogate mode is rejected, see _validate_dust_fields)
     _DUST_DEFAULTS = {
@@ -1617,6 +1715,11 @@ class Config:
                     "schedule would skip widths and end above K")
         if ab.enabled and ab.temperature_annealing:
             _check_anneal_length(ab, "temperature_annealing", self.train.max_steps)
+        if ab.enabled and ab.gumbel_policy and int(self.train.micro_batch_size) < 2:
+            # the leave-one-out baseline is formed inside each micro-batch
+            raise ValueError(
+                "gumbel_policy's leave-one-out baseline needs train.micro_batch_size >= 2 "
+                f"(the other sequences of the micro-batch), got {self.train.micro_batch_size}")
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)

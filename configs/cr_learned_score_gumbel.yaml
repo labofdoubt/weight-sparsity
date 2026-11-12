@@ -1,0 +1,31 @@
+# Learned-score Top-K trained with Gumbel policy gradients under the code
+# residual (code skip).  Everything is the hard Top-32 reference of the
+# code-carried K+J study (cr_kj/ma_cr_hard_k32_pnorm.yaml: 8 x 768, N = 1536,
+# post-norm, MD decoupling) except the gate.  At every block the support is
+# chosen by the scorer s = W_s h + b_s of the residual-stream state at that
+# site -- h_0 = x_0 + Delta_0 at block 0, h_l = x_l + Delta_l from block 1 on
+# (x_l the decoded code the block reads) -- never by the carried code; the
+# gate keeps c_l + E_l Delta_l on that support, unscaled.  Training draws the
+# support from the Gumbel-Top-K policy, and the scorer trains through the
+# policy term with the leave-one-out baseline over the other 23 sequences of
+# each micro-batch (wsparse.bottleneck.gumbel_policy,
+# docs/gumbel-policy-topk.md).  Evaluation is the deterministic TopK(s).
+#
+# A starting configuration, not a tuned one: lambda is the first value to sweep
+# (1e-4 .. 1e-1), tau the second.  gumbel_pool: top_kj restricts the draw to
+# the Top(K+J) candidates of s (K + J = 96 with the inherited j = 64).
+_base_: cr_kj/ma_cr_hard_k32_pnorm.yaml
+
+train:
+  run_name: cr_learned_score_gumbel_k32
+  policy_val_samples: 2
+  policy_val_seed: 1337
+  gumbel_grad_split_every_steps: 0
+
+activation_bottleneck:
+  selection_mode: learned_score_topk
+  surrogate_mode: hard
+  gumbel_policy: true
+  gumbel_temperature: 1.0
+  gumbel_policy_coef: 0.01
+  gumbel_pool: all

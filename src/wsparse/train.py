@@ -27,6 +27,7 @@ from .optim import build_optimizer, count_parameter_groups, lr_at, set_lr
 from .bottleneck import ActivationBottleneckController, apply_activation_bottleneck
 from .bottleneck.dust import (DustDrawGroup, DustRunningStats, DustTrainingState,
                               dust_micro_step)
+from .bottleneck.gumbel_policy import GumbelTrainingState, gumbel_policy_loss
 from .bottleneck.laplace_policy import (PolicyForwardSettings, PolicyTrainingState,
                                         make_generator, policy_backward_loss)
 from .bottleneck.rblapsum import first_order_backward
@@ -398,6 +399,45 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
               + (f"every {det_every} steps (one extra noise-off forward per micro-batch)"
                  if det_every > 0 else "off"))
 
+    # gumbel_policy (learned_score_topk): the per-rank training noise
+    # generator, seeded independently of everything else as the laplace_policy
+    # one is, and the scorer parameters, whose gradient is the policy term's
+    # alone (the hard mask passes them none)
+    gumbel: Optional[GumbelTrainingState] = None
+    gumbel_settings: Optional[PolicyForwardSettings] = None
+    gumbel_split_every = 0
+    scorer_params: List[torch.nn.Parameter] = []
+    if bottleneck.enabled and cfg.activation_bottleneck.selection_mode == "learned_score_topk":
+        gc = cfg.activation_bottleneck
+        if not bottleneck.gumbel_active and world > 1:
+            raise ValueError(
+                "learned_score_topk without gumbel_policy gives the scorer no gradient at "
+                "all, which DDP (no find_unused_parameters) cannot reduce; run "
+                "single-process or set gumbel_policy: true")
+        scorer_params = bottleneck.scorer_parameters()
+        if bottleneck.gumbel_active:
+            gumbel = GumbelTrainingState(device, seed=cfg.train.seed + 104729 * rank + 3)
+            gumbel_settings = PolicyForwardSettings(sample=True, generator=gumbel.generator)
+            gumbel_split_every = int(cfg.train.gumbel_grad_split_every_steps)
+            if gumbel_split_every == 0:
+                gumbel_split_every = int(cfg.train.log_every_steps)
+            split_note = (f"every {gumbel_split_every} steps (one extra backward of the "
+                          "policy term on the first micro-batch)")
+            if world > 1 and gumbel_split_every > 0:
+                gumbel_split_every = -1  # the split reads rank-local .grad: single process
+                split_note = "off under DDP"
+            elif gumbel_split_every < 0:
+                split_note = "off"
+            print(f"[train] gumbel_policy: tau {gc.gumbel_temperature:g}, lambda "
+                  f"{gc.gumbel_policy_coef:g}, pool {gc.gumbel_pool}"
+                  + (f" (Top-{gc.k + gc.j})" if gc.gumbel_pool == "top_kj" else "")
+                  + f", leave-one-out baseline over the other {int(cfg.train.micro_batch_size) - 1} "
+                  f"sequences of each micro-batch; val draws {cfg.train.policy_val_samples}; "
+                  f"gradient split {split_note}")
+        else:
+            print("[train] learned_score_topk with gumbel_policy off: deterministic TopK(s) "
+                  "in training, the scorer receives no gradient")
+
     # dust: the alternation state and the dedicated noise generator (seeded
     # independently of everything else, as the policy generator is)
     dust: Optional[DustTrainingState] = None
@@ -488,6 +528,16 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             policy.load_state_dict(payload["policy_state"], rank, world)
             print(f"[train] restored laplace_policy state: baseline {policy.baseline:.4f} "
                   f"after {policy.updates} updates, noise RNG of rank {rank}")
+        if gumbel is not None:
+            # as for laplace_policy: the noise RNG travels with the checkpoint,
+            # and a checkpoint without it is not a resume of this run
+            if "gumbel_state" not in payload:
+                raise ValueError(
+                    f"{resume_path} carries no gumbel_state (noise RNG); it was not saved by "
+                    "a gumbel_policy run of this version.  Resume such a run from its own "
+                    "checkpoint, or start a fresh run without train.resume")
+            gumbel.load_state_dict(payload["gumbel_state"], rank, world)
+            print(f"[train] restored gumbel_policy noise RNG of rank {rank}")
         if dust is not None:
             # the noise RNG and the DUST-step count travel with the checkpoint;
             # as for laplace_policy, a checkpoint without them is not a resume
@@ -535,6 +585,9 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
            for m in unwrap_model(model).modules()):
         if ddp:
             raise ValueError("rblapsum_surrogate_scope='first_order' is single-process only")
+        if gumbel is not None:
+            raise ValueError("a first_order surrogate scope cannot be combined with "
+                             "gumbel_policy (its gates have no surrogate)")
         first_order_anchor = unwrap_model(model).tok_emb.weight
     accum = cfg.train.grad_accum_steps
     micro_bs = int(cfg.train.micro_batch_size)
@@ -616,6 +669,10 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
     # laplace_policy running statistics (reset at every log)
     pol_support, pol_adv_sum, pol_adv_sq, pol_adv_n = 0.0, 0.0, 0.0, 0
     probe_det, probe_sto, probe_n = 0.0, 0.0, 0
+    # gumbel_policy running statistics (reset at every log)
+    gum_term, gum_adv_sq, gum_seq_n, gum_lp_sum, gum_mb = 0.0, 0.0, 0, 0.0, 0
+    gum_split: Dict[str, float] = {}
+    gum_scorer_norm = float("nan")
     policy_tau = 0.0
     baseline_used = 0.0
     internal_stop: Optional[str] = None
@@ -667,6 +724,52 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             dust.dust_steps += 1
             if not math.isfinite(ce_sum):
                 internal_stop = f"non-finite training CE at step {step1} (dust step)"
+        elif gumbel is not None:
+            # ---- gumbel_policy --------------------------------------------- #
+            # One sampled forward per micro-batch with the loss details.  The
+            # computational loss is CE + [T - stopgrad(T)], T the policy term
+            # with the micro-batch's leave-one-out baseline: its value is the
+            # sampled CE and ONE backward carries the value gradient and the
+            # policy gradient.
+            split_due = gumbel_split_every > 0 and (
+                step1 % gumbel_split_every == 0 or step1 == 1)
+            for mi in range(accum):
+                x, y = train_stream.batch(micro_bs, device)
+                with autocast_context(device, dtype):
+                    out = model(x, y, return_loss_details=True, policy=gumbel_settings)
+                if out.policy_log_prob is None:
+                    raise RuntimeError(
+                        "gumbel_policy: the forward returned no log-probability terms "
+                        "although the gates sample; refusing to train without the scorer's "
+                        "gradient (the gates ran without a collector or without grad)")
+                loss, term, adv, _ = gumbel_policy_loss(
+                    out.ce, out.seq_ce, out.seq_valid, out.policy_log_prob,
+                    cfg.activation_bottleneck.gumbel_policy_coef)
+                # one host sync per micro-batch for every detached statistic
+                stats = torch.stack([
+                    out.ce.detach().float(), term.detach().float(), (adv * adv).sum(),
+                    (out.seq_valid > 0).sum().float(),
+                    out.policy_log_prob.detach().float().sum()]).tolist()
+                ce_sum += stats[0]
+                gum_term += stats[1]
+                gum_adv_sq += stats[2]
+                gum_seq_n += int(round(stats[3]))
+                gum_lp_sum += stats[4]
+                gum_mb += 1
+                g_pol = None
+                if split_due and mi == 0:
+                    # diagnostic: the policy term's gradient alone, on the first
+                    # micro-batch (an extra backward through the retained graph)
+                    g_pol = torch.autograd.grad(scaler.scale(term / accum), weight_params,
+                                                retain_graph=True, allow_unused=True)
+                scaler.scale(loss / accum).backward()
+                if g_pol is not None:
+                    unscale = scaler.get_scale() if scaler.is_enabled() else 1.0
+                    gum_split = gumbel_grad_split(weight_params, g_pol, scorer_params,
+                                                  accum / unscale)
+                del out, loss, term, adv, g_pol
+            if not math.isfinite(ce_sum):
+                internal_stop = f"non-finite sampled training CE at step {step1}"
         elif policy is None:
             for _ in range(accum):
                 x, y = train_stream.batch(micro_bs, device)
@@ -732,11 +835,19 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         # the optimizer that steps: the separate DUST one on a DUST step when
         # configured, else the run's (zero_grad above cleared the shared .grad)
         active_opt = dust_optimizer if (dust_step and dust_optimizer is not None) else optimizer
+        if gumbel is not None and (step1 % cfg.train.log_every_steps == 0 or step1 == 1):
+            # the scorer's gradient is the policy term's alone (the hard mask
+            # passes it none): its norm before clipping, unscaled
+            sq = [p.grad.detach().float().pow(2).sum() for p in scorer_params
+                  if p.grad is not None]
+            unscale = scaler.get_scale() if scaler.is_enabled() else 1.0
+            gum_scorer_norm = (math.sqrt(float(torch.stack(sq).sum())) / unscale
+                               if sq else 0.0)
         grad_norm = torch.tensor(0.0)
         if cfg.train.grad_clip > 0:
             scaler.unscale_(active_opt)
             grad_norm = torch.nn.utils.clip_grad_norm_(weight_params, cfg.train.grad_clip)
-        if ((policy is not None or dust_step) and internal_stop is None
+        if ((policy is not None or gumbel is not None or dust_step) and internal_stop is None
                 and not scaler.is_enabled() and not math.isfinite(float(grad_norm))):
             internal_stop = f"non-finite gradient norm at step {step1}"
         if internal_stop is None:
@@ -771,7 +882,7 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 "perf/tokens_seen": step1 * tokens_per_step,
             }
             # laplace_policy: per-gate statistics, not only the block average
-            bn = bottleneck.stats(per_layer=policy is not None)
+            bn = bottleneck.stats(per_layer=policy is not None or gumbel is not None)
             metrics.update(bn)
             metrics["train/loss"] = metrics["train/ce"]
             dm: Dict[str, float] = {}
@@ -805,6 +916,23 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 # a perplexity
                 metrics["policy/support_term_diag"] = pol_support / max(1, running_n * accum)
                 metrics["policy/nonfinite"] = 1.0 if internal_stop else 0.0
+            if gumbel is not None:
+                # train/ce IS the sampled-support CE, as under laplace_policy
+                gc = cfg.activation_bottleneck
+                metrics["train_stochastic/ce"] = metrics["train/ce"]
+                metrics["train_stochastic/ppl"] = metrics["train/ppl"]
+                metrics["gumbel/tau"] = float(gc.gumbel_temperature)
+                metrics["gumbel/coef"] = float(gc.gumbel_policy_coef)
+                if gum_mb:
+                    # the detached policy term lambda sum_b w_b A_b P_b: a
+                    # gradient diagnostic, not an objective
+                    metrics["gumbel/policy_term_diag"] = gum_term / gum_mb
+                if gum_seq_n:
+                    metrics["gumbel/advantage_rms"] = math.sqrt(gum_adv_sq / gum_seq_n)
+                    metrics["gumbel/seq_log_prob_mean"] = gum_lp_sum / gum_seq_n
+                metrics["gumbel/scorer_grad_norm"] = gum_scorer_norm
+                metrics.update(gum_split)
+                metrics["gumbel/nonfinite"] = 1.0 if internal_stop else 0.0
 
             line = (
                 f"step {step1:>6}/{cfg.train.max_steps} | loss {metrics['train/loss']:.4f} "
@@ -817,6 +945,11 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                     line += f" | det {metrics['train_deterministic_probe/ce']:.4f}"
                 if "bottleneck/policy_exchange_frac" in bn:
                     line += f" | xchg {bn['bottleneck/policy_exchange_frac']:.3f}"
+            if gumbel is not None:
+                if "bottleneck/gumbel_exchange_frac" in bn:
+                    line += f" | xchg {bn['bottleneck/gumbel_exchange_frac']:.3f}"
+                if "gumbel/grad_split/ratio" in metrics:
+                    line += f" | pg/ce {metrics['gumbel/grad_split/ratio']:.2e}"
             if dm.get("dust/steps"):
                 line += (f" | dust {int(dm['dust/steps'])} gap {dm['dust/ce_gap']:+.4f}"
                          f" ghat {dm['dust/ghat_rms']:.2e} snr {dm['dust/snr']:.3f}")
@@ -845,6 +978,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             running_ce, running_n = 0.0, 0
             pol_support, pol_adv_sum, pol_adv_sq, pol_adv_n = 0.0, 0.0, 0.0, 0
             probe_det, probe_sto, probe_n = 0.0, 0.0, 0
+            gum_term, gum_adv_sq, gum_seq_n, gum_lp_sum, gum_mb = 0.0, 0.0, 0, 0.0, 0
+            gum_split = {}
 
         if cfg.train.validate_every_steps and (
             step1 % cfg.train.validate_every_steps == 0 or step1 == cfg.train.max_steps
@@ -852,7 +987,7 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
             val = evaluate(model, val_stream, micro_bs, cfg.train.val_batches, device, dtype)
             metrics = {"val/ce": val["ce"], "val/ppl": val["ppl"]}
             line = f"step {step1:>6} | val ce {val['ce']:.4f} | val ppl {val['ppl']:.2f}"
-            if policy is not None:
+            if policy is not None or gumbel is not None:
                 # val/ce above is the clean deterministic Top-K forward (as in
                 # every other mode); the paired stochastic pass samples the
                 # supports on the same windows, dropout off in both
@@ -939,12 +1074,23 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 dist.all_gather_object(gathered, states[0])
                 states = gathered
             policy_payload = policy.state_dict(states)
+        gumbel_payload = None
+        if ckpt_due and gumbel is not None:
+            # every rank's noise generator state, gathered on ALL ranks
+            states = [gumbel.generator.get_state().cpu()]
+            if world > 1:
+                gathered_g: List[Any] = [None] * world
+                dist.all_gather_object(gathered_g, states[0])
+                states = gathered_g
+            gumbel_payload = gumbel.state_dict(states)
         if ckpt_due and is_main:
             base = unwrap_model(model)
             path = os.path.join(run_dir, f"ckpt_step{step1}.pt")
             extra: Dict[str, Any] = {"metrics": last_metrics}
             if policy_payload is not None:
                 extra["policy_state"] = policy_payload
+            if gumbel_payload is not None:
+                extra["gumbel_state"] = gumbel_payload
             if dust is not None:
                 extra["dust_state"] = dust.state_dict()
             if dust_optimizer is not None:
@@ -999,7 +1145,7 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         final = {"val_final/ce": fv["ce"], "val_final/ppl": fv["ppl"]}
         console = (f"final validation ({cfg.train.final_val_batches} "
                    f"batches) | ce {fv['ce']:.4f} | ppl {fv['ppl']:.2f}")
-        if policy is not None:
+        if policy is not None or gumbel is not None:
             sto = evaluate_stochastic(
                 model, val_stream, micro_bs, cfg.train.final_val_batches, device, dtype,
                 cfg.train.policy_val_samples, cfg.train.policy_val_seed)
@@ -1018,6 +1164,44 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
     if world > 1 and ddp_initialized_here:
         dist.destroy_process_group()
     return summary
+
+
+@torch.no_grad()
+def gumbel_grad_split(params, g_pol, scorer_params, factor: float) -> Dict[str, float]:
+    """gumbel_policy: the first micro-batch's gradient split into its two parts.
+
+    ``g_pol`` is the policy term's gradient alone (``torch.autograd.grad``),
+    ``p.grad`` the complete gradient of the same micro-batch right after its
+    backward (``.grad`` was empty before it), so ``p.grad - g_pol`` is the
+    ordinary (value) gradient.  ``factor`` (accumulation / loss scale) turns
+    both into the micro-batch loss's own units.  ``ce_norm_scorer`` is the
+    value gradient on the scorer: zero up to rounding, because the hard mask
+    passes the scorer none -- a check, not a quantity to tune.
+    """
+    scorer = {id(p) for p in scorer_params}
+    parts: List[torch.Tensor] = []
+    for p, gp in zip(params, g_pol):
+        if p.grad is None:
+            continue
+        tot = p.grad.detach().float()
+        on_scorer = id(p) in scorer
+        if gp is None:
+            pol_sq, ce_sq = tot.new_zeros(()), tot.pow(2).sum()
+        else:
+            gpf = gp.detach().float()
+            pol_sq, ce_sq = gpf.pow(2).sum(), (tot - gpf).pow(2).sum()
+        zero = tot.new_zeros(())
+        parts.append(torch.stack([pol_sq if on_scorer else zero, zero if on_scorer else pol_sq,
+                                  ce_sq if on_scorer else zero, zero if on_scorer else ce_sq]))
+    if not parts:
+        return {}
+    pol_s, pol_r, ce_s, ce_r = torch.stack(parts).double().sum(0).tolist()
+    pol, ce = math.sqrt(pol_s + pol_r) * factor, math.sqrt(ce_s + ce_r) * factor
+    return {"gumbel/grad_split/policy_norm": pol, "gumbel/grad_split/ce_norm": ce,
+            "gumbel/grad_split/ratio": pol / ce if ce > 0 else float("inf"),
+            "gumbel/grad_split/policy_norm_scorer": math.sqrt(pol_s) * factor,
+            "gumbel/grad_split/policy_norm_rest": math.sqrt(pol_r) * factor,
+            "gumbel/grad_split/ce_norm_scorer": math.sqrt(ce_s) * factor}
 
 
 def policy_val_metrics(prefix: str, det: Dict[str, float], sto: Dict[str, float]

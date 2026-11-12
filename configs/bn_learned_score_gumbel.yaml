@@ -1,0 +1,39 @@
+# Learned-score Top-K trained with Gumbel policy gradients, stream placement
+# (no code skip).  Architecture, data and optimizer are bn_hard.yaml's except
+# the gate: the support is TopK of an independent scorer s = W_s h + b_s of the
+# residual-stream state h (not of the code magnitudes), drawn in training from
+# the Gumbel-Top-K policy TopK_K(s / tau + G), and the kept values W_E h are
+# carried unscaled on the binary mask.  The hard mask passes the scorer no
+# gradient; it trains through the policy term
+#     lambda * sum_b w_b stopgrad(l_b - beta_b) P_b
+# with the leave-one-out baseline beta_b over the other sequences of the
+# micro-batch (wsparse.bottleneck.gumbel_policy, docs/gumbel-policy-topk.md).
+# Evaluation is the deterministic TopK(s).
+#
+# A starting configuration, not a tuned one: lambda is the first value to sweep
+# (1e-4 .. 1e-1), tau the second.  gumbel_pool: top_kj restricts the draw to
+# the Top(K+J) candidates of s (K + J = 512 here).
+_base_: bn_hard.yaml
+
+train:
+  run_name: bn_learned_score_gumbel
+  # val/ce is the deterministic TopK(s) forward; val_stochastic/ce the mean of
+  # two Gumbel draws on the same windows
+  policy_val_samples: 2
+  policy_val_seed: 1337
+  # gumbel/grad_split/*: the policy term's gradient alone against the value
+  # gradient, on the first micro-batch at log cadence (single process)
+  gumbel_grad_split_every_steps: 0
+
+activation_bottleneck:
+  selection_mode: learned_score_topk
+  surrogate_mode: hard
+  gumbel_policy: true
+  gumbel_temperature: 1.0
+  gumbel_policy_coef: 0.01
+  gumbel_pool: all
+  # The kept values are not the largest-magnitude coefficients (the scorer is
+  # independent of them at initialization), so the selection-corrected decoder
+  # init of bn_hard.yaml would under-scale the output by the selection gain
+  # (2.65 at K=32, N=1536); sqrt_k gives unit output for typical coefficients.
+  init_mode: sqrt_k

@@ -370,6 +370,10 @@ class PolicyRecord:
     # only with ``keep_samples``: the realized noisy scores and the pool indices
     r: Optional[torch.Tensor] = None
     cand_idx: Optional[torch.Tensor] = None
+    # gumbel_policy: the record is per token ([B, T]) and only the positions
+    # with a valid target enter the sequence sum; laplace_policy records keep
+    # summing every position (False)
+    valid_only: bool = False
 
 
 class PolicyCollector:
@@ -394,18 +398,28 @@ class PolicyCollector:
     def close(self) -> None:
         self.closed = True
 
-    def sequence_log_prob(self) -> Optional[torch.Tensor]:
+    def sequence_log_prob(self, valid: Optional[torch.Tensor] = None
+                          ) -> Optional[torch.Tensor]:
         """Per-sequence sum of every record, shape ``[B]``; ``None`` without records.
 
         Each record's log density has the gate input's leading shape
         (``[B, T]`` for a token-wise gate); everything after the batch axis
         is summed -- all positions, all gates, all placements of a sequence.
+        A ``valid_only`` record (gumbel_policy) keeps the positions where
+        ``valid`` (``[B, T]`` bool, the target mask) is set and needs it.
         """
         if not self.records:
             return None
         total = None
         for rec in self.records:
             lp = rec.log_prob
+            if rec.valid_only:
+                if valid is None or tuple(lp.shape) != tuple(valid.shape):
+                    raise ValueError(
+                        "gumbel_policy: a per-token log-probability record needs the "
+                        f"[B, T] target mask, got record shape {tuple(lp.shape)} and mask "
+                        f"{None if valid is None else tuple(valid.shape)}")
+                lp = torch.where(valid, lp, lp.new_zeros(()))
             lp = lp.reshape(lp.shape[0], -1).sum(-1) if lp.dim() > 1 else lp
             total = lp if total is None else total + lp
         return total
@@ -429,12 +443,20 @@ class PolicyForwardSettings:
     generator: Optional[torch.Generator] = None
 
 
+def samples_support(gate) -> bool:
+    """A gate whose training forward draws its support from a policy and so
+    takes per-forward settings: laplace_policy, or learned_score_topk with
+    gumbel_policy (wsparse.bottleneck.gumbel_policy)."""
+    return (getattr(gate, "surrogate_mode", None) == "laplace_policy"
+            or bool(getattr(gate, "gumbel_policy", False)))
+
+
 class policy_forward:
     """``with policy_forward(gates, settings): ...`` -- set and restore
-    ``gate._policy_settings`` on every laplace_policy gate."""
+    ``gate._policy_settings`` on every sampling gate (``samples_support``)."""
 
     def __init__(self, gates, settings: Optional[PolicyForwardSettings]):
-        self.gates = [g for g in gates if getattr(g, "surrogate_mode", None) == "laplace_policy"]
+        self.gates = [g for g in gates if samples_support(g)]
         self.settings = settings
         self._prior: List[object] = []
 
@@ -451,12 +473,13 @@ class policy_forward:
 
 
 def policy_gates(model) -> list:
-    """Every laplace_policy gate of ``model`` (the controller caches the list
-    on the model as ``policy_gates``; a model assembled by hand is walked)."""
+    """Every sampling gate of ``model`` -- laplace_policy and gumbel_policy
+    (the controller caches the list on the model as ``policy_gates``; a model
+    assembled by hand is walked)."""
     cached = getattr(model, "policy_gates", None)
     if cached is not None:
         return list(cached)
-    return [m for m in model.modules() if getattr(m, "surrogate_mode", None) == "laplace_policy"]
+    return [m for m in model.modules() if samples_support(m)]
 
 
 # --------------------------------------------------------------------------- #

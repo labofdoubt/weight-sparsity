@@ -386,7 +386,9 @@ class TransformerLM(nn.Module):
             ce_tokens = torch.where(valid, flat.view(B, T), flat.new_zeros(()))
             ce, seq_ce, seq_valid = sequence_costs(ce_tokens, valid)
             records = list(collector.records) if collector is not None else []
-            log_prob = collector.sequence_log_prob() if collector is not None else None
+            # gumbel_policy records are summed over the valid target positions
+            # only; laplace_policy records ignore the mask (every position)
+            log_prob = collector.sequence_log_prob(valid) if collector is not None else None
             return LossDetails(logits, ce, ce_tokens, valid, seq_ce, seq_valid, log_prob, records)
         loss = None
         if targets is not None:
@@ -422,6 +424,13 @@ class TransformerLM(nn.Module):
         before block 0, block 0 read ``D c_0`` and encoded only its own
         ``Delta_0``; checkpoints from then carry ``code_entry.*`` keys and
         belong to that definition.
+
+        ``selection_mode="learned_score_topk"``: the support of every gate is
+        chosen by the module's scorer ``s = W_s h + b_s`` of the residual-stream
+        state at that site, never by the code: ``h_0 = x_0 + Delta_0(x_0)`` (the
+        block-0 output the gate encodes) and ``h_l = x_l + Delta_l(x_l)`` from
+        block 1 on (the stream a stream-carried model would encode there);
+        the gate keeps ``c_l + alpha E_l Delta_l`` on that support, unscaled.
         """
         from .bottleneck.rblapsum import CarryChain, carry_scope, split_carry_read
         alpha = float(getattr(self, "code_residual_scale", 1.0))
@@ -444,12 +453,20 @@ class TransformerLM(nn.Module):
                     # block 0: the installed stream bottleneck, up to its gate
                     h = block.body(x)
                     z = bot.in_proj(h)
-                    bot._dust_record(h, z)
-                    code = bot.gate(z)
+                    if bot.gated:  # learned_score_topk: scored from the stream h_0
+                        code = bot.gate(bot.score_proj(h), z)
+                    else:
+                        bot._dust_record(h, z)
+                        code = bot.gate(z)
                 else:
                     delta = block.branches(x)
                     update = alpha * bot.in_proj(delta)
-                    if getattr(bot.gate, "rblapsum_surrogate_scope", "pool").startswith("update"):
+                    if bot.gated:
+                        # learned_score_topk: scored from h_l = x_l + Delta_l,
+                        # the carried code plus the encoded update kept on it
+                        code = bot.gate(bot.score_proj(x + delta), code + update)
+                    elif getattr(bot.gate, "rblapsum_surrogate_scope",
+                                 "pool").startswith("update"):
                         code = self._split_surrogate(bot.gate, code, update)
                     else:
                         z = code + update
@@ -488,6 +505,10 @@ class TransformerLM(nn.Module):
         blocks = self.blocks
         block = blocks[block_index]
         bot = getattr(block, _PLACEMENT_ATTR[placement])
+        if any(getattr(b, "gated", False) for b in (
+                getattr(blk, _PLACEMENT_ATTR[placement], None) for blk in blocks)):
+            raise ValueError("forward_from_gate needs single-branch gates; a gated_topk / "
+                             "learned_score_topk gate is ranked by a separate score branch")
         if getattr(self, "code_residual", False):
             if placement != "residual_out":
                 raise ValueError("code_residual bottlenecks sit at residual_out")

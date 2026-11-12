@@ -31,6 +31,8 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 
+from .gumbel_policy import POOLS as GUMBEL_POOLS
+from .gumbel_policy import gumbel_topk, ordered_log_prob
 from .lapsum import lapsum_barrier_sorted, lapsum_probs, laplace_cdf
 from .laplace_policy import (ESTIMATORS, RB_SCOPES, WIDTH_GRADIENTS, ProjectScaleFree,
                              RaoBlackwellSelect,
@@ -86,6 +88,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
         policy_rb_scope: str = "full",
         policy_width_gradient: str = "frozen",
         policy_rb_samples: int = 1,
+        gumbel_policy: bool = False,
+        gumbel_temperature: float = 1.0,
+        gumbel_pool: str = "all",
     ):
         super().__init__()
         validate_gate_shapes(n_features, k, j, surrogate_mode)
@@ -108,10 +113,32 @@ class AdaptiveLapSumTopKGate(nn.Module):
         # shift is a fixed rule, not a parameter, so state_dicts are unchanged.
         self.value_shift = value_shift
         self.value_shift_lambda = float(value_shift_lambda)
-        if selection_mode not in ("topk", "abs_topk", "gated_topk"):
+        if selection_mode not in ("topk", "abs_topk", "gated_topk", "learned_score_topk"):
             raise ValueError(
-                f"unknown selection_mode: {selection_mode!r} (topk | abs_topk | gated_topk)"
+                f"unknown selection_mode: {selection_mode!r} "
+                "(topk | abs_topk | gated_topk | learned_score_topk)"
             )
+        # learned_score_topk (wsparse.bottleneck.gumbel_policy): the support is
+        # TopK of an independent learned score, sampled from the Gumbel-Top-K
+        # policy in training when gumbel_policy is on; the hard mask is the
+        # whole forward, so no surrogate applies
+        if selection_mode == "learned_score_topk" and surrogate_mode != "hard":
+            raise ValueError("selection_mode='learned_score_topk' needs surrogate_mode='hard', "
+                             f"got {surrogate_mode!r}")
+        if gumbel_policy and selection_mode != "learned_score_topk":
+            raise ValueError("gumbel_policy samples a learned-score support; it needs "
+                             f"selection_mode='learned_score_topk', got {selection_mode!r}")
+        if not (math.isfinite(float(gumbel_temperature)) and float(gumbel_temperature) > 0):
+            raise ValueError(f"gumbel_temperature must be positive and finite, "
+                             f"got {gumbel_temperature!r}")
+        if gumbel_pool not in GUMBEL_POOLS:
+            raise ValueError(f"unknown gumbel_pool: {gumbel_pool!r} ({' | '.join(GUMBEL_POOLS)})")
+        if gumbel_pool == "top_kj" and j < 1:
+            raise ValueError("gumbel_pool='top_kj' draws K of the Top(K+J) candidates; "
+                             "set j >= 1 (with j = 0 the support is forced)")
+        self.gumbel_policy = bool(gumbel_policy)
+        self.gumbel_temperature = float(gumbel_temperature)
+        self.gumbel_pool = gumbel_pool
         if surrogate_mode not in ("lapsum", "soft_lapsum", "rblapsum", "rblapsum_sf", "hard",
                                   "soft_ste", "laplace_policy", "dust"):
             raise ValueError(
@@ -365,8 +392,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
     # ---- selection --------------------------------------------------------- #
     @property
     def gated(self) -> bool:
-        """Independent score and value branches (``selection_mode='gated_topk'``)."""
-        return self.selection_mode == "gated_topk"
+        """Independent score and value branches (``gated_topk``, ``learned_score_topk``)."""
+        return self.selection_mode in ("gated_topk", "learned_score_topk")
 
     def scores_of(self, a: torch.Tensor) -> torch.Tensor:
         """Ranking score.  Autograd carries ``dr/da`` (1, or sign(a)) for free."""
@@ -411,13 +438,15 @@ class AdaptiveLapSumTopKGate(nn.Module):
         """
         if self.gated:
             if values is None:
-                raise ValueError("selection_mode='gated_topk' requires a value branch")
+                raise ValueError(f"selection_mode={self.selection_mode!r} requires a value "
+                                 "branch")
             scores, value = a, values
         else:
             if values is not None:
                 raise ValueError(
                     f"selection_mode={self.selection_mode!r} takes a single tensor; "
-                    "a separate value branch is only used by gated_topk"
+                    "a separate value branch is only used by gated_topk and "
+                    "learned_score_topk"
                 )
             scores, value = self.scores_of(a), a
 
@@ -441,6 +470,10 @@ class AdaptiveLapSumTopKGate(nn.Module):
             return self._rblapsum(scores, value)
         if self.surrogate_mode == "laplace_policy":
             return self._laplace_policy(scores, value)
+        if self.gumbel_sampling():
+            return self._gumbel_policy(scores, value)
+        # learned_score_topk without sampling (eval, gumbel_policy off) is the
+        # deterministic hard Top-K of the scores below
 
         cand_scores, cand_idx = torch.topk(
             scores, self.m, dim=-1, largest=True, sorted=True
@@ -540,6 +573,89 @@ class AdaptiveLapSumTopKGate(nn.Module):
         if settings is not None and settings.sample is not None:
             return bool(settings.sample)
         return bool(self.training)
+
+    # ---- learned_score_topk + gumbel_policy ------------------------------------ #
+    def gumbel_sampling(self) -> bool:
+        """Whether this forward draws a Gumbel-Top-K support (gumbel_policy).
+
+        As for laplace_policy: the per-forward settings' ``sample`` wins when
+        given, otherwise the gate samples iff it is in ``train()`` mode,
+        independently of ``torch.is_grad_enabled()``.  Never with
+        ``k == n_features``, where the support is forced.
+        """
+        if not self.gumbel_policy or self.trivial:
+            return False
+        settings = self._policy_settings
+        if settings is not None and settings.sample is not None:
+            return bool(settings.sample)
+        return bool(self.training)
+
+    def _gumbel_policy(self, scores: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+        """Exactly-K support drawn from the Gumbel-Top-K policy over all N scores.
+
+        The values are carried unscaled on the binary mask (ordinary
+        mask autograd: ``dL/dvalue = m * g``, nothing reaches ``scores``
+        through the forward).  With a collector installed and grad enabled the
+        ordered Plackett-Luce log-probability of the draw, differentiable in
+        every score, is recorded for the trainer's policy term
+        (:mod:`wsparse.bottleneck.gumbel_policy`); its value is masked to the
+        valid target positions there.
+        """
+        settings = self._policy_settings
+        generator = settings.generator if settings is not None else None
+        collector = settings.collector if settings is not None else None
+        draw = gumbel_topk(scores, self.k, self.gumbel_temperature, generator,
+                           pool=self.m if self.gumbel_pool == "top_kj" else None)
+        hard_mask = torch.zeros_like(scores).scatter(-1, draw.idx, 1.0)
+        if self._mask_sink is not None:
+            self._mask_sink["mask"] = (hard_mask != 0).detach()
+        y = value * hard_mask
+        log_prob = None
+        if collector is not None and torch.is_grad_enabled():
+            with torch.autocast(device_type=scores.device.type, enabled=False):
+                # normalized over all N, or over the Top(K+J) pool (gumbel_pool)
+                log_prob = ordered_log_prob(draw.pool_logits, draw.pos)  # scores.shape[:-1]
+        diag: Dict[str, torch.Tensor] = {}
+        if self.log_diagnostics and self.training:
+            self._record_usage(hard_mask)
+            diag = self._gumbel_diag(draw.logits.detach(), hard_mask, y, log_prob)
+            self._forward_diag = diag
+            self._grad_sink.clear()
+        if log_prob is not None:
+            collector.add(PolicyRecord(gate=self, log_prob=log_prob, diag=diag,
+                                       valid_only=True))
+        return y
+
+    @torch.no_grad()
+    def _gumbel_diag(self, logits, hard_mask, y, log_prob) -> Dict[str, torch.Tensor]:
+        """Detached statistics of one Gumbel-Top-K draw (logit units ``s / tau``)."""
+        k = self.k
+        top_v, top_i = torch.topk(logits, k + 1, dim=-1, largest=True, sorted=True)
+        clean = torch.zeros_like(hard_mask, dtype=torch.bool).scatter(-1, top_i[..., :k], True)
+        overlap = (clean & (hard_mask != 0)).sum(-1).to(torch.float32).mean() / k
+        d = {
+            "active_count": (hard_mask != 0).sum(-1).to(torch.float32).mean(),
+            "output_nonzero_count": (y != 0).sum(-1).to(torch.float32).mean(),
+            "gumbel_tau": torch.tensor(self.gumbel_temperature, device=logits.device),
+            "gumbel_pool_size": torch.tensor(
+                float(self.m if self.gumbel_pool == "top_kj" else self.n_features),
+                device=logits.device),
+            # share of the drawn support inside the deterministic TopK(s)
+            "gumbel_overlap": overlap,
+            "gumbel_exchange_frac": 1.0 - overlap,
+            # z_(K) - z_(K+1) of the clean logits: against the Gumbel noise
+            # scale (std pi/sqrt(6) ~ 1.28) it says how deterministic the draw is
+            "gumbel_margin": (top_v[..., k - 1] - top_v[..., k]).mean(),
+            "gumbel_logit_std": logits.std(-1).mean(),
+            "gumbel_nonfinite": (~torch.isfinite(logits).all()).to(torch.float32),
+        }
+        if log_prob is not None:
+            lp = log_prob.detach()
+            d["gumbel_logp_mean"] = lp.mean()
+            d["gumbel_logp_per_select"] = lp.mean() / k
+            d["gumbel_nonfinite"] = torch.maximum(
+                d["gumbel_nonfinite"], (~torch.isfinite(lp).all()).to(torch.float32))
+        return {key: val.detach() for key, val in d.items()}
 
     def _laplace_policy(self, scores: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
         """Sampled exactly-K support over the clean Top(K+J) pool (laplace_policy).
@@ -989,6 +1105,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
             policy = (f", policy=({self.policy_temperature_mode}, "
                       f"center={self.policy_center_scores}, "
                       f"gamma={self.policy_support_scale:g}/{self.policy_support_scale_mode})")
+        if self.gumbel_policy:
+            policy = (f", gumbel_policy(tau={self.gumbel_temperature:g}, "
+                      f"pool={self.gumbel_pool})")
         return (
             f"n_features={self.n_features}, k={self.k}, j={self.j}, "
             f"mode={self.selection_mode}, surrogate={self.surrogate_mode}, "

@@ -313,6 +313,32 @@ class ActivationBottleneckController:
         density term: the trainer's switch for the laplace_policy branch."""
         return any(not g.policy_fixed for g in self.policy_gates)
 
+    @property
+    def gumbel_gates(self) -> list:
+        """The installed learned_score_topk gates with gumbel_policy on."""
+        return [layer.gate for _, layer in self.layers if layer.gate.gumbel_policy]
+
+    @property
+    def gumbel_active(self) -> bool:
+        """True when at least one gate draws a Gumbel-Top-K support (not
+        k == n_features): the trainer's switch for the gumbel_policy branch."""
+        return any(not g.trivial for g in self.gumbel_gates)
+
+    def scorer_parameters(self) -> List[nn.Parameter]:
+        """The score branches' parameters (``W_s``, ``b_s``), each shared
+        tensor once: under learned_score_topk the hard mask passes them no
+        ordinary gradient, so their gradient is the policy term's alone."""
+        seen, out = set(), []
+        for _, layer in self.layers:
+            proj = getattr(layer, "score_proj", None)
+            if proj is None:
+                continue
+            for p in proj.parameters():
+                if id(p) not in seen:
+                    seen.add(id(p))
+                    out.append(p)
+        return out
+
 
     def _install(self) -> None:
         cfg = self.cfg
@@ -356,9 +382,10 @@ class ActivationBottleneckController:
             draws_per_bottleneck(int(cfg.dust_population), len(self.layers),
                                  int(getattr(cfg, "dust_layers_per_step", 0)))  # raises
         self._restore_decoder_scale(d_model)
-        # the model's forward installs per-forward policy settings on these;
-        # a plain attribute (like code_residual), so state_dicts are unchanged
-        self.model.policy_gates = self.policy_gates
+        # the model's forward installs per-forward policy settings on these
+        # (laplace_policy and gumbel_policy gates); a plain attribute (like
+        # code_residual), so state_dicts are unchanged
+        self.model.policy_gates = self.policy_gates + self.gumbel_gates
 
     def _restore_decoder_scale(self, d_model: int) -> None:
         """Set ``g_D`` from the model config at install time.

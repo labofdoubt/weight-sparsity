@@ -181,6 +181,13 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
   diagnostic, not a loss.  Resume only from the run's own checkpoint: the
   baseline and the per-rank noise RNG live in its `policy_state` payload and
   a different world size is rejected (§9, docs/laplace-policy-topk.md).
+- **`learned_score_topk` + `gumbel_policy`** (docs/gumbel-policy-topk.md):
+  `train/ce` is the sampled-support CE, `val/ce` the deterministic TopK(s).
+  The scorer's gradient is the policy term's alone
+  (`gumbel/grad_split/ce_norm_scorer` is 0); pick lambda from
+  `gumbel/grad_split/ratio`. The leave-one-out baseline is per micro-batch
+  (micro >= 2), a resume needs the run's `gumbel_state`, and the mode without
+  `gumbel_policy` is single-process only (its scorer gets no gradient).
 - **rblapsum stability:** read Pi per block together with `n_eff`, never
   averaged over blocks (§9b).
 - **Keep `train.compile=False`.** A graph break around the hand-written gate
