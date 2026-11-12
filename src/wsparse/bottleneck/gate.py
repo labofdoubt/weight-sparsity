@@ -614,6 +614,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
         if not self.gumbel_policy or self.trivial:
             return False
         settings = self._policy_settings
+        if settings is not None and getattr(settings, "only", None) is not None \
+                and id(self) not in settings.only:
+            return False  # gumbel_gates_per_forward: not one of this forward's gates
         if settings is not None and settings.sample is not None:
             return bool(settings.sample)
         return bool(self.training)

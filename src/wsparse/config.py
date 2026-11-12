@@ -714,6 +714,12 @@ class ActivationBottleneckConfig:
     # C is fixed in the backward (no policy gradient outside it).  Needs j >= 1.
     # Evaluation is the deterministic TopK(s) over all N either way.
     gumbel_pool: str = "all"  # all | top_kj
+    # how many bottlenecks sample in one training forward: 0 = every one; n in
+    # 1 .. L-1 = n of the L gumbel gates, drawn uniformly without replacement
+    # for every forward (micro-batch) from the run's noise generator; the
+    # others take their deterministic TopK(s) and add no policy term.  The
+    # paired sampled validation draws n gates per batch in the same way.
+    gumbel_gates_per_forward: int = 0
     # learned_score_topk only: the scorer's CE gradient on the support S of the
     # forward (deterministic TopK(s), or the Gumbel draw), with the forward
     # unchanged (y = v * m):
@@ -1541,6 +1547,7 @@ class ActivationBottleneckConfig:
         "gumbel_temperature": 1.0,
         "gumbel_policy_coef": 1.0,
         "gumbel_pool": "all",
+        "gumbel_gates_per_forward": 0,
     }
 
     def _validate_gumbel_fields(self) -> None:
@@ -1609,6 +1616,8 @@ class ActivationBottleneckConfig:
         if self.gumbel_pool == "top_kj" and self.j < 1:
             raise ValueError("gumbel_pool='top_kj' draws K of the Top(K+J) candidates of the "
                              "scores; set j >= 1 (with j = 0 the support is forced)")
+        if int(self.gumbel_gates_per_forward) < 0:
+            raise ValueError("gumbel_gates_per_forward must be >= 0 (0: every gate samples)")
         self.gumbel_temperature, self.gumbel_policy_coef = tau, coef
 
     #: the dust fields and their defaults (a non-default value under another

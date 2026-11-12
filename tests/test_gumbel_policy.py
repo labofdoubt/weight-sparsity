@@ -628,3 +628,53 @@ def test_scorer_input_options(inp, grad):
         assert g is None
     with pytest.raises(ValueError, match="learned_score_topk' only"):
         ab(selection_mode="abs_topk", learned_score_input="rmsnorm")
+
+
+def test_only_the_listed_gates_sample():
+    """PolicyForwardSettings.only (gumbel_gates_per_forward): the listed gates
+    draw and record, the others take their deterministic Top-K."""
+    model, ctl = model_of(True, selection_mode="abs_topk", gumbel_pool="top_kj", n_layers=4)
+    model.train()
+    gates = [layer.gate for _, layer in ctl.layers]
+    idx = torch.randint(0, 61, (4, 16))
+    only = frozenset({id(gates[1]), id(gates[3])})
+    out = model(idx, idx.roll(-1, 1), return_loss_details=True,
+                policy=PolicyForwardSettings(sample=True, generator=make_generator(CPU, 1),
+                                             only=only))
+    assert [r.gate for r in out.policy_records] == [gates[1], gates[3]]
+
+
+def test_gate_subset_is_uniform_and_exact():
+    from wsparse.train import gate_subset
+    gates = [object() for _ in range(8)]
+    gen = torch.Generator().manual_seed(0)
+    counts = {id(g): 0 for g in gates}
+    for _ in range(4000):
+        sub = gate_subset(gates, 3, gen)
+        assert len(sub) == 3
+        for i in sub:
+            counts[i] += 1
+    freq = np.array(list(counts.values())) / 4000
+    assert np.allclose(freq, 3 / 8, atol=0.03)
+
+
+def test_training_with_gates_per_forward_and_resume(tmp_path):
+    cfg = train_cfg(tmp_path, "gpf", code_residual=True, gumbel_pool="top_kj",
+                    selection_mode="abs_topk", gumbel_gates_per_forward=1)
+    summary = train(cfg)
+    assert math.isfinite(summary["val/ce"]) and "val_stochastic/ce" in summary
+    cfg2 = train_cfg(tmp_path, "gpf", max_steps=6, code_residual=True, gumbel_pool="top_kj",
+                     selection_mode="abs_topk", gumbel_gates_per_forward=1)
+    cfg2.train.resume = "auto"
+    assert math.isfinite(train(cfg2)["val/ce"])
+    bad = train_cfg(tmp_path, "gpf_bad", selection_mode="abs_topk", gumbel_gates_per_forward=2)
+    with pytest.raises(ValueError, match="must be below"):
+        train(bad)
+
+
+def test_gates_per_forward_config_rules():
+    with pytest.raises(ValueError, match="gumbel_policy: true only"):
+        ab(gumbel_gates_per_forward=3)
+    with pytest.raises(ValueError, match=">= 0"):
+        ab(gumbel_policy=True, gumbel_gates_per_forward=-1)
+    ab(gumbel_policy=True, gumbel_gates_per_forward=3)

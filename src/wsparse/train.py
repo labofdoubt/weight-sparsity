@@ -14,6 +14,7 @@ import math
 import os
 import statistics
 import time
+from dataclasses import replace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
@@ -95,8 +96,13 @@ def evaluate_stochastic(
     dtype: torch.dtype,
     samples: int,
     seed: int,
+    gates: Optional[List[Any]] = None,
+    gates_per_forward: int = 0,
 ) -> Dict[str, float]:
     """laplace_policy: the paired stochastic validation.
+
+    gumbel_policy with ``gates_per_forward`` = n > 0: every batch samples at n
+    of ``gates``, drawn from the same seeded generator.
 
     The SAME deterministic windows ``evaluate`` reads, in ``eval()`` mode
     (dropout off), with support sampling switched on explicitly at the
@@ -119,8 +125,12 @@ def evaluate_stochastic(
             losses = []
             for i in range(batches):
                 x, y = stream.batch(batch_size, device, deterministic_offset=i * stride)
+                fwd = settings
+                if gates and gates_per_forward:
+                    fwd = replace(settings, only=gate_subset(gates, gates_per_forward,
+                                                             settings.generator))
                 with autocast_context(device, dtype):
-                    _, loss = base(x, y, policy=settings)
+                    _, loss = base(x, y, policy=fwd)
                 losses.append(loss.float().item())
             draws.append(sum(losses) / max(1, len(losses)))
     finally:
@@ -405,6 +415,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
     # (support gradient + policy term; none under abs_topk)
     gumbel: Optional[GumbelTrainingState] = None
     gumbel_settings: Optional[PolicyForwardSettings] = None
+    gumbel_gate_list: List[Any] = []
+    gumbel_per_fwd = 0
     gumbel_split_every = 0
     scorer_params: List[torch.nn.Parameter] = []
     gc = cfg.activation_bottleneck
@@ -420,6 +432,12 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         if bottleneck.gumbel_active:
             gumbel = GumbelTrainingState(device, seed=cfg.train.seed + 104729 * rank + 3)
             gumbel_settings = PolicyForwardSettings(sample=True, generator=gumbel.generator)
+            gumbel_gate_list = [g for g in bottleneck.gumbel_gates if not g.trivial]
+            gumbel_per_fwd = int(gc.gumbel_gates_per_forward)
+            if gumbel_per_fwd >= len(gumbel_gate_list):
+                raise ValueError(
+                    f"gumbel_gates_per_forward={gumbel_per_fwd} must be below the number of "
+                    f"sampling gates ({len(gumbel_gate_list)}); 0 lets every gate sample")
             gumbel_split_every = int(cfg.train.gumbel_grad_split_every_steps)
             if gumbel_split_every == 0:
                 gumbel_split_every = int(cfg.train.log_every_steps)
@@ -436,7 +454,9 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                   + (f" (Top-{gc.k + gc.j})" if gc.gumbel_pool == "top_kj" else "")
                   + f", leave-one-out baseline over the other {int(cfg.train.micro_batch_size) - 1} "
                   f"sequences of each micro-batch; val draws {cfg.train.policy_val_samples}; "
-                  f"gradient split {split_note}")
+                  f"gradient split {split_note}; sampling gates per forward: "
+                  + (f"{gumbel_per_fwd} of {len(gumbel_gate_list)}" if gumbel_per_fwd
+                     else f"all {len(gumbel_gate_list)}"))
         if learned:
             sources = (["support (sign(v) dL/dy on S)"] if gc.learned_score_support_grad
                        else []) + (["policy term"] if bottleneck.gumbel_active else [])
@@ -743,8 +763,14 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 step1 % gumbel_split_every == 0 or step1 == 1)
             for mi in range(accum):
                 x, y = train_stream.batch(micro_bs, device)
+                fwd_settings = gumbel_settings
+                if gumbel_per_fwd:
+                    # n of the L gates sample in this forward, the others are
+                    # deterministic (gumbel_gates_per_forward)
+                    fwd_settings = replace(gumbel_settings, only=gate_subset(
+                        gumbel_gate_list, gumbel_per_fwd, gumbel.generator))
                 with autocast_context(device, dtype):
-                    out = model(x, y, return_loss_details=True, policy=gumbel_settings)
+                    out = model(x, y, return_loss_details=True, policy=fwd_settings)
                 if out.policy_log_prob is None:
                     raise RuntimeError(
                         "gumbel_policy: the forward returned no log-probability terms "
@@ -1002,7 +1028,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 # supports on the same windows, dropout off in both
                 sto = evaluate_stochastic(
                     model, val_stream, micro_bs, cfg.train.val_batches, device, dtype,
-                    cfg.train.policy_val_samples, cfg.train.policy_val_seed)
+                    cfg.train.policy_val_samples, cfg.train.policy_val_seed,
+                    gumbel_gate_list, gumbel_per_fwd)
                 metrics.update(policy_val_metrics("val", val, sto))
                 line += f" | sto ce {sto['ce']:.4f}"
                 if "mc_std" in sto:
@@ -1157,7 +1184,8 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         if policy is not None or gumbel is not None:
             sto = evaluate_stochastic(
                 model, val_stream, micro_bs, cfg.train.final_val_batches, device, dtype,
-                cfg.train.policy_val_samples, cfg.train.policy_val_seed)
+                cfg.train.policy_val_samples, cfg.train.policy_val_seed,
+                gumbel_gate_list, gumbel_per_fwd)
             final.update(policy_val_metrics("val_final", fv, sto))
             console += f" | sto ce {sto['ce']:.4f}"
         logger.log(cfg.train.max_steps, final, console=console)
@@ -1176,6 +1204,13 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
 
 
 @torch.no_grad()
+def gate_subset(gates: List[Any], n: int, generator: torch.Generator) -> frozenset:
+    """``id()`` of n of ``gates``, uniformly without replacement, drawn from
+    ``generator`` (gumbel_gates_per_forward)."""
+    perm = torch.randperm(len(gates), generator=generator, device=generator.device)
+    return frozenset(id(gates[i]) for i in perm[:n].tolist())
+
+
 def gumbel_grad_split(params, g_pol, scorer_params, factor: float) -> Dict[str, float]:
     """gumbel_policy: the first micro-batch's gradient split into its two parts.
 

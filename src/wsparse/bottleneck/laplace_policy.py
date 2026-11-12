@@ -441,6 +441,10 @@ class PolicyForwardSettings:
     sample: Optional[bool] = None
     collector: Optional[PolicyCollector] = None
     generator: Optional[torch.Generator] = None
+    # gumbel_policy (gumbel_gates_per_forward): ``id()`` of the gates allowed
+    # to sample in this forward; the others take their deterministic Top-K.
+    # ``None``: every gate samples.
+    only: Optional[frozenset] = None
 
 
 def samples_support(gate) -> bool:
