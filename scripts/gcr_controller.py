@@ -94,6 +94,9 @@ def main():
                     help="searched K,J cells this box decides (default: all of SEARCH)")
     ap.add_argument("--borrow", nargs="*", default=None,
                     help="borrowed cells as K,J:K1,J1[+K2,J2] (default: BORROW)")
+    ap.add_argument("--variant", default="", choices=list(M.VARIANTS),
+                    help="which Gumbel runs: '' all gates, 3f / 3t three of eight")
+    ap.add_argument("--taus", type=float, nargs="+", default=None)
     ap.add_argument("--front", action="store_true",
                     help="put the 20000-step jobs at the head of the queue")
     args = ap.parse_args()
@@ -108,6 +111,9 @@ def main():
                     [tuple(map(int, s.split(","))) for s in b.split(":")[1].split("+")]
                     for b in args.borrow}
     sc = args.scores
+    V = args.variant
+    if args.taus:
+        M.TAUS[sc] = list(args.taus)
     lock = os.path.join(args.runs, ".queue.lock")
     settings = [(t, l) for t in M.TAUS[sc] for l in M.LAMBDAS]
     table = {}        # (k, j) -> {(tau, lam): val}
@@ -121,8 +127,8 @@ def main():
             k, j = map(int, key.split(","))
             promoted.add((k, j))
             byname = entry["candidates"]
-            table[(k, j)] = {s: byname[M.gum_name(sc, k, j, *s)] for s in settings
-                             if M.gum_name(sc, k, j, *s) in byname}
+            table[(k, j)] = {s: byname[M.gum_name(sc, k, j, *s, V)] for s in settings
+                             if M.gum_name(sc, k, j, *s, V) in byname}
         for key in log["borrowed"]:
             started.add(tuple(map(int, key.split(","))))
         print(f"[ctl] restart: {len(promoted)} searched and {len(started)} borrowed cells "
@@ -139,7 +145,7 @@ def main():
         for (k, j) in M.SEARCH:
             if (k, j) in promoted:
                 continue
-            names = {s: M.gum_name(sc, k, j, *s) for s in settings}
+            names = {s: M.gum_name(sc, k, j, *s, V) for s in settings}
             dirs = {s: os.path.join(args.runs, n) for s, n in names.items()}
             if not all(ended(dirs[s], names[s], log_text) for s in settings):
                 continue
@@ -164,7 +170,7 @@ def main():
                     lg = os.path.join(args.runs, f"{name}.log")
                     if os.path.exists(lg):
                         shutil.copyfile(lg, os.path.join(args.runs, f"{name}.search.log"))
-                    cfg = M.rel(M.search_path(sc, k, j, *best))
+                    cfg = M.rel(M.search_path(sc, k, j, *best, V))
                     append(args.queue, f"{name}|{cfg}|--train.resume={latest}", lock)
                     entry["resumed_from"] = latest
                     print(f"[ctl] {sc} ({k},{j}): best {name} val {vals[best]:.4f}; "
@@ -179,8 +185,8 @@ def main():
                     for s in settings}
             best = min(settings, key=lambda s: mean[s])
             src = sources[0]
-            name = M.gum_name(sc, k, j, *best)
-            cfg = M.rel(M.search_path(sc, src[0], src[1], *best))
+            name = M.gum_name(sc, k, j, *best, V)
+            cfg = M.rel(M.search_path(sc, src[0], src[1], *best, V))
             append(args.queue, f"{name}|{cfg}|--activation_bottleneck.k={k} "
                                f"--activation_bottleneck.j={j}", lock)
             log["borrowed"][f"{k},{j}"] = {
