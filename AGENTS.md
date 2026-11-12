@@ -262,7 +262,10 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
   minutes; run it before a campaign and after every pull. The 2-process DDP
   test is opt-in: `WSPARSE_DDP_TEST=1 python -m pytest tests/test_train_ddp.py -q`.
   Known flaky, deselect and report:
-  `tests/test_interventions.py::test_alignment_summary_math_on_synthetic_rows`.
+  `tests/test_interventions.py::test_alignment_summary_math_on_synthetic_rows`;
+  `test_linearization_at_small_epsilon` in the same file fails on some hosts'
+  CPUs (finite difference -1.6e-7 against the 1e-7 tolerance on ankara,
+  2026-11-12) and passes on others.
   Off a box there is usually no torch environment: use a throwaway venv
   (`pyyaml pytest torch numpy`) and `PYTHONPATH=src`.
 - Git: commit and push straight to `main` (no branches, no PRs) after the suite passes.

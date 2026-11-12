@@ -7,8 +7,8 @@
 # (x_l the decoded code the block reads) -- never by the carried code; the
 # gate keeps c_l + E_l Delta_l on that support, unscaled.  Training draws the
 # support from the Gumbel-Top-K policy, and the scorer trains through the
-# policy term with the leave-one-out baseline over the other 23 sequences of
-# each micro-batch (wsparse.bottleneck.gumbel_policy,
+# support gradient sign(v) dL/dy on the drawn support and the policy term with
+# the leave-one-out baseline over the other 23 sequences of each micro-batch (wsparse.bottleneck.gumbel_policy,
 # docs/gumbel-policy-topk.md).  Evaluation is the deterministic TopK(s).
 #
 # A starting configuration, not a tuned one: lambda is the first value to sweep
