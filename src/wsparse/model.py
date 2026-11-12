@@ -454,7 +454,7 @@ class TransformerLM(nn.Module):
                     h = block.body(x)
                     z = bot.in_proj(h)
                     if bot.gated:  # learned_score_topk: scored from the stream h_0
-                        code = bot.gate(bot.score_proj(h), z)
+                        code = bot.gate(bot.score(h), z)
                     else:
                         bot._dust_record(h, z)
                         code = bot.gate(z)
@@ -464,7 +464,7 @@ class TransformerLM(nn.Module):
                     if bot.gated:
                         # learned_score_topk: scored from h_l = x_l + Delta_l,
                         # the carried code plus the encoded update kept on it
-                        code = bot.gate(bot.score_proj(x + delta), code + update)
+                        code = bot.gate(bot.score(x + delta), code + update)
                     elif getattr(bot.gate, "rblapsum_surrogate_scope",
                                  "pool").startswith("update"):
                         code = self._split_surrogate(bot.gate, code, update)

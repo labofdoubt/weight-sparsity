@@ -605,3 +605,26 @@ def test_coefficient_zero_leaves_the_support_gradient(tmp_path, support_grad):
     else:
         assert summary["gumbel/scorer_grad_norm"] == 0.0
     assert math.isfinite(summary["val/ce"])
+
+
+@pytest.mark.parametrize("inp, grad", [("raw", True), ("rmsnorm", True), ("raw", False),
+                                       ("rmsnorm", False)])
+def test_scorer_input_options(inp, grad):
+    """learned_score_input: s = W_s h + b_s or W_s RMSNorm(h) + b_s; with
+    learned_score_input_grad false nothing reaches h through the scorer."""
+    model, ctl = model_of(False, gumbel_policy=False, gumbel_temperature=1.0,
+                          learned_score_input=inp, learned_score_input_grad=grad)
+    bot = model.blocks[0].residual_out_bottleneck
+    h = torch.randn(2, 5, 32, requires_grad=True)
+    s = bot.score(h)
+    ref = torch.nn.functional.rms_norm(h, (32,), eps=1e-6) if inp == "rmsnorm" else h
+    torch.testing.assert_close(s, bot.score_proj(ref))
+    if grad:
+        g, = torch.autograd.grad(s.sum(), h)
+        assert g.abs().sum() > 0
+    else:
+        assert not s.requires_grad or s.grad_fn is not None
+        g = torch.autograd.grad(s.sum(), h, allow_unused=True)[0]
+        assert g is None
+    with pytest.raises(ValueError, match="learned_score_topk' only"):
+        ab(selection_mode="abs_topk", learned_score_input="rmsnorm")

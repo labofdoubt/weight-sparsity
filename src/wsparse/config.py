@@ -721,6 +721,13 @@ class ActivationBottleneckConfig:
     # the signal |a_i| receives under abs_topk.  Off: the hard mask passes the
     # scorer no gradient (it then trains through the policy term only).
     learned_score_support_grad: bool = True
+    # learned_score_topk only: what the scorer reads.  raw: s = W_s h + b_s;
+    # rmsnorm: s = W_s RMSNorm(h) + b_s (parameter-free, eps 1e-6), the
+    # normalized state every pre-norm sublayer reads.  learned_score_input_grad
+    # false detaches h in the scorer, so the support gradient and the policy
+    # term train W_s, b_s only and never reach the trunk through h.
+    learned_score_input: str = "raw"  # raw | rmsnorm
+    learned_score_input_grad: bool = True
 
     # ---- dust (surrogate_mode: dust) ---------------------------------------- #
     # See wsparse.bottleneck.dust.  Every field here is read by that mode only;
@@ -1549,6 +1556,13 @@ class ActivationBottleneckConfig:
         """
         if not self.learned_score_support_grad and self.selection_mode != "learned_score_topk":
             raise ValueError("learned_score_support_grad applies to "
+                             "selection_mode='learned_score_topk' only")
+        if self.learned_score_input not in ("raw", "rmsnorm"):
+            raise ValueError(f"unknown learned_score_input: {self.learned_score_input!r} "
+                             "(raw | rmsnorm)")
+        if ((self.learned_score_input != "raw" or not self.learned_score_input_grad)
+                and self.selection_mode != "learned_score_topk"):
+            raise ValueError("learned_score_input / learned_score_input_grad apply to "
                              "selection_mode='learned_score_topk' only")
         if self.selection_mode == "learned_score_topk":
             if self.surrogate_mode != "hard":

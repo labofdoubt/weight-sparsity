@@ -165,6 +165,8 @@ class SparseTopKBottleneck(nn.Module):
         # The config flag, true for every bottleneck built under it -- the one
         # the others adopt from included; `share_from` is the mechanism.
         self.shared = bool(getattr(cfg, "share_projections", False))
+        self.score_input = str(getattr(cfg, "learned_score_input", "raw"))
+        self.score_input_grad = bool(getattr(cfg, "learned_score_input_grad", True))
         if share_from is not None:
             self._adopt_projections(share_from, bias)
         else:
@@ -327,6 +329,19 @@ class SparseTopKBottleneck(nn.Module):
         if self.out_proj.bias is not None:
             nn.init.zeros_(self.out_proj.bias)
 
+    def score(self, h: torch.Tensor) -> torch.Tensor:
+        """The separately computed selection score ``s = W_s h' + b_s``.
+
+        ``h'`` is ``h`` (``learned_score_input: raw``) or its parameter-free
+        RMSNorm (``rmsnorm``), detached when ``learned_score_input_grad`` is
+        false (the scorer then trains alone and sends nothing into the trunk).
+        """
+        if not self.score_input_grad:
+            h = h.detach()
+        if self.score_input == "rmsnorm":
+            h = F.rms_norm(h, (h.shape[-1],), eps=1e-6)
+        return self.score_proj(h)
+
     @property
     def value_proj(self) -> nn.Linear:
         """Alias: ``in_proj`` is the value branch."""
@@ -362,7 +377,7 @@ class SparseTopKBottleneck(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         value = self.in_proj(x)
         if self.gated:
-            y = self.decode(self.gate(self.score_proj(x), value))
+            y = self.decode(self.gate(self.score(x), value))
         else:
             self._dust_record(x, value)
             y = self.decode(self.gate(value))
