@@ -276,6 +276,9 @@ Substitute `<host>`, `<port>`, `<name>`. Anything long-running goes in tmux.
   between `$$` lines of their own or in a ```math fence, and inline math as
   `$...$` (only after a space or at line start: `Top-$K$` fails, `Top-\(K\)`
   works) or `\(...\)`; one-line `$$...$$` and `\[...\]` do not render.
+- Don't call a group of runs an "arm", in answers or in notes: the user finds
+  it unclear. Name the setting that sets the group apart instead ("the runs
+  with abs-TopK scores", "the runs with separately computed scores").
 - Record new lessons about boxes or setup here or in the guide, not only in an
   agent's private memory.
 - A streamlit viewer is defined by what survives a box: its script, its data
