@@ -47,6 +47,28 @@ next to `in_proj`, both $d_\text{model} \to N$). It requires
 `surrogate_mode: hard`, and it is the only two-branch mode accepted under
 `code_residual`.
 
+**Support gradient (default, since 2026-11-12).** The binary mask passes the
+scorer no gradient. With `learned_score_support_grad: true` (the default) the
+scorer receives, on the support $S$ of the forward (the deterministic Top-$K$,
+or the Gumbel draw),
+
+$$
+\frac{\partial L}{\partial s_i} = \mathbb 1[i \in S]\,\mathrm{sign}(v_i)\,\frac{\partial L}{\partial y_i},
+$$
+
+the signal $|a_i|$ receives under `abs_topk`, where the score is the value's
+magnitude. The forward is unchanged ($y = v \odot m$; the term
+$(s - \mathrm{sg}(s))\,\mathrm{sign}(v)\,m$ added to it is exactly zero);
+unselected scores receive nothing. With `gumbel_policy` the policy term adds
+to it, so $\lambda$ weighs the two inside the scorer.
+
+**Gumbel over abs-TopK scores.** `gumbel_policy` also applies to
+`selection_mode: abs_topk` (with `surrogate_mode: hard`): the score is $|a|$,
+with $a = W_E h$ (stream), $E_0(x_0 + \Delta_0)$ at block 0 and
+$c_l + E_l\Delta_l$ from block 1 under the code residual. The policy gradient
+then reaches the encoders through $|a|$ and, along the carry, the earlier
+blocks; $\tau$ is measured in units of the code itself.
+
 ## 2. Sampling
 
 Training forwards (gate in `train()` mode, or `PolicyForwardSettings(sample=True)`)
@@ -64,7 +86,7 @@ in sampled order (descending perturbed score), and the mask has exactly $K$
 ones. Evaluation, generation and the probes use the deterministic
 $\mathrm{TopK}_K(s)$ over all $N$ features, whichever pool trains. With
 `gumbel_policy: false`, training also uses the deterministic Top-$K$, and the
-scorer receives no gradient at all.
+scorer trains through the support gradient alone.
 
 The noise is $-\log(-\log U)$ with $U$ from `torch.rand`, clamped to
 $[\text{tiny}, 1-\text{eps}]$. In float32 this truncates the lower tail at
@@ -170,8 +192,8 @@ uses.
 | `gumbel/advantage_rms` | RMS of $\ell_b - \beta_b$ over the window (its mean is 0 by construction) |
 | `gumbel/seq_log_prob_mean` | mean $P_b$ (summed over positions and bottlenecks) |
 | `gumbel/policy_term_diag` | detached $T$; a gradient diagnostic, not an objective |
-| `gumbel/scorer_grad_norm` | norm of the scorers' gradient before clipping: the policy term's alone, since the hard mask passes none |
-| `gumbel/grad_split/*` | at `train.gumbel_grad_split_every_steps` (0: log cadence, -1: off; single process only), on the first micro-batch: `policy_norm` (the gradient of $T$ alone, one extra backward), `ce_norm` (the value gradient), `ratio`, the policy norm on the scorers and on the rest, and `ce_norm_scorer`, which must be 0 |
+| `gumbel/scorer_grad_norm` | norm of the scorers' gradient before clipping: support gradient plus policy term (0 under `abs_topk`, which has no scorer) |
+| `gumbel/grad_split/*` | at `train.gumbel_grad_split_every_steps` (0: log cadence, -1: off; single process only), on the first micro-batch: `policy_norm` (the gradient of $T$ alone, one extra backward), `ce_norm` (the value gradient), `ratio`, the policy norm on the scorers and on the rest, and `ce_norm_scorer`, the support gradient on the scorers (0 with `learned_score_support_grad: false`) |
 | `bottleneck/gumbel_*`, `bottleneck_gumbel_*/blocks.i` | per gate: `exchange_frac` / `overlap` against the deterministic Top-$K$, `margin` $z_{(K)} - z_{(K+1)}$ against the noise scale (std $\pi/\sqrt 6 \approx 1.28$), `logit_std`, `logp_mean`, `logp_per_select`, `pool_size`, `nonfinite` |
 
 ## 6. Random generators and checkpoints
@@ -207,14 +229,18 @@ Under `learned_score_topk`, the config rejects:
 The `gumbel_*` fields are rejected:
 
 - with `gumbel_policy` off, any of them off its default;
-- `gumbel_policy` without `learned_score_topk`;
+- `gumbel_policy` with a selection mode other than `learned_score_topk` or
+  `abs_topk`, or under `abs_topk` with a surrogate, `hard_k_annealing`,
+  `stochastic_width` or `value_shift`;
+- `learned_score_support_grad: false` outside `learned_score_topk`;
 - $\tau \le 0$, $\lambda < 0$, `top_kj` with $j < 1$;
 - `train.micro_batch_size < 2`.
 
 The trainer additionally rejects:
 
-- `learned_score_topk` without `gumbel_policy` under DDP: the scorer has no
-  gradient, and DDP runs without `find_unused_parameters`;
+- `learned_score_topk` without `gumbel_policy` and with
+  `learned_score_support_grad: false` under DDP: the scorer has no gradient,
+  and DDP runs without `find_unused_parameters`;
 - a `first_order` surrogate scope.
 
 DUST tails (`forward_from_gate`) refuse two-branch gates.

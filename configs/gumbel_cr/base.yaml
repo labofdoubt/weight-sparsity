@@ -1,0 +1,21 @@
+# Gumbel Top-(K+J) against hard Top-K under the code residual (2026-11-12).
+#
+# The code-carried hard Top-32 cell of docs/kj-vs-hard-topk-code-residual.tex
+# (8 x 768, N = 1536, code_residual, MD decoupling, batch 96 x 512, seed 1337)
+# with three changes that every run of this campaign shares:
+#   - no output norm (post_norm: false),
+#   - a constant learning rate 6e-4 after the 500-step linear warmup (no
+#     cosine decay), so a run stopped at step s is the first s steps of the
+#     20k run with the same config,
+#   - checkpoints every 5000 steps (the (tau, lambda) search runs override it
+#     to 2500 and stop there; the selected ones are resumed to 20000).
+# Configs: scripts/make_gumbel_cr_configs.py.
+_base_: ../cr_kj/ma_cr_hard_k32_pnorm.yaml
+
+train:
+  lr_schedule: constant
+  checkpoint_every_steps: 5000
+  keep_last_checkpoints: 2
+
+activation_bottleneck:
+  post_norm: false

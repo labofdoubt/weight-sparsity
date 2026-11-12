@@ -315,7 +315,7 @@ class ActivationBottleneckController:
 
     @property
     def gumbel_gates(self) -> list:
-        """The installed learned_score_topk gates with gumbel_policy on."""
+        """The installed gates with gumbel_policy on (learned_score_topk, abs_topk)."""
         return [layer.gate for _, layer in self.layers if layer.gate.gumbel_policy]
 
     @property
@@ -326,8 +326,8 @@ class ActivationBottleneckController:
 
     def scorer_parameters(self) -> List[nn.Parameter]:
         """The score branches' parameters (``W_s``, ``b_s``), each shared
-        tensor once: under learned_score_topk the hard mask passes them no
-        ordinary gradient, so their gradient is the policy term's alone."""
+        tensor once (learned_score_topk; empty otherwise).  Their gradient is
+        the support gradient plus, under gumbel_policy, the policy term."""
         seen, out = set(), []
         for _, layer in self.layers:
             proj = getattr(layer, "score_proj", None)

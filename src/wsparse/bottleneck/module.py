@@ -220,6 +220,7 @@ class SparseTopKBottleneck(nn.Module):
             gumbel_policy=getattr(cfg, "gumbel_policy", False),
             gumbel_temperature=getattr(cfg, "gumbel_temperature", 1.0),
             gumbel_pool=getattr(cfg, "gumbel_pool", "all"),
+            score_support_grad=getattr(cfg, "learned_score_support_grad", True),
         )
         self.init_mode = getattr(cfg, "init_mode", "default")
         if self.init_mode in _RENAMED_INIT_MODES:

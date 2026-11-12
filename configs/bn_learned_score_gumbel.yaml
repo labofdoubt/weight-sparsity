@@ -3,8 +3,8 @@
 # the gate: the support is TopK of an independent scorer s = W_s h + b_s of the
 # residual-stream state h (not of the code magnitudes), drawn in training from
 # the Gumbel-Top-K policy TopK_K(s / tau + G), and the kept values W_E h are
-# carried unscaled on the binary mask.  The hard mask passes the scorer no
-# gradient; it trains through the policy term
+# carried unscaled on the binary mask.  The scorer trains through the support
+# gradient sign(v) dL/dy on the drawn support and the policy term
 #     lambda * sum_b w_b stopgrad(l_b - beta_b) P_b
 # with the leave-one-out baseline beta_b over the other sequences of the
 # micro-batch (wsparse.bottleneck.gumbel_policy, docs/gumbel-policy-topk.md).

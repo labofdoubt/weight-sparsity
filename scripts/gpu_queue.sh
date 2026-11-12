@@ -13,9 +13,13 @@
 #
 # jobs.txt has one job per line:   run_name|config.yaml|--extra --overrides
 # Lines are consumed as they start, so the file also serves as "what is left".
+#
+# --hold FILE: an empty queue does not end a worker until FILE exists, so a
+# controller can append jobs that depend on finished ones (it creates FILE
+# once it has appended the last).
 set -uo pipefail
 
-JOBS= ; OUT= ; GPUS=0,1,2,3 ; SHARED= ; CLEAN= ; THREADS=
+JOBS= ; OUT= ; GPUS=0,1,2,3 ; SHARED= ; CLEAN= ; THREADS= ; HOLD=
 while [ $# -gt 0 ]; do
   case "$1" in
     --jobs) JOBS=$2; shift 2 ;;
@@ -24,6 +28,7 @@ while [ $# -gt 0 ]; do
     --shared) SHARED=$2; shift 2 ;;
     --clean) CLEAN=$2; shift 2 ;;       # remote to verify against before pruning
     --threads) THREADS=$2; shift 2 ;;
+    --hold) HOLD=$2; shift 2 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
@@ -76,6 +81,9 @@ worker () {
   local gpu=$1 job NAME REST CONF EXTRA rc
   while :; do
     job=$(flock "$LOCK" -c "head -1 '$JOBS'; sed -i 1d '$JOBS'")
+    if [ -z "$job" ] && [ -n "$HOLD" ] && [ ! -e "$HOLD" ]; then
+      sleep 30; continue   # the controller may still append jobs
+    fi
     [ -z "$job" ] && { echo "[gpu$gpu] queue empty $(date -Is)"; return 0; }
     NAME="${job%%|*}"; REST="${job#*|}"; CONF="${REST%%|*}"; EXTRA="${REST#*|}"
     echo "[gpu$gpu] START $NAME  $(date -Is)"

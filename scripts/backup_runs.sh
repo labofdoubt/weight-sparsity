@@ -23,7 +23,7 @@
 #                     leave two same-named objects on Drive.
 set -uo pipefail
 
-USAGE="usage: backup_runs.sh <runs_dir> <remote:path> [--with-checkpoints|--all-checkpoints] [--checkpoints-only]"
+USAGE="usage: backup_runs.sh <runs_dir> <remote:path> [--with-checkpoints|--all-checkpoints] [--checkpoints-only] [--no-latest]"
 SRC=${1:?$USAGE}
 DST=${2:?$USAGE}
 shift 2
@@ -31,11 +31,15 @@ shift 2
 WITH_CKPT=0
 ALL_CKPT=0
 CKPT_ONLY=0
+NO_LATEST=0
 for arg in "$@"; do
   case "$arg" in
     --with-checkpoints) WITH_CKPT=1 ;;
     --all-checkpoints)  WITH_CKPT=1; ALL_CKPT=1 ;;
     --checkpoints-only) WITH_CKPT=1; CKPT_ONLY=1 ;;
+    # with --all-checkpoints latest.pt is a copy of the newest ckpt_step*.pt:
+    # skipping it halves the checkpoint upload (Drive caps uploads at 750 GB/day)
+    --no-latest)        NO_LATEST=1 ;;
     "") ;;  # backup_watch.sh passes one empty word when it has no extra flags
     *) echo "[backup] unknown flag '$arg' -- $USAGE" >&2; exit 2 ;;
   esac
@@ -63,7 +67,7 @@ if [ "$CKPT_ONLY" = 0 ]; then
     --filter "+ **/tb/**"
   )
 fi
-[ "$WITH_CKPT" = 1 ] && FILTERS+=( --filter "+ **/latest.pt" )
+[ "$WITH_CKPT" = 1 ] && [ "$NO_LATEST" = 0 ] && FILTERS+=( --filter "+ **/latest.pt" )
 FILTERS+=( --filter "- **" )
 
 tier=light; [ "$WITH_CKPT" = 1 ] && tier=final-checkpoint; [ "$ALL_CKPT" = 1 ] && tier=all-checkpoints

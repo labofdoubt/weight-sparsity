@@ -399,21 +399,23 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
               + (f"every {det_every} steps (one extra noise-off forward per micro-batch)"
                  if det_every > 0 else "off"))
 
-    # gumbel_policy (learned_score_topk): the per-rank training noise
-    # generator, seeded independently of everything else as the laplace_policy
-    # one is, and the scorer parameters, whose gradient is the policy term's
-    # alone (the hard mask passes them none)
+    # gumbel_policy (learned_score_topk | abs_topk): the per-rank training
+    # noise generator, seeded independently of everything else as the
+    # laplace_policy one is, and the scorer parameters of learned_score_topk
+    # (support gradient + policy term; none under abs_topk)
     gumbel: Optional[GumbelTrainingState] = None
     gumbel_settings: Optional[PolicyForwardSettings] = None
     gumbel_split_every = 0
     scorer_params: List[torch.nn.Parameter] = []
-    if bottleneck.enabled and cfg.activation_bottleneck.selection_mode == "learned_score_topk":
-        gc = cfg.activation_bottleneck
-        if not bottleneck.gumbel_active and world > 1:
+    gc = cfg.activation_bottleneck
+    if bottleneck.enabled and (gc.selection_mode == "learned_score_topk" or gc.gumbel_policy):
+        learned = gc.selection_mode == "learned_score_topk"
+        if learned and not gc.learned_score_support_grad and not bottleneck.gumbel_active \
+                and world > 1:
             raise ValueError(
-                "learned_score_topk without gumbel_policy gives the scorer no gradient at "
-                "all, which DDP (no find_unused_parameters) cannot reduce; run "
-                "single-process or set gumbel_policy: true")
+                "learned_score_topk without gumbel_policy and without the support gradient "
+                "gives the scorer no gradient at all, which DDP (no find_unused_parameters) "
+                "cannot reduce; run single-process or enable one of them")
         scorer_params = bottleneck.scorer_parameters()
         if bottleneck.gumbel_active:
             gumbel = GumbelTrainingState(device, seed=cfg.train.seed + 104729 * rank + 3)
@@ -428,15 +430,21 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
                 split_note = "off under DDP"
             elif gumbel_split_every < 0:
                 split_note = "off"
-            print(f"[train] gumbel_policy: tau {gc.gumbel_temperature:g}, lambda "
+            print(f"[train] gumbel_policy over {'learned scores' if learned else '|a|'}: "
+                  f"tau {gc.gumbel_temperature:g}, lambda "
                   f"{gc.gumbel_policy_coef:g}, pool {gc.gumbel_pool}"
                   + (f" (Top-{gc.k + gc.j})" if gc.gumbel_pool == "top_kj" else "")
                   + f", leave-one-out baseline over the other {int(cfg.train.micro_batch_size) - 1} "
                   f"sequences of each micro-batch; val draws {cfg.train.policy_val_samples}; "
                   f"gradient split {split_note}")
-        else:
-            print("[train] learned_score_topk with gumbel_policy off: deterministic TopK(s) "
-                  "in training, the scorer receives no gradient")
+        if learned:
+            sources = (["support (sign(v) dL/dy on S)"] if gc.learned_score_support_grad
+                       else []) + (["policy term"] if bottleneck.gumbel_active else [])
+            print("[train] learned_score_topk: "
+                  + ("Gumbel-Top-K support" if bottleneck.gumbel_active
+                     else "deterministic TopK(s)")
+                  + " in training; scorer gradient: "
+                  + (" + ".join(sources) if sources else "none"))
 
     # dust: the alternation state and the dedicated noise generator (seeded
     # independently of everything else, as the policy generator is)
@@ -836,8 +844,9 @@ def train(cfg: Config, on_step: Optional[Callable[..., None]] = None,
         # configured, else the run's (zero_grad above cleared the shared .grad)
         active_opt = dust_optimizer if (dust_step and dust_optimizer is not None) else optimizer
         if gumbel is not None and (step1 % cfg.train.log_every_steps == 0 or step1 == 1):
-            # the scorer's gradient is the policy term's alone (the hard mask
-            # passes it none): its norm before clipping, unscaled
+            # the scorer's gradient (support gradient + policy term under
+            # learned_score_topk; no scorer under abs_topk): norm before
+            # clipping, unscaled
             sq = [p.grad.detach().float().pow(2).sum() for p in scorer_params
                   if p.grad is not None]
             unscale = scaler.get_scale() if scaler.is_enabled() else 1.0
@@ -1175,8 +1184,9 @@ def gumbel_grad_split(params, g_pol, scorer_params, factor: float) -> Dict[str, 
     backward (``.grad`` was empty before it), so ``p.grad - g_pol`` is the
     ordinary (value) gradient.  ``factor`` (accumulation / loss scale) turns
     both into the micro-batch loss's own units.  ``ce_norm_scorer`` is the
-    value gradient on the scorer: zero up to rounding, because the hard mask
-    passes the scorer none -- a check, not a quantity to tune.
+    CE gradient on the scorer: the support gradient of learned_score_topk
+    (zero up to rounding with learned_score_support_grad off, and no scorer
+    under abs_topk).
     """
     scorer = {id(p) for p in scorer_params}
     parts: List[torch.Tensor] = []

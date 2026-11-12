@@ -1,11 +1,12 @@
-"""learned_score_topk with gumbel_policy (wsparse.bottleneck.gumbel_policy).
+"""learned_score_topk and abs_topk with gumbel_policy (wsparse.bottleneck.gumbel_policy).
 
 The ordered Plackett-Luce log-probability against a direct masked-logsumexp
 loop and against normalization; the Gumbel-Top-K sampling frequencies (all N
 and the Top(K+J) pool) against the Plackett-Luce law; the unbiasedness of the
 score-function gradient on an enumerable objective; the gate's exact-K forward,
-deterministic evaluation and gradient routing (none to the scorer through the
-forward, policy gradient to every score -- or every pool member); the
+deterministic evaluation and gradient routing (the support gradient
+sign(v) dL/dy to the selected scores through the forward, policy gradient to
+every score -- or every pool member); the same under abs_topk; the
 leave-one-out baseline and the loss; scoring from the residual stream in both
 stacks; the config rules; and a training run with a resume.
 """
@@ -199,19 +200,26 @@ def test_gate_exact_k_and_deterministic_eval(pool):
     assert not torch.equal(mask, clean)
 
 
+@pytest.mark.parametrize("support_grad", [True, False])
 @pytest.mark.parametrize("pool", ["all", "top_kj"])
-def test_gradient_routing(pool):
-    """The forward gives the scorer nothing and the values m * g; the recorded
-    log-probability reaches every score (all N, or every pool member)."""
-    g = gate_of(gumbel_pool=pool)
+def test_gradient_routing(pool, support_grad):
+    """The forward gives the values m * g and the selected scores sign(v) g
+    (nothing with the support gradient off); the recorded log-probability
+    reaches every score (all N, or every pool member)."""
+    g = gate_of(gumbel_pool=pool, score_support_grad=support_grad)
     torch.manual_seed(2)
     s = torch.randn(3, 5, 16, requires_grad=True)
     v = torch.randn(3, 5, 16, requires_grad=True)
     y, col = sampled(g, s, v)
+    mask = y != 0
+    assert torch.equal(y, torch.where(mask, v, torch.zeros_like(v)))
     up = torch.randn_like(y)
     gs, gv = torch.autograd.grad((y * up).sum(), (s, v), allow_unused=True, retain_graph=True)
-    assert gs is None or (gs == 0).all()
-    torch.testing.assert_close(gv, up * (y != 0))
+    if support_grad:
+        torch.testing.assert_close(gs, up * v.detach().sign() * mask)
+    else:
+        assert gs is None or (gs == 0).all()
+    torch.testing.assert_close(gv, up * mask)
     assert len(col.records) == 1 and col.records[0].valid_only
     lp, = torch.autograd.grad(col.records[0].log_prob.sum(), s)
     if pool == "all":
@@ -219,6 +227,67 @@ def test_gradient_routing(pool):
     else:
         cand = torch.zeros_like(s, dtype=torch.bool).scatter(-1, torch.topk(s, 8, -1).indices, True)
         assert (lp[cand] != 0).all() and (lp[~cand] == 0).all()
+
+
+@pytest.mark.parametrize("support_grad", [True, False])
+def test_deterministic_learned_score_support_gradient(support_grad):
+    """gumbel_policy off: TopK(s) in training, forward v * m, and the selected
+    scores get sign(v) dL/dy (the abs_topk signal); unselected ones nothing."""
+    g = gate_of(gumbel_policy=False, gumbel_temperature=1.0, score_support_grad=support_grad)
+    torch.manual_seed(4)
+    s = torch.randn(3, 5, 16, requires_grad=True)
+    v = torch.randn(3, 5, 16, requires_grad=True)
+    y = g(s, v)
+    clean = torch.zeros_like(s, dtype=torch.bool).scatter(-1, torch.topk(s, 3, -1).indices, True)
+    assert torch.equal(y, torch.where(clean, v, torch.zeros_like(v)))
+    up = torch.randn_like(y)
+    gs, gv = torch.autograd.grad((y * up).sum(), (s, v), allow_unused=True)
+    torch.testing.assert_close(gv, up * clean)
+    if support_grad:
+        torch.testing.assert_close(gs, up * v.detach().sign() * clean)
+    else:
+        assert gs is None or (gs == 0).all()
+
+
+@pytest.mark.parametrize("pool", ["all", "top_kj"])
+def test_abs_topk_gate_samples_the_magnitudes(pool):
+    """abs_topk: the policy is over |a|, exactly K kept unscaled, the
+    log-probability reaches a through |a|, evaluation is TopK(|a|)."""
+    g = AdaptiveLapSumTopKGate(n_features=16, k=3, j=5, selection_mode="abs_topk",
+                               surrogate_mode="hard", gumbel_policy=True,
+                               gumbel_temperature=0.5, gumbel_pool=pool)
+    g.train()
+    torch.manual_seed(5)
+    a = torch.randn(3, 5, 16, requires_grad=True)
+    col = PolicyCollector()
+    with policy_forward([g], PolicyForwardSettings(sample=True, collector=col,
+                                                   generator=make_generator(CPU, 0))):
+        y = g(a)
+    mask = y != 0
+    assert (mask.sum(-1) == 3).all()
+    assert torch.equal(y, torch.where(mask, a, torch.zeros_like(a)))
+    if pool == "top_kj":
+        cand = torch.zeros_like(mask).scatter(-1, torch.topk(a.abs(), 8, -1).indices, True)
+        assert not (mask & ~cand).any()
+    up = torch.randn_like(y)
+    ga, = torch.autograd.grad((y * up).sum(), a, retain_graph=True)
+    torch.testing.assert_close(ga, up * mask)                  # the plain hard-mask gradient
+    lp, = torch.autograd.grad(col.records[0].log_prob.sum(), a)
+    if pool == "all":
+        assert (lp != 0).all()
+    else:
+        assert (lp[cand] != 0).all() and (lp[~cand] == 0).all()
+    # through |a|: the same draw from the magnitudes as a leaf, d/da = sign(a) d/d|a|
+    m = a.detach().abs().requires_grad_()
+    col2 = PolicyCollector()
+    with policy_forward([g], PolicyForwardSettings(sample=True, collector=col2,
+                                                   generator=make_generator(CPU, 0))):
+        assert torch.equal(g(m) != 0, mask)
+    lp_m, = torch.autograd.grad(col2.records[0].log_prob.sum(), m)
+    torch.testing.assert_close(lp, a.detach().sign() * lp_m)
+    g.eval()
+    clean = torch.zeros_like(mask).scatter(-1, torch.topk(a.abs(), 3, -1).indices, True)
+    assert torch.equal(g(a) != 0, clean)
 
 
 def test_no_record_without_collector_or_grad():
@@ -356,6 +425,24 @@ def test_training_forward_records_one_term_per_gate(code_residual, pool):
         assert p.grad is not None and p.grad.abs().sum() > 0
 
 
+@pytest.mark.parametrize("code_residual", [False, True])
+def test_abs_topk_training_forward_reaches_the_encoders(code_residual):
+    """abs_topk + gumbel_policy: one record per gate, and the policy term alone
+    reaches every encoder (under code_residual also through the carry)."""
+    model, ctl = model_of(code_residual, selection_mode="abs_topk", gumbel_pool="top_kj")
+    assert ctl.gumbel_active and ctl.scorer_parameters() == []
+    model.train()
+    idx = torch.randint(0, 61, (4, 16))
+    out = model(idx, idx.roll(-1, 1), return_loss_details=True,
+                policy=PolicyForwardSettings(sample=True, generator=make_generator(CPU, 1)))
+    assert len(out.policy_records) == 3
+    for _, layer in ctl.layers:
+        assert layer.gate.diagnostics["active_count"] == 8.0
+    encoders = [layer.in_proj.weight for _, layer in ctl.layers]
+    grads = torch.autograd.grad(out.policy_log_prob.sum(), encoders)
+    assert all(gr.abs().sum() > 0 for gr in grads)
+
+
 # --------------------------------------------------------------------------- #
 # config
 # --------------------------------------------------------------------------- #
@@ -371,7 +458,13 @@ def ab(**kw):
 @pytest.mark.parametrize("kw, match", [
     (dict(surrogate_mode="rblapsum"), "selection_mode 'topk' or 'abs_topk'"),
     (dict(surrogate_mode="lapsum"), "surrogate_mode='hard'"),
-    (dict(selection_mode="abs_topk", gumbel_policy=True), "learned_score_topk"),
+    (dict(selection_mode="topk", gumbel_policy=True), "'learned_score_topk' or 'abs_topk'"),
+    (dict(selection_mode="abs_topk", surrogate_mode="lapsum", gumbel_policy=True),
+     "surrogate_mode='hard'"),
+    (dict(selection_mode="abs_topk", learned_score_support_grad=False),
+     "learned_score_topk' only"),
+    (dict(selection_mode="abs_topk", gumbel_policy=True, stochastic_width="uniform"),
+     "stochastic_width"),
     (dict(gumbel_temperature=0.3), "gumbel_policy: true only"),
     (dict(gumbel_policy_coef=0.01), "gumbel_policy: true only"),
     (dict(gumbel_pool="top_kj"), "gumbel_policy: true only"),
@@ -391,8 +484,12 @@ def test_config_rejects(kw, match):
 def test_config_accepts_and_defaults_are_unchanged():
     ab(gumbel_policy=True, gumbel_pool="top_kj", code_residual=True,
        placement="residual_out", gumbel_policy_coef=0.0)
+    ab(selection_mode="abs_topk", gumbel_policy=True, gumbel_pool="top_kj",
+       code_residual=True, placement="residual_out")
+    ab(learned_score_support_grad=False)
     d = ActivationBottleneckConfig()
     assert (d.selection_mode, d.gumbel_policy, d.gumbel_pool) == ("abs_topk", False, "all")
+    assert d.learned_score_support_grad is True
 
 
 def test_config_needs_two_sequences_per_micro_batch():
@@ -450,26 +547,34 @@ def train_cfg(tmp_path, name, max_steps=4, **bn):
     return cfg
 
 
-@pytest.mark.parametrize("code_residual, pool", [(False, "all"), (True, "top_kj")])
-def test_training_run_and_resume(tmp_path, code_residual, pool):
-    cfg = train_cfg(tmp_path, f"g_{code_residual}", code_residual=code_residual,
-                    gumbel_pool=pool)
+@pytest.mark.parametrize("code_residual, pool, mode", [
+    (False, "all", "learned_score_topk"), (True, "top_kj", "learned_score_topk"),
+    (True, "top_kj", "abs_topk")])
+def test_training_run_and_resume(tmp_path, code_residual, pool, mode):
+    name = f"g_{code_residual}_{mode}"
+    cfg = train_cfg(tmp_path, name, code_residual=code_residual, gumbel_pool=pool,
+                    selection_mode=mode)
     summary = train(cfg)
     assert math.isfinite(summary["val/ce"]) and math.isfinite(summary["train/ce"])
     assert summary["bottleneck/active_count"] == 16.0
     assert summary["gumbel/nonfinite"] == 0.0
-    # the gradient split: the scorer's value gradient is zero, its policy one is not
-    assert summary["gumbel/grad_split/ce_norm_scorer"] < 1e-6 * summary[
-        "gumbel/grad_split/policy_norm_scorer"]
-    assert summary["gumbel/grad_split/policy_norm_scorer"] > 0
-    assert summary["gumbel/scorer_grad_norm"] > 0
+    assert summary["gumbel/grad_split/policy_norm"] > 0
+    if mode == "learned_score_topk":
+        # the scorer gets both the support gradient and the policy term
+        assert summary["gumbel/grad_split/ce_norm_scorer"] > 0
+        assert summary["gumbel/grad_split/policy_norm_scorer"] > 0
+        assert summary["gumbel/scorer_grad_norm"] > 0
+    else:
+        # no scorer: the policy term goes to the encoders and the trunk
+        assert summary["gumbel/grad_split/policy_norm_scorer"] == 0
+        assert summary["gumbel/grad_split/policy_norm_rest"] > 0
     assert "val_stochastic/ce" in summary
     ckpt = torch.load(f"{cfg.train.out_dir}/{cfg.train.run_name}/latest.pt",
                       weights_only=False)
     assert ckpt["gumbel_state"]["world_size"] == 1
     # resume to step 6 from the step-4 checkpoint
-    cfg2 = train_cfg(tmp_path, f"g_{code_residual}", max_steps=6,
-                     code_residual=code_residual, gumbel_pool=pool)
+    cfg2 = train_cfg(tmp_path, name, max_steps=6, code_residual=code_residual,
+                     gumbel_pool=pool, selection_mode=mode)
     cfg2.train.resume = "auto"
     summary2 = train(cfg2)
     assert math.isfinite(summary2["val/ce"])
@@ -488,8 +593,15 @@ def test_resume_without_gumbel_state_is_rejected(tmp_path):
         train(cfg2)
 
 
-def test_coefficient_zero_trains_the_values_only(tmp_path):
-    cfg = train_cfg(tmp_path, "coef0", gumbel_policy_coef=0.0)
+@pytest.mark.parametrize("support_grad", [True, False])
+def test_coefficient_zero_leaves_the_support_gradient(tmp_path, support_grad):
+    """lambda = 0: the scorer trains through the support gradient alone, and
+    not at all with that off too."""
+    cfg = train_cfg(tmp_path, f"coef0_{support_grad}", gumbel_policy_coef=0.0,
+                    learned_score_support_grad=support_grad)
     summary = train(cfg)
-    assert summary["gumbel/scorer_grad_norm"] == 0.0
+    if support_grad:
+        assert summary["gumbel/scorer_grad_norm"] > 0
+    else:
+        assert summary["gumbel/scorer_grad_norm"] == 0.0
     assert math.isfinite(summary["val/ce"])

@@ -91,6 +91,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         gumbel_policy: bool = False,
         gumbel_temperature: float = 1.0,
         gumbel_pool: str = "all",
+        score_support_grad: bool = True,
     ):
         super().__init__()
         validate_gate_shapes(n_features, k, j, surrogate_mode)
@@ -125,9 +126,13 @@ class AdaptiveLapSumTopKGate(nn.Module):
         if selection_mode == "learned_score_topk" and surrogate_mode != "hard":
             raise ValueError("selection_mode='learned_score_topk' needs surrogate_mode='hard', "
                              f"got {surrogate_mode!r}")
-        if gumbel_policy and selection_mode != "learned_score_topk":
-            raise ValueError("gumbel_policy samples a learned-score support; it needs "
-                             f"selection_mode='learned_score_topk', got {selection_mode!r}")
+        if gumbel_policy and selection_mode not in ("learned_score_topk", "abs_topk"):
+            raise ValueError("gumbel_policy samples the support of the learned score or of "
+                             "|a|; it needs selection_mode 'learned_score_topk' or "
+                             f"'abs_topk', got {selection_mode!r}")
+        if gumbel_policy and surrogate_mode != "hard":
+            raise ValueError("gumbel_policy needs surrogate_mode='hard', "
+                             f"got {surrogate_mode!r}")
         if not (math.isfinite(float(gumbel_temperature)) and float(gumbel_temperature) > 0):
             raise ValueError(f"gumbel_temperature must be positive and finite, "
                              f"got {gumbel_temperature!r}")
@@ -137,6 +142,9 @@ class AdaptiveLapSumTopKGate(nn.Module):
             raise ValueError("gumbel_pool='top_kj' draws K of the Top(K+J) candidates; "
                              "set j >= 1 (with j = 0 the support is forced)")
         self.gumbel_policy = bool(gumbel_policy)
+        # learned_score_topk: the scorer's CE gradient on the forward's support,
+        # dL/ds_i = 1[i in S] sign(v_i) dL/dy_i (see _support_score_grad)
+        self.score_support_grad = bool(score_support_grad)
         self.gumbel_temperature = float(gumbel_temperature)
         self.gumbel_pool = gumbel_pool
         if surrogate_mode not in ("lapsum", "soft_lapsum", "rblapsum", "rblapsum_sf", "hard",
@@ -511,7 +519,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
                     self._forward_diag["active_count"] = width
             if self.value_shift != "none":
                 return self._shifted(value, cand_idx[..., : self.k])
-            return value * hard_mask
+            return self._support_score_grad(value * hard_mask, scores, value, hard_mask)
 
         cand = cand_scores.to(self.solver_dtype)
         # Optional analysis capture: the LapSum support gradient in SELECTION-
@@ -574,7 +582,27 @@ class AdaptiveLapSumTopKGate(nn.Module):
             return bool(settings.sample)
         return bool(self.training)
 
-    # ---- learned_score_topk + gumbel_policy ------------------------------------ #
+    # ---- learned_score_topk: the support gradient of the scores ---------------- #
+    def _support_score_grad(self, y: torch.Tensor, scores: torch.Tensor,
+                            value: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """``y`` in the forward; ``dL/ds_i = 1[i in S] sign(v_i) dL/dy_i`` in the backward.
+
+        learned_score_topk only (with ``score_support_grad``): the binary mask
+        passes no gradient to the separately computed scores, so the support
+        S of this forward (deterministic or drawn) hands each selected score
+        the first-order value of keeping its feature, signed as the value --
+        the same signal ``|a_i|`` receives under abs_topk, where the score is
+        the value's magnitude.  Unselected scores receive nothing.  The added
+        term ``(s - sg(s)) * sign(v) * m`` is exactly zero in the forward, so
+        the output is ``value * mask`` up to the sign of zeros.
+        """
+        if (self.selection_mode != "learned_score_topk" or not self.score_support_grad
+                or not torch.is_grad_enabled() or not scores.requires_grad):
+            return y
+        direction = (value.detach().sign() * mask).to(y.dtype)
+        return y + (scores - scores.detach()).to(y.dtype) * direction
+
+    # ---- gumbel_policy (learned_score_topk, abs_topk) ------------------------- #
     def gumbel_sampling(self) -> bool:
         """Whether this forward draws a Gumbel-Top-K support (gumbel_policy).
 
@@ -594,8 +622,11 @@ class AdaptiveLapSumTopKGate(nn.Module):
         """Exactly-K support drawn from the Gumbel-Top-K policy over all N scores.
 
         The values are carried unscaled on the binary mask (ordinary
-        mask autograd: ``dL/dvalue = m * g``, nothing reaches ``scores``
-        through the forward).  With a collector installed and grad enabled the
+        mask autograd: ``dL/dvalue = m * g``).  Under learned_score_topk the
+        scorer also gets the support gradient of :meth:`_support_score_grad`
+        on the drawn support; under abs_topk the score is ``|value|``, so the
+        value gradient on the support already moves it.  With a collector
+        installed and grad enabled the
         ordered Plackett-Luce log-probability of the draw, differentiable in
         every score, is recorded for the trainer's policy term
         (:mod:`wsparse.bottleneck.gumbel_policy`); its value is masked to the
@@ -609,7 +640,7 @@ class AdaptiveLapSumTopKGate(nn.Module):
         hard_mask = torch.zeros_like(scores).scatter(-1, draw.idx, 1.0)
         if self._mask_sink is not None:
             self._mask_sink["mask"] = (hard_mask != 0).detach()
-        y = value * hard_mask
+        y = self._support_score_grad(value * hard_mask, scores, value, hard_mask)
         log_prob = None
         if collector is not None and torch.is_grad_enabled():
             with torch.autocast(device_type=scores.device.type, enabled=False):
@@ -1108,6 +1139,8 @@ class AdaptiveLapSumTopKGate(nn.Module):
         if self.gumbel_policy:
             policy = (f", gumbel_policy(tau={self.gumbel_temperature:g}, "
                       f"pool={self.gumbel_pool})")
+        if self.selection_mode == "learned_score_topk":
+            policy += f", score_support_grad={self.score_support_grad}"
         return (
             f"n_features={self.n_features}, k={self.k}, j={self.j}, "
             f"mode={self.selection_mode}, surrogate={self.surrogate_mode}, "
