@@ -167,6 +167,7 @@ class SparseTopKBottleneck(nn.Module):
         self.shared = bool(getattr(cfg, "share_projections", False))
         self.score_input = str(getattr(cfg, "learned_score_input", "raw"))
         self.score_input_grad = bool(getattr(cfg, "learned_score_input_grad", True))
+        self.carry_bonus = float(getattr(cfg, "learned_score_carry_bonus", 0.0))
         if share_from is not None:
             self._adopt_projections(share_from, bias)
         else:

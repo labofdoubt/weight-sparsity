@@ -723,3 +723,23 @@ def test_training_with_token_draw_and_resume(tmp_path):
     assert math.isfinite(train(cfg2)["val/ce"])
     with pytest.raises(ValueError, match="needs gumbel_gates_per_forward > 0"):
         ab(gumbel_policy=True, gumbel_gates_draw="token")
+
+
+def test_carry_bonus_keeps_the_inherited_support():
+    """learned_score_carry_bonus: a large bonus fixes every block's support to
+    block 0's; the option needs learned_score_topk under code_residual."""
+    model, ctl = model_of(True, gumbel_policy=False, gumbel_temperature=1.0, n_layers=4,
+                          learned_score_carry_bonus=1e4)
+    model.eval()
+    codes = []
+    hooks = [layer.gate.register_forward_hook(lambda m, a, out: codes.append(out != 0))
+             for _, layer in ctl.layers]
+    model(torch.randint(0, 61, (2, 16)))
+    for h in hooks:
+        h.remove()
+    assert all(torch.equal(c, codes[0]) for c in codes[1:])
+    with pytest.raises(ValueError, match="under code_residual only"):
+        ab(learned_score_carry_bonus=1.0)
+    with pytest.raises(ValueError, match="under code_residual only"):
+        ab(selection_mode="abs_topk", code_residual=True, placement="residual_out",
+           learned_score_carry_bonus=1.0)

@@ -464,7 +464,12 @@ class TransformerLM(nn.Module):
                     if bot.gated:
                         # learned_score_topk: scored from h_l = x_l + Delta_l,
                         # the carried code plus the encoded update kept on it
-                        code = bot.gate(bot.score(x + delta), code + update)
+                        s = bot.score(x + delta)
+                        if bot.carry_bonus:
+                            # learned_score_carry_bonus: the inherited support
+                            # keeps its place unless the scorer outbids it
+                            s = s + bot.carry_bonus * (code != 0).to(s.dtype)
+                        code = bot.gate(s, code + update)
                     elif getattr(bot.gate, "rblapsum_surrogate_scope",
                                  "pool").startswith("update"):
                         code = self._split_surrogate(bot.gate, code, update)

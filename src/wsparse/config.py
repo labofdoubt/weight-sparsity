@@ -740,6 +740,15 @@ class ActivationBottleneckConfig:
     # term train W_s, b_s only and never reach the trunk through h.
     learned_score_input: str = "raw"  # raw | rmsnorm
     learned_score_input_grad: bool = True
+    # learned_score_topk under code_residual: a constant bonus gamma added to
+    # the scores of the coordinates the carried code occupies,
+    #     s_l <- s_l + gamma * 1[c_l != 0]       (blocks l >= 1),
+    # so the support a block inherits stays selected unless the scorer outbids
+    # it.  An independent scorer otherwise re-draws the support at every block
+    # (consecutive supports share ~K/N of their coordinates at initialization)
+    # and the carry -- the only path a block's input has to later blocks --
+    # is cut.  0: off; a large value fixes the support after block 0.
+    learned_score_carry_bonus: float = 0.0
 
     # ---- dust (surrogate_mode: dust) ---------------------------------------- #
     # See wsparse.bottleneck.dust.  Every field here is read by that mode only;
@@ -1574,6 +1583,10 @@ class ActivationBottleneckConfig:
         if self.learned_score_input not in ("raw", "rmsnorm"):
             raise ValueError(f"unknown learned_score_input: {self.learned_score_input!r} "
                              "(raw | rmsnorm)")
+        if float(self.learned_score_carry_bonus) != 0.0 and (
+                self.selection_mode != "learned_score_topk" or not self.code_residual):
+            raise ValueError("learned_score_carry_bonus applies to selection_mode="
+                             "'learned_score_topk' under code_residual only")
         if ((self.learned_score_input != "raw" or not self.learned_score_input_grad)
                 and self.selection_mode != "learned_score_topk"):
             raise ValueError("learned_score_input / learned_score_input_grad apply to "
