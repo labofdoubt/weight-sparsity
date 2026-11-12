@@ -72,6 +72,7 @@ def main():
     ap.add_argument("--batch", type=int, default=4)
     ap.add_argument("--seq", type=int, default=512)
     ap.add_argument("--label", default="")
+    ap.add_argument("--json", default="", help="append {label, k, overlap, carried} to this file")
     args = ap.parse_args()
     ckpt = None
     if args.ckpt:
@@ -91,6 +92,12 @@ def main():
           + f" | mean {np.mean([o for o, _ in rows]):.3f};  carried energy "
           + " ".join(f"{c:.3f}" for _, c in rows)
           + f" | mean {np.mean([c for _, c in rows]):.3f}")
+    if args.json:
+        data = json.load(open(args.json)) if os.path.exists(args.json) else []
+        data.append({"label": args.label, "k": ab.k, "set": args.set,
+                     "overlap": [o for o, _ in rows], "carried": [c for _, c in rows]})
+        with open(args.json, "w") as f:
+            json.dump(data, f, indent=1)
 
 
 if __name__ == "__main__":
