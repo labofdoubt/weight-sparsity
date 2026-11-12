@@ -18,12 +18,11 @@ import sys
 STOP = 2500
 RUNS = [  # name, label, color, linestyle
     ("gcr_hard_abs_k16", "abs-TopK", "black", "-"),
-    ("gcr_hard_sep_k16", "separate, as configured", "tab:red", "-"),
-    ("sx_sep_k16_cb0_detach", "separate, input detached", "tab:orange", "--"),
-    ("sx_sep_k16_cb5", "separate, carry bonus 5", "tab:purple", "--"),
-    ("sx_sep_k16_cb5_detach", "separate, carry bonus 5 + input detached", "tab:blue", "-"),
-    ("sx_sep_k16_cb1e4_detach", "separate, support fixed after block 0 + input detached",
-     "tab:green", "-"),
+    ("gcr_hard_sep_k16", "sep., as configured", "tab:red", "-"),
+    ("sx_sep_k16_cb0_detach", "sep., input detached", "tab:orange", "--"),
+    ("sx_sep_k16_cb5", r"sep., bonus $\gamma$=5", "tab:purple", "--"),
+    ("sx_sep_k16_cb5_detach", r"sep., bonus $\gamma$=5 + detached", "tab:blue", "-"),
+    ("sx_sep_k16_cb1e4_detach", "sep., fixed support + detached", "tab:green", "-"),
 ]
 GNORM = ["gcr_hard_abs_k16", "gcr_hard_sep_k16", "sx_sep_k16_cb5", "sx_sep_k16_cb5_detach"]
 
@@ -54,36 +53,37 @@ def plot(curves_path, overlap_path, out):
 
     curves = json.load(open(curves_path))
     overlap = json.load(open(overlap_path))
-    fig, axes = plt.subplots(1, 3, figsize=(16, 4.6))
+    plt.rcParams.update({"font.size": 10.5, "axes.titlesize": 11, "legend.fontsize": 8.5})
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4.4))
 
     ax = axes[0]
     colors = {"abs-TopK": "black", "separate": "tab:red", "separate+bonus5": "tab:blue"}
     names = {"abs-TopK": "abs-TopK", "separate": "separate scores",
-             "separate+bonus5": "separate scores, carry bonus 5"}
+             "separate+bonus5": r"separate, bonus $\gamma$=5"}
     for row in overlap:
         xs = list(range(len(row["overlap"])))
         ax.plot(xs, row["overlap"], "o-", color=colors[row["label"]], label=names[row["label"]])
-    ax.set_xticks(range(7), [rf"{i}$\to${i + 1}" for i in range(7)], fontsize=8)
+    ax.set_xticks(range(7), [rf"{i}$\to${i + 1}" for i in range(7)], fontsize=9)
     ax.set_xlabel(r"consecutive bottlenecks $l \to l+1$")
     ax.set_ylabel(r"support overlap  $|S_l \cap S_{l+1}|\,/\,K$")
     ax.set_ylim(-0.02, 1.0)
-    ax.set_title("(a) carried coordinates kept at initialization (K=16)", fontsize=10)
+    ax.set_title("(a) carried coordinates kept, init, K=16")
     ax.grid(alpha=0.3)
-    ax.legend(fontsize=8)
+    ax.legend(loc="center right")
 
     ax = axes[1]
     for name, label, color, ls in RUNS:
         tr = curves[name]["train"]
         ax.plot([t[0] for t in tr], [t[1] for t in tr], color=color, ls=ls, lw=1.4, label=label)
     ax.axhline(5.99, color="gray", lw=0.8, ls=":")
-    ax.text(2480, 6.08, "unigram level", fontsize=7, color="gray", ha="right")
+    ax.text(2480, 6.1, "unigram level", fontsize=8.5, color="gray", ha="right")
     ax.set_ylim(1.8, 8.5)
     ax.set_xlim(0, STOP)
     ax.set_xlabel("training step")
     ax.set_ylabel("training CE (nats)")
-    ax.set_title("(b) hard Top-16, code carried, no output norm", fontsize=10)
+    ax.set_title("(b) training CE, hard Top-16")
     ax.grid(alpha=0.3)
-    ax.legend(fontsize=7, loc="upper right")
+    ax.legend(loc="center right", bbox_to_anchor=(1.0, 0.40))
 
     ax = axes[2]
     for name, label, color, ls in RUNS:
@@ -94,10 +94,10 @@ def plot(curves_path, overlap_path, out):
     ax.set_yscale("log")
     ax.set_xlim(0, STOP)
     ax.set_xlabel("training step")
-    ax.set_ylabel("gradient norm before clipping")
-    ax.set_title("(c) gradient norm", fontsize=10)
+    ax.set_ylabel("gradient norm")
+    ax.set_title("(c) gradient norm before clipping")
     ax.grid(alpha=0.3)
-    ax.legend(fontsize=7, loc="upper right")
+    ax.legend(loc="upper right")
 
     fig.tight_layout()
     fig.savefig(out, dpi=150)
