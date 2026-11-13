@@ -1,0 +1,76 @@
+{
+ "runs": {
+  "gcr_gum_abs_k64_j64_t0.5_l0.0001": {
+   "source": "gcr_gum_abs_k64_j64_t0.5_l0.0001",
+   "run": "gcr_gum_abs_k64_j64_t0.5_l3e-05",
+   "config": "configs/gumbel_cr/search/abs_k64_j64_t0.5_l3e-05.yaml",
+   "detected": "2026-11-13T14:05:07+00:00",
+   "source_diverged": {
+    "step": 12580,
+    "reason": "train/ce > best+2.5 (best 3.387) for 800 steps",
+    "best_train_ce": 3.38747695684433,
+    "last_train_ce": 5.968166875839233
+   },
+   "status": "queued",
+   "placed": "2026-11-13T14:05:07+00:00"
+  },
+  "gcr_gum_abs_k64_j64_t1.2_l0.0001": {
+   "source": "gcr_gum_abs_k64_j64_t1.2_l0.0001",
+   "run": "gcr_gum_abs_k64_j64_t1.2_l3e-05",
+   "config": "configs/gumbel_cr/search/abs_k64_j64_t1.2_l3e-05.yaml",
+   "detected": "2026-11-13T14:05:07+00:00",
+   "source_diverged": {
+    "step": 9540,
+    "reason": "train/ce > best+2.5 (best 2.065) for 800 steps",
+    "best_train_ce": 2.064655190706253,
+    "last_train_ce": 5.804998362064362
+   },
+   "status": "queued",
+   "placed": "2026-11-13T14:05:07+00:00"
+  },
+  "gcr_gum_abs_k64_j192_t1.2_l0.0001": {
+   "source": "gcr_gum_abs_k64_j192_t1.2_l0.0001",
+   "run": "gcr_gum_abs_k64_j192_t1.2_l3e-05",
+   "config": "configs/gumbel_cr/search/abs_k64_j192_t1.2_l3e-05.yaml",
+   "detected": "2026-11-13T15:16:07+00:00",
+   "source_diverged": {
+    "step": 18240,
+    "reason": "train/ce > best+2.5 (best 1.876) for 800 steps",
+    "best_train_ce": 1.8757408529520034,
+    "last_train_ce": 4.657579296827317
+   },
+   "status": "queued",
+   "placed": "2026-11-13T15:16:07+00:00"
+  },
+  "gcr_gum3t_abs_k32_j32_t0.5_l0.0001": {
+   "source": "gcr_gum3t_abs_k32_j32_t0.5_l0.0001",
+   "run": "gcr_gum3t_abs_k32_j32_t0.5_l3e-05",
+   "config": "configs/gumbel_cr/search3t/abs_k32_j32_t0.5_l3e-05.yaml",
+   "detected": "2026-11-13T18:39:07+00:00",
+   "source_diverged": {
+    "step": 18360,
+    "reason": "train/ce > best+2.5 (best 1.801) for 800 steps",
+    "best_train_ce": 1.8014736786484717,
+    "last_train_ce": 4.623211115598679
+   },
+   "status": "queued",
+   "placed": "2026-11-13T18:39:07+00:00"
+  },
+  "gcr_gum3t_abs_k64_j192_t1.2_l0.0001": {
+   "source": "gcr_gum3t_abs_k64_j192_t1.2_l0.0001",
+   "run": "gcr_gum3t_abs_k64_j192_t1.2_l3e-05",
+   "config": "configs/gumbel_cr/search3t/abs_k64_j192_t1.2_l3e-05.yaml",
+   "detected": "2026-11-13T20:50:07+00:00",
+   "source_diverged": {
+    "step": 16100,
+    "reason": "train/ce > best+2.5 (best 1.685) for 800 steps",
+    "best_train_ce": 1.6853677690029145,
+    "last_train_ce": 4.995418792963028
+   },
+   "status": "direct",
+   "placed": "2026-11-13T20:50:07+00:00",
+   "gpu": 1,
+   "session": "lposfb_gcr_gum3t_abs_k64_j192_t1p2_l3e-05"
+  }
+ }
+}

@@ -1,0 +1,34 @@
+{
+ "runs": {
+  "gcr_gum3f_abs_k32_j32_t0.5_l0.0001": {
+   "source": "gcr_gum3f_abs_k32_j32_t0.5_l0.0001",
+   "run": "gcr_gum3f_abs_k32_j32_t0.5_l3e-05",
+   "config": "configs/gumbel_cr/search3f/abs_k32_j32_t0.5_l3e-05.yaml",
+   "detected": "2026-11-13T18:00:47+00:00",
+   "source_diverged": {
+    "step": 13660,
+    "reason": "train/ce > best+2.5 (best 1.863) for 800 steps",
+    "best_train_ce": 1.8631009697914123,
+    "last_train_ce": 4.884921407699585
+   },
+   "status": "queued",
+   "placed": "2026-11-13T18:00:47+00:00"
+  },
+  "gcr_gum3f_abs_k32_j224_t0.5_l0.0001": {
+   "source": "gcr_gum3f_abs_k32_j224_t0.5_l0.0001",
+   "run": "gcr_gum3f_abs_k32_j224_t0.5_l3e-05",
+   "config": "configs/gumbel_cr/search3f/abs_k32_j224_t0.5_l3e-05.yaml",
+   "detected": "2026-11-13T18:53:47+00:00",
+   "source_diverged": {
+    "step": 18640,
+    "reason": "train/ce > best+2.5 (best 1.763) for 800 steps",
+    "best_train_ce": 1.7634488984942436,
+    "last_train_ce": 4.314738202095032
+   },
+   "status": "direct",
+   "placed": "2026-11-13T18:55:47+00:00",
+   "gpu": 7,
+   "session": "lposfb_gcr_gum3f_abs_k32_j224_t0p5_l3e-05"
+  }
+ }
+}

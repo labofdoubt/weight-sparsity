@@ -21,7 +21,7 @@
 with the code carried between blocks\\[2pt]
 \large Research note}
 \author{}
-\date{2026-11-13.}
+\date{2026-11-13; Section~\ref{sec:lpos} added 2026-11-14.}
 
 \begin{document}
 \maketitle
@@ -55,6 +55,14 @@ selection scores did not train and were paused
   $\lambda = 10^{-3}$ collapsed by step 1000. The selected
   setting is $\lambda = 0$ in all 27 cells: Gumbel noise on the support, no
   policy gradient.
+\item \textbf{No crossover later in training.} The largest $\lambda$ that
+  trains, $10^{-4}$, was continued from step 2500 to 20000 at $\tau = 0.5$ and
+  $1.2$ in all 27 cell--variant pairs (54 runs), with $3\cdot10^{-5}$ in its place
+  where the divergence guard stopped it. No run comes closer than $0.024$ nats to
+  hard Top-$K$ at any validation step; the closest end $0.027$--$0.046$ above it,
+  and their margin is flat after step 15000 (Section~\ref{sec:lpos}). 16 of the
+  54 runs at $\lambda = 10^{-4}$ collapse to deterministic sampling, 7 of them
+  after training normally until a step between 8600 and 18000.
 \item \textbf{Smallest temperature.} $\tau = 0.2$ is selected in 23 of 27
   cells, $\tau = 0.5$ in the other 4; $\tau = 1.2$ costs $0.04$--$0.12$ nats at
   step 2500 (mean over cells).
@@ -232,6 +240,204 @@ not escape the noise by enlarging the gaps between scores; the loss is
 nevertheless that of hard Top-$K$.
 
 % ============================================================
+\section{The policy term over 20000 steps}\label{sec:lpos}
+% ============================================================
+
+The search compares settings at step 2500. To test whether a setting with the
+policy term overtakes hard Top-$K$ later in training, the largest $\lambda$ that
+trains, $\lambda = 10^{-4}$, was continued to step 20000 ($3\cdot10^{-4}$ stalled
+in the probe of the 3-of-8 variants, $10^{-3}$ collapsed by step 1000). It was
+continued at $\tau = 0.5$ and $1.2$, the two temperatures with the lowest loss
+at this $\lambda$ in all 27 cell--variant pairs; at $\tau = 0.2$ the validation CE
+at step 2500 is $2.49$ to $4.72$. These are 54 runs (9 cells, 3 variants, 2
+temperatures), each resumed from its own step-2500 search checkpoint. Under the
+constant learning rate this is the run the search started, continued.
+
+\textbf{Divergence guard and replacements.} A guard stops a run when its training
+CE stays more than 2.5 nats above its best value for 800 steps. Where it stopped
+a $\lambda = 10^{-4}$ run, the run with the same cell, variant and $\tau$ at
+$\lambda = 3\cdot10^{-5}$ was continued in the same way from its own search
+checkpoint (7 runs; \code{scripts/gcr\_lpos\_fallback.py}).
+
+\textbf{Collapse.} A run is called collapsed when the guard stopped it, or when
+the share of its drawn support outside the deterministic Top-$K$, averaged over
+its last 500 steps, is below $0.02$: the sampling has become deterministic. At
+the end of the runs that did not collapse this share is $0.07$ to $0.76$.
+
+The quantity compared is the margin over hard Top-$K$ at the same step,
+\begin{equation}
+  \Delta(s) = \mathrm{CE}_{\mathrm{val}}(s) - \mathrm{CE}^{\,\text{hard Top-}K}_{\mathrm{val}}(s),
+\end{equation}
+so that a crossover is $\Delta(s) < 0$.
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth]{figures/gumbel-cr/lpos.png}
+  \caption{Margin $\Delta(s)$ over hard Top-$K$ for every $\lambda > 0$ run past
+  step 2500 (orange: $\lambda = 10^{-4}$, $\tau = 0.5$; red: $\lambda = 10^{-4}$,
+  $\tau = 1.2$; dotted: $\lambda = 3\cdot10^{-5}$ at the same $\tau$; lighter for
+  smaller $J$; $\times$: collapsed), the selected $\lambda = 0$ runs (blue) and hard
+  Top-$2K$ (black dashed). Symmetric-log axis, linear between $\pm0.05$.}
+  \label{fig:lpos}
+\end{figure}
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth]{figures/gumbel-cr/lpos_late.png}
+  \caption{The $\lambda > 0$ runs that did not collapse, steps 10000--20000, linear
+  axis cut at $0.30$; color: setting ($\lambda = 3\cdot10^{-5}$ in purple), line
+  style: variant; blue: selected $\lambda = 0$ runs; black dashed: hard Top-$2K$.}
+  \label{fig:lposlate}
+\end{figure}
+
+\subsection*{Measurements: margin over hard Top-$K$}
+
+No $\lambda > 0$ run reaches hard Top-$K$ at any validation step between 2500 and
+20000 (Figures~\ref{fig:lpos} and~\ref{fig:lposlate}). The smallest margin over
+all 61 runs and all steps is $+0.024$ (3 of 8 per forward, $(32,32)$,
+$\tau = 0.5$, $\lambda = 3\cdot10^{-5}$, step 16500). Mean margin of the runs that
+did not collapse:
+
+\begin{center}
+\small
+\begin{tabular}{llcccccc}
+\toprule
+variant & setting & $n$ & 2500 & 10000 & 15000 & 20000 & min.\ at 20000 \\
+\midrule
+all 8 sample        & $\lambda = 10^{-4}$, $\tau = 0.5$     & 4 & $+0.375$ & $+0.244$ & $+0.196$ & $+0.174$ & $+0.161$ \\
+                    & $\lambda = 10^{-4}$, $\tau = 1.2$     & 7 & $+0.226$ & $+0.220$ & $+0.266$ & $+0.293$ & $+0.090$ \\
+                    & $\lambda = 3\cdot10^{-5}$             & 2 & $+0.092$ & $+0.120$ & $+0.148$ & $+0.163$ & $+0.092$ \\
+                    & $\lambda = 0$ (selected)              & 9 & $+0.002$ & $+0.008$ & $+0.008$ & $+0.012$ & $+0.005$ \\
+\midrule
+3 of 8, per forward & $\lambda = 10^{-4}$, $\tau = 0.5$     & 5 & $+0.206$ & $+0.135$ & $+0.113$ & $+0.105$ & $+0.081$ \\
+                    & $\lambda = 10^{-4}$, $\tau = 1.2$     & 9 & $+0.127$ & $+0.097$ & $+0.094$ & $+0.099$ & $+0.046$ \\
+                    & $\lambda = 3\cdot10^{-5}$             & 2 & $+0.055$ & $+0.038$ & $+0.035$ & $+0.036$ & $+0.027$ \\
+                    & $\lambda = 0$ (selected)              & 9 & $-0.000$ & $+0.003$ & $+0.002$ & $+0.006$ & $+0.003$ \\
+\midrule
+3 of 8, per token   & $\lambda = 10^{-4}$, $\tau = 0.5$     & 5 & $+0.213$ & $+0.137$ & $+0.114$ & $+0.130$ & $+0.086$ \\
+                    & $\lambda = 10^{-4}$, $\tau = 1.2$     & 8 & $+0.116$ & $+0.095$ & $+0.099$ & $+0.108$ & $+0.041$ \\
+                    & $\lambda = 3\cdot10^{-5}$             & 2 & $+0.056$ & $+0.054$ & $+0.057$ & $+0.060$ & $+0.040$ \\
+                    & $\lambda = 0$ (selected)              & 9 & $-0.002$ & $+0.000$ & $+0.001$ & $+0.004$ & $-0.001$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The $\lambda > 0$ rows average different cells: the collapsed runs are left out,
+and $\lambda = 3\cdot10^{-5}$ was run only where the guard stopped
+$\lambda = 10^{-4}$. The five runs closest to hard Top-$K$ at step 20000, with
+the least-squares slope of $\Delta$ over steps 15000--20000 in nats per 10000
+steps:
+
+\begin{center}
+\small
+\begin{tabular}{llcccccc}
+\toprule
+variant, $(K,J)$ & $\tau$, $\lambda$ & 2500 & 5000 & 10000 & 15000 & 20000 & slope \\
+\midrule
+3 of 8 per forward, $(32,32)$  & $0.5$, $3\cdot10^{-5}$ & $+0.051$ & $+0.042$ & $+0.030$ & $+0.026$ & $+0.027$ & $+0.001$ \\
+3 of 8 per token, $(32,32)$    & $0.5$, $3\cdot10^{-5}$ & $+0.061$ & $+0.052$ & $+0.044$ & $+0.041$ & $+0.040$ & $-0.001$ \\
+3 of 8 per token, $(16,16)$    & $1.2$, $10^{-4}$       & $+0.065$ & $+0.056$ & $+0.044$ & $+0.038$ & $+0.041$ & $+0.003$ \\
+3 of 8 per forward, $(32,224)$ & $0.5$, $3\cdot10^{-5}$ & $+0.059$ & $+0.053$ & $+0.046$ & $+0.045$ & $+0.044$ & $-0.002$ \\
+3 of 8 per forward, $(16,16)$  & $1.2$, $10^{-4}$       & $+0.064$ & $+0.061$ & $+0.048$ & $+0.041$ & $+0.046$ & $+0.007$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{itemize}[leftmargin=1.2em,itemsep=2pt]
+\item In these runs the margin shrinks by $0.017$--$0.025$ between steps 2500 and
+  12500 and changes by $-0.002$ to $+0.007$ per 10000 steps after step 15000.
+  Over all 44 runs that did not collapse, the median slope is $-0.005$ per 10000
+  steps over steps 10000--20000 and $+0.005$ over steps 15000--20000.
+\item The fastest decline is with all 8 bottlenecks sampling at $K = 16$,
+  $\tau = 0.5$, $\lambda = 10^{-4}$: the margin falls from $0.24$--$0.25$ at step
+  10000 to $0.19$--$0.21$ at step 15000 and $0.16$--$0.19$ at step 20000, so the
+  decrease halves from the first to the second 5000 steps.
+\item With all 8 bottlenecks sampling at $\tau = 1.2$ the mean margin grows after
+  step 5000; the runs with pools 128 and 256 at $K = 16$ rise by $0.05$ and $0.26$
+  from their lowest CE while the share outside Top-$K$ is $0.67$--$0.76$.
+\item Per $K$, the closest $\lambda > 0$ run ends $+0.041$ ($K = 16$), $+0.027$
+  ($K = 32$) and $+0.081$ ($K = 64$) above hard Top-$K$. The selected
+  $\lambda = 0$ runs end between $-0.001$ and $+0.018$, and their mean margin grows
+  by $0.006$ to $0.010$ from step 2500 to 20000.
+\end{itemize}
+
+\subsection*{Measurements: collapses}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\textwidth]{figures/gumbel-cr/lpos_collapse.png}
+  \caption{The 8 runs that trained and then collapsed: training CE, share of the
+  drawn support outside Top-$K$, and the norm of the policy term's gradient relative
+  to the CE gradient on the same micro-batch, from step 2500 (diagnostics every 200
+  steps).}
+  \label{fig:lposcollapse}
+\end{figure}
+
+16 of the 54 runs at $\lambda = 10^{-4}$ collapse, and 1 of the 7 at
+$3\cdot10^{-5}$. They fall into two groups (table below).
+
+\begin{itemize}[leftmargin=1.2em,itemsep=2pt]
+\item \textbf{Collapsed by step 2500} (9 runs, all $\tau = 0.5$,
+  $\lambda = 10^{-4}$): the share outside Top-$K$ is $0.003$--$0.021$ at step 2500
+  and the margin $0.86$--$1.53$. The CE does not recover, and rises to
+  $2.97$--$4.32$ by step 20000. The guard stopped one of these runs.
+\item \textbf{Trained, then collapsed} (7 at $\lambda = 10^{-4}$, 1 at
+  $3\cdot10^{-5}$): these runs reach a lowest validation CE of $1.74$ to $2.10$,
+  $0.14$ to $0.44$ above hard Top-$K$ at the same step. The first jump of the
+  training CE comes between steps 6400 and 18000, and the final collapse between
+  steps 7460 and about 19000 (Figure~\ref{fig:lposcollapse}).
+  \begin{itemize}[leftmargin=1.2em,itemsep=1pt]
+  \item The training CE jumps to 5--6 nats (the unigram level) within a few
+    hundred steps. In several runs it recovers partly once or twice before the
+    last jump.
+  \item At the jumps, the ratio of the policy gradient's norm to the CE
+    gradient's reaches 9 to 330. Before the first jump the ratio is mostly
+    between $0.2$ and $2$, with isolated values of $3.9$ to 56.
+  \item After the last jump the share outside Top-$K$ falls to $0.001$--$0.033$.
+  \item Apart from those isolated ratio values, the logged diagnostics show no
+    trend before the first jump.
+  \end{itemize}
+\item The guard missed 9 of the 17 collapses: 8 of the first group, whose CE
+  rises slowly, and 3 of 8 per token at $(32,96)$, whose final collapse began about
+  1000 steps before the end. Their $\lambda = 3\cdot10^{-5}$ counterparts were not
+  run.
+\end{itemize}
+
+\begin{center}
+\small
+\begin{tabular}{llllccl}
+\toprule
+variant & $(K,J)$ & $\tau$ & $\lambda$ & CE at 2500 & lowest after 2500 & end \\
+\midrule
+\multicolumn{7}{l}{\emph{collapsed by step 2500}}\\
+all 8           & $(32,32)$  & 0.5 & $10^{-4}$ & 2.861 & 2.835 (3500)  & 3.217 at 20000 \\
+all 8           & $(32,96)$  & 0.5 & $10^{-4}$ & 2.819 & 2.796 (5000)  & 2.967 at 20000 \\
+all 8           & $(32,224)$ & 0.5 & $10^{-4}$ & 2.839 & 2.819 (4500)  & 3.076 at 20000 \\
+all 8           & $(64,64)$  & 0.5 & $10^{-4}$ & 3.420 & 3.420 (2500)  & guard stop at 12580 \\
+all 8           & $(64,192)$ & 0.5 & $10^{-4}$ & 3.402 & 3.402 (2500)  & 4.321 at 20000 \\
+3 of 8 per fwd. & $(64,64)$  & 0.5 & $10^{-4}$ & 2.847 & 2.847 (2500)  & 4.036 at 20000 \\
+3 of 8 per fwd. & $(64,192)$ & 0.5 & $10^{-4}$ & 2.837 & 2.837 (2500)  & 4.097 at 20000 \\
+3 of 8 per tok. & $(64,64)$  & 0.5 & $10^{-4}$ & 2.856 & 2.852 (3000)  & 4.080 at 20000 \\
+3 of 8 per tok. & $(64,192)$ & 0.5 & $10^{-4}$ & 2.829 & 2.816 (3500)  & 3.880 at 20000 \\
+\midrule
+\multicolumn{7}{l}{\emph{trained, then collapsed}}\\
+all 8           & $(64,64)$  & 1.2 & $10^{-4}$        & 2.484 & 2.101 (8500)  & guard stop at 9540 \\
+all 8           & $(64,192)$ & 1.2 & $10^{-4}$        & 2.449 & 1.931 (12500) & guard stop at 18240 \\
+all 8           & $(64,64)$  & 0.5 & $3\cdot10^{-5}$  & 2.129 & 1.905 (5500)  & guard stop at 7460 \\
+3 of 8 per fwd. & $(32,32)$  & 0.5 & $10^{-4}$        & 2.349 & 1.921 (12000) & guard stop at 13660 \\
+3 of 8 per fwd. & $(32,224)$ & 0.5 & $10^{-4}$        & 2.355 & 1.821 (17500) & guard stop at 18640 \\
+3 of 8 per tok. & $(32,32)$  & 0.5 & $10^{-4}$        & 2.356 & 1.851 (15500) & guard stop at 18360 \\
+3 of 8 per tok. & $(32,96)$  & 0.5 & $10^{-4}$        & 2.338 & 1.845 (18000) & 3.992 at 20000 \\
+3 of 8 per tok. & $(64,192)$ & 1.2 & $10^{-4}$        & 2.107 & 1.739 (14000) & guard stop at 16100 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Hard Top-$K$ at step 2500: $2.064$, $1.959$ and $1.891$ for $K = 16, 32, 64$. The
+6 $\lambda = 3\cdot10^{-5}$ replacements that did not collapse end $+0.027$ to
+$+0.234$ above hard Top-$K$.
+
+% ============================================================
 \section{Interpretation}
 % ============================================================
 
@@ -248,6 +454,18 @@ $0.015$--$0.07$ nats and improves no cell. Sampling at 3
 of 8 bottlenecks lowers that noise by about the factor the gradient ratios show,
 not enough to change the outcome.
 
+Continuing the policy term to step 20000 does not change this reading
+(Section~\ref{sec:lpos}). Where it trains, the margin over hard Top-$K$ shrinks in
+the first half of training and is flat in the second. A linear extrapolation of
+the decline of the closest run over steps 10000--20000 ($-0.005$ nats per 10000
+steps) would reach hard Top-$K$ after about 57000 further steps; over steps
+15000--20000 the same run's margin does not decline. The long runs also show a
+cost the search could not: of the 45 runs at $\lambda = 10^{-4}$ that trained
+normally, 7 collapse later, the last after more than 15000 steps beyond the
+search, each time with the policy gradient briefly 9 to 330 times the CE
+gradient. A policy term large enough to move the support makes the training
+unstable before it brings the loss below hard Top-$K$.
+
 % ============================================================
 \section{Scope}
 % ============================================================
@@ -255,14 +473,23 @@ not enough to change the outcome.
 Single runs at seed 1337, on two boxes of the same GPU type; differences of
 $0.01$ nats are within run-to-run variation. Constant learning rate, so the
 absolute values are not comparable with the cosine-schedule K+J notes. abs-TopK
-selection only. The $(\tau, \lambda)$ search ranks settings at step 2500; the
-settings that lost there were not continued, so an advantage appearing only
-later in training is not excluded.
+selection only. The $(\tau, \lambda)$ search ranks settings at step 2500.
+Section~\ref{sec:lpos} continues $\lambda = 10^{-4}$ at $\tau = 0.5$ and $1.2$ to
+step 20000, with $3\cdot10^{-5}$ where the guard stopped it; $\lambda = 10^{-5}$,
+$\lambda = 3\cdot10^{-5}$ elsewhere and $\tau = 0.2$ with $\lambda > 0$ were not
+continued, and the 9 collapses the guard missed were not replaced. The runs end at
+step 20000, so an advantage appearing only after that is not excluded. The collapse
+threshold (share outside Top-$K$ below $0.02$ over the last 500 steps) is a choice
+made here; every collapsed run is listed.
 
 {\raggedright\textbf{Data.} Runs on Drive \code{runs\_ankara} (all 8; 3 of 8 per forward;
 hard Top-$K$) and \code{runs\_bern} (3 of 8 per token; the remaining
 all-8 cells); selections in \code{analysis\_\{ankara,bern\}/gcr\_selection\_*.json}
 and \code{docs/figures/gumbel-cr/data/}; figures and tables:
-\code{scripts/plot\_gumbel\_cr\_report.py}.\par}
+\code{scripts/plot\_gumbel\_cr\_report.py}. The $\lambda > 0$ continuation
+resumed the search runs in place (same run directories; the console log of the
+search part kept as \code{<name>.search.log}); its replacement decisions are in
+\code{docs/figures/gumbel-cr/data/lpos\_fallback\_\{ankara,bern\}.json}
+(\code{scripts/gcr\_lpos\_fallback.py}).\par}
 
 \end{document}
