@@ -59,6 +59,9 @@ def read_run(d: str) -> dict | None:
            "k": int(ab["k"]), "j": int(ab["j"]),
            "tau": float(ab.get("gumbel_temperature", 0.0)),
            "lam": float(ab.get("gumbel_policy_coef", 0.0)),
+           # which bottlenecks sample: "" all 8, "3f" 3 of 8 per forward, "3t" per token
+           "variant": ("" if not int(ab.get("gumbel_gates_per_forward", 0) or 0) else
+                       "3f" if ab.get("gumbel_gates_draw", "forward") == "forward" else "3t"),
            "val": [], "val_sto": [], "diag": []}
     diag_keys = ("train/ce", "train/grad_norm", "gumbel/grad_split/ratio",
                  "gumbel/grad_split/policy_norm", "gumbel/grad_split/ce_norm",
@@ -75,7 +78,7 @@ def read_run(d: str) -> dict | None:
             s = r.get("step")
             if "val/ce" in r and s is not None:
                 seen_val[s] = (r["val/ce"], r.get("val_stochastic/ce"))
-            elif s is not None and s % 100 == 0 and "train/ce" in r:
+            elif s is not None and s % 200 == 0 and "train/ce" in r:
                 run["diag"].append({"step": s, **{k: r[k] for k in diag_keys if k in r}})
     for s in sorted(seen_val):
         v, vs = seen_val[s]
@@ -86,6 +89,8 @@ def read_run(d: str) -> dict | None:
         p = os.path.join(d, f"{tag}.json")
         run[tag] = json.load(open(p)) if os.path.exists(p) else None
     run["last_step"] = run["val"][-1][0] if run["val"] else 0
+    if run["last_step"] <= STOP:
+        run["diag"] = run["diag"][::5]   # search runs: every 1000 steps is enough
     return run
 
 
